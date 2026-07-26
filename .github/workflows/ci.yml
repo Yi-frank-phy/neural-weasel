@@ -20,8 +20,8 @@ jobs:
       HF_HUB_OFFLINE: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
       TRANSFORMERS_OFFLINE: "1"
-      NEURAL_WEASEL_HOME: ${{ runner.temp }}\NeuralWeasel
-      LOCALAPPDATA: ${{ runner.temp }}\LocalAppData
+      NEURAL_WEASEL_HOME: ${{ runner.temp }}/NeuralWeasel
+      LOCALAPPDATA: ${{ runner.temp }}/LocalAppData
 
     steps:
       - name: Check out repository
