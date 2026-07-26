@@ -27,13 +27,16 @@ This file distinguishes implemented and tested behavior from planned integration
   - `j`: p50 0.191 ms, p95 0.240 ms, p99 0.291 ms;
   - `jiuc`: p50 0.045 ms, p95 0.084 ms, p99 0.139 ms;
   - `jiuchan`: p50 0.114 ms, p95 0.151 ms, p99 0.253 ms.
+- A 10,000-request persistent Named Pipe stress run at maximum client speed
+  completed with zero missing, reordered, or wrong-epoch responses:
+  p50 0.287 ms, p95 0.496 ms, p99 0.593 ms, maximum 21.120 ms.
 
 ## Pending GPU/runtime gates
 
 - Finish installing CUDA PyTorch and download the 0.8B Base weights.
 - Verify strict CUDA UUID binding and text-only model construction.
 - Measure context-forward latency and confirm 0.8B BF16 peak stays below 3 GiB.
-- Run the end-to-end 10,000-key Pipe stress test.
+- Repeat the 10,000-key stress test through the compiled C++ translator.
 
 ## Native integration status
 

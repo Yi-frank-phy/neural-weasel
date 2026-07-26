@@ -39,10 +39,13 @@ class IndexedPronunciation:
             values.add(position)
         return frozenset(values)
 
+    def matched_syllables(self, raw_length: int) -> int:
+        return sum(boundary <= raw_length for boundary in self.boundaries)
+
 
 @dataclass(frozen=True, slots=True)
 class PinyinQueryGroup:
-    priority: tuple[int, int, int]
+    priority: tuple[int, int, int, int]
     entries: tuple[IndexedPronunciation, ...]
     token_ids: np.ndarray | None
 
@@ -74,8 +77,7 @@ def _installed_pypinyin_version() -> str:
 
 def _safe_component(value: str) -> str:
     return "".join(
-        character if character.isalnum() or character in "-._" else "-"
-        for character in value
+        character if character.isalnum() or character in "-._" else "-" for character in value
     )
 
 
@@ -182,9 +184,7 @@ class PinyinIndexBuilder:
             if not is_all_han(text):
                 continue
             for path in pronunciation_paths(text):
-                rows.append(
-                    (token_id, text, concatenate_path(path), "'".join(path), len(path), 0)
-                )
+                rows.append((token_id, text, concatenate_path(path), "'".join(path), len(path), 0))
             if len(rows) >= 10_000:
                 connection.executemany(
                     """
@@ -321,13 +321,15 @@ class PinyinIndex:
         if cached is not None:
             return cached
 
-        grouped: defaultdict[tuple[int, int, int], list[IndexedPronunciation]] = (
-            defaultdict(list)
+        grouped: defaultdict[tuple[int, int, int, int], list[IndexedPronunciation]] = defaultdict(
+            list
         )
         for entry in self.compatible(parsed):
+            matched_letters = min(len(entry.pinyin), len(parsed.compact))
             priority = (
                 0 if entry.pinyin == parsed.compact else 1,
-                -entry.syllables,
+                -matched_letters,
+                -entry.matched_syllables(len(parsed.compact)),
                 1 if entry.coverage else 0,
             )
             grouped[priority].append(entry)
@@ -336,7 +338,7 @@ class PinyinIndex:
         for priority in sorted(grouped):
             entries = tuple(grouped[priority])
             token_ids = None
-            if not priority[2]:
+            if not priority[-1]:
                 token_ids = np.fromiter(
                     (entry.token_id for entry in entries),
                     dtype=np.int64,
@@ -369,9 +371,7 @@ class PinyinIndex:
             entry
             for entry in entries
             if {
-                boundary
-                for boundary in parsed.explicit_boundaries
-                if boundary <= len(entry.pinyin)
+                boundary for boundary in parsed.explicit_boundaries if boundary <= len(entry.pinyin)
             }.issubset(entry.boundaries)
         ]
 

@@ -15,8 +15,7 @@ from neural_weasel.index import SCHEMA_VERSION, PinyinIndex, PinyinIndexBuilder
 def make_index(tmp_path: Path):
     def factory(
         rows: Iterable[
-            tuple[int | None, str, str, int, int]
-            | tuple[int | None, str, str, str, int, int]
+            tuple[int | None, str, str, int, int] | tuple[int | None, str, str, str, int, int]
         ],
         *,
         tokenizer_hash: str = "test-tokenizer",
@@ -35,9 +34,7 @@ def make_index(tmp_path: Path):
                     syllable_path = pinyin
                 else:
                     token_id, text, pinyin, syllable_path, syllables, coverage = row
-                normalized_rows.append(
-                    (token_id, text, pinyin, syllable_path, syllables, coverage)
-                )
+                normalized_rows.append((token_id, text, pinyin, syllable_path, syllables, coverage))
             connection.executemany(
                 """
                 INSERT INTO pronunciations
@@ -55,10 +52,7 @@ def make_index(tmp_path: Path):
             }
             connection.executemany(
                 "INSERT INTO metadata(key, value) VALUES (?, ?)",
-                (
-                    (key, json.dumps(value, ensure_ascii=False))
-                    for key, value in metadata.items()
-                ),
+                ((key, json.dumps(value, ensure_ascii=False)) for key, value in metadata.items()),
             )
             connection.commit()
         finally:

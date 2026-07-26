@@ -17,4 +17,3 @@ class Candidate:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
-

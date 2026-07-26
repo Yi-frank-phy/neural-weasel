@@ -191,6 +191,25 @@ def test_ranker_handles_incomplete_final_syllable_and_partial_consumption(make_i
     assert not any(candidate.completes_input for candidate in candidates)
 
 
+def test_incomplete_prefix_does_not_apply_artificial_long_token_bonus(make_index) -> None:
+    index = make_index(
+        [
+            (1, "就", "jiu", 1, 0),
+            (2, "纠缠资源", "jiuchanziyuan", 4, 0),
+        ]
+    )
+
+    candidates = rank_candidates(
+        index=index,
+        raw_pinyin="j",
+        logits=[0.0, 9.0, 1.0],
+        context_epoch=1,
+    )
+
+    assert [candidate.text for candidate in candidates] == ["就", "纠缠资源"]
+    assert [candidate.syllables for candidate in candidates] == [0, 0]
+
+
 def test_ranker_deduplicates_same_text_and_consumption_by_best_score(make_index) -> None:
     index = make_index(
         [
@@ -276,10 +295,7 @@ def test_consumed_keys_counts_raw_apostrophe_keys(make_index) -> None:
 
 
 def test_wide_prefix_does_not_drop_highest_logit_after_arbitrary_cap(make_index) -> None:
-    rows = [
-        (token_id, chr(0x4E00 + token_id), "a", "a", 1, 0)
-        for token_id in range(1, 5002)
-    ]
+    rows = [(token_id, chr(0x4E00 + token_id), "a", "a", 1, 0) for token_id in range(1, 5002)]
     index = make_index(rows)
     logits = [0.0] * 5002
     logits[5001] = 100.0

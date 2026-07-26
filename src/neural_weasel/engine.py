@@ -117,9 +117,7 @@ class NeuralPinyinEngine:
     ) -> list[Candidate]:
         with self._snapshot_lock:
             snapshot = (
-                self._snapshots.get(context_epoch)
-                if context_epoch is not None
-                else self._snapshot
+                self._snapshots.get(context_epoch) if context_epoch is not None else self._snapshot
             )
         if snapshot is None:
             return []

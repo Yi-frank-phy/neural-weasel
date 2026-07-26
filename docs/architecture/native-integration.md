@@ -9,11 +9,11 @@ replace any input method.
 The current native files are a compile-oriented skeleton. They deliberately
 exclude:
 
-- TSF registration and unregistration code;
+- executable TSF registration and unregistration code;
 - mutation of an installed Weasel tree;
 - Weasel IPC message-number changes;
 - the model-service Named Pipe server and its ACL implementation;
-- automatic activation of Microsoft Pinyin;
+- wiring automatic activation of Microsoft Pinyin into installed Weasel;
 - production sensitive-field classification.
 
 Those exclusions prevent an incomplete experiment from changing the user's
@@ -221,6 +221,12 @@ Do not hard-code Microsoft Pinyin GUIDs. The fallback implementation should
 enumerate installed TSF profiles and store the user-approved target, then call
 `ITfInputProcessorProfileMgr::ActivateProfile` only after cancelling the
 experimental composition.
+
+The read-only registration planner, profile enumerator and hard-failure state
+machine now live in `native/tsf/`. Their exact safety and lifecycle contract is
+documented in [profile-fallback.md](profile-fallback.md). No caller is wired
+into the installed input method, and the registration planner intentionally has
+no mutating executor.
 
 ## Build and verification status
 

@@ -37,9 +37,7 @@ def _run_nvidia_smi(fields: str) -> list[list[str]]:
         encoding="utf-8",
     )
     return [
-        [column.strip() for column in row]
-        for row in csv.reader(io.StringIO(result.stdout))
-        if row
+        [column.strip() for column in row] for row in csv.reader(io.StringIO(result.stdout)) if row
     ]
 
 
@@ -101,9 +99,7 @@ def verify_torch_binding(torch_module: Any) -> NvidiaGpu:
     properties = torch_module.cuda.get_device_properties(0)
     actual_uuid = getattr(properties, "uuid", None)
     if actual_uuid is not None and _normalize_uuid(actual_uuid) != _normalize_uuid(expected_uuid):
-        raise GpuBindingError(
-            f"CUDA UUID mismatch: expected {expected_uuid}, got {actual_uuid}"
-        )
+        raise GpuBindingError(f"CUDA UUID mismatch: expected {expected_uuid}, got {actual_uuid}")
 
     target = discover_target_gpu()
     if _normalize_uuid(target.uuid) != _normalize_uuid(expected_uuid):
@@ -121,9 +117,7 @@ def verify_model_device_map(model: Any) -> None:
 
     allowed = {0, "0", "cuda", "cuda:0"}
     invalid = {
-        str(module): device
-        for module, device in device_map.items()
-        if device not in allowed
+        str(module): device for module, device in device_map.items() if device not in allowed
     }
     if invalid:
         raise GpuBindingError(f"model offload or wrong device detected: {invalid}")
@@ -134,6 +128,8 @@ def memory_snapshot(torch_module: Any) -> dict[str, int]:
     return {
         "allocated_mib": round(torch_module.cuda.memory_allocated(0) / 2**20),
         "reserved_mib": round(torch_module.cuda.memory_reserved(0) / 2**20),
+        "peak_allocated_mib": round(torch_module.cuda.max_memory_allocated(0) / 2**20),
+        "peak_reserved_mib": round(torch_module.cuda.max_memory_reserved(0) / 2**20),
         "free_mib": round(free_bytes / 2**20),
         "total_mib": round(total_bytes / 2**20),
     }

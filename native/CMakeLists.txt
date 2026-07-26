@@ -26,6 +26,9 @@ target_compile_definitions(neural_weasel_pipe PRIVATE
 target_link_libraries(neural_weasel_pipe PRIVATE advapi32)
 
 add_library(neural_weasel_tsf_context STATIC
+  tsf/backend_fallback_state_machine.cc
+  tsf/experimental_profile_plan.cc
+  tsf/input_processor_profiles.cc
   tsf/surrounding_text_edit_session.cc
 )
 target_include_directories(neural_weasel_tsf_context
@@ -37,7 +40,7 @@ target_compile_definitions(neural_weasel_tsf_context PRIVATE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
 )
-target_link_libraries(neural_weasel_tsf_context PRIVATE msctf ole32)
+target_link_libraries(neural_weasel_tsf_context PRIVATE msctf ole32 oleaut32)
 
 if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   set(RIME_ROOT "" CACHE PATH "Path to a librime source tree")

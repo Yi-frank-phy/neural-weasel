@@ -77,6 +77,7 @@ class QwenBaseBackend:
                 bnb_4bit_use_double_quant=True,
             )
 
+        torch.cuda.reset_peak_memory_stats(0)
         self.model = Qwen3_5ForCausalLM.from_pretrained(model_id, **kwargs)
         self.model.eval()
         verify_model_device_map(self.model)

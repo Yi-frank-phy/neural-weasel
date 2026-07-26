@@ -26,7 +26,7 @@ def _candidate(
         context_epoch=context_epoch,
         coverage=entry.coverage,
         completes_input=entry.pinyin == raw,
-        syllables=entry.syllables,
+        syllables=entry.matched_syllables(len(raw)),
         token_id=entry.token_id,
     )
 
@@ -50,8 +50,7 @@ def _rank_model_group(
             selected = np.argpartition(-scores, selection_size - 1)[:selection_size]
         selected = selected[np.argsort(-scores[selected], kind="stable")]
         ranked = [
-            (group.entries[int(position)], float(scores[int(position)]))
-            for position in selected
+            (group.entries[int(position)], float(scores[int(position)])) for position in selected
         ]
         if selection_size == len(group.entries):
             return ranked
