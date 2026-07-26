@@ -69,8 +69,9 @@ This file distinguishes implemented and tested behavior from planned integration
   run the measured latencies were 929, 419, 398, 348, 351, and 371 ms. This does
   **not** pass the planned 0.8B p95 target of 100 ms.
 - After adding safe token-prefix cache reuse, a 29-update real append-only run
-  measured p50 99.787 ms, p95 141.319 ms, p99 155.553 ms, and maximum
-  157.403 ms. This is a substantial improvement but still does **not** pass the
+  measured the full snapshot-ready path (GPU forward plus immutable CPU logit
+  copy) at p50 98.031 ms, p95 135.565 ms, p99 160.248 ms, and maximum
+  164.536 ms. This is a substantial improvement but still does **not** pass the
   planned p95 target.
 - Transformers reported that the Qwen3.5 Gated DeltaNet fast path was
   unavailable because optional `flash-linear-attention` / `causal-conv1d`

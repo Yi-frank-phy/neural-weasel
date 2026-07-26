@@ -217,8 +217,12 @@ class QwenBaseBackend:
                         total_length=len(before_ids),
                     )
 
+                snapshot_started = time.perf_counter()
                 logits = np.asarray(outputs.logits[0, -1].float().cpu().numpy()).copy()
                 logits.flags.writeable = False
+                # The context snapshot is not queryable until the complete
+                # vocabulary vector has reached immutable CPU memory.
+                elapsed_ms += (time.perf_counter() - snapshot_started) * 1000
                 past_key_values = getattr(outputs, "past_key_values", None)
 
             self._epoch += 1
