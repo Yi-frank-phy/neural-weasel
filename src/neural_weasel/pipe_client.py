@@ -7,10 +7,32 @@ from typing import Any
 from .pipe_server import (
     PipeUnavailableError,
     _read_message,
+    _security_modules,
     _win32_modules,
     _write_message,
+    current_user_sid_string,
     default_pipe_name,
 )
+
+
+def _verify_server_user(handle: Any) -> None:
+    """Reject a pipe server running under a different Windows user."""
+
+    _, win32api, win32con, win32file, win32pipe = _win32_modules()
+    _, _, _, win32security = _security_modules()
+    process_id = win32pipe.GetNamedPipeServerProcessId(handle)
+    process = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
+    try:
+        token = win32security.OpenProcessToken(process, win32con.TOKEN_QUERY)
+        try:
+            server_sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+            server_sid_text = str(win32security.ConvertSidToStringSid(server_sid))
+        finally:
+            token.Close()
+    finally:
+        win32file.CloseHandle(process)
+    if server_sid_text != current_user_sid_string():
+        raise PermissionError("named-pipe server does not run as the current user")
 
 
 class NamedPipeClient:
@@ -37,7 +59,7 @@ class NamedPipeClient:
             remaining_ms = max(0, int((deadline - time.monotonic()) * 1_000))
             try:
                 win32pipe.WaitNamedPipe(self.pipe_name, remaining_ms)
-                self._handle = win32file.CreateFile(
+                handle = win32file.CreateFile(
                     self.pipe_name,
                     win32con.GENERIC_READ | win32con.GENERIC_WRITE,
                     0,
@@ -46,6 +68,12 @@ class NamedPipeClient:
                     0,
                     None,
                 )
+                try:
+                    _verify_server_user(handle)
+                except Exception:
+                    win32file.CloseHandle(handle)
+                    raise
+                self._handle = handle
                 return
             except pywintypes.error as error:
                 if time.monotonic() >= deadline:

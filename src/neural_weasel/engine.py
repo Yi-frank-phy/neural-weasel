@@ -55,7 +55,9 @@ class NeuralPinyinEngine:
             self.backend.create_snapshot(before, after),
             epoch=requested_epoch,
         )
-        self._publish_snapshot(snapshot)
+        with self._request_lock:
+            if requested_epoch == self._requested_context_epoch:
+                self._publish_snapshot(snapshot)
         return snapshot
 
     def request_context_update(self, before: str, after: str = "") -> int:
@@ -82,8 +84,13 @@ class NeuralPinyinEngine:
             with self._request_lock:
                 pending = self._pending_context
                 self._pending_context = None
-            if pending is None:
-                return
+                if pending is None:
+                    # Clear the ownership marker while holding the same lock
+                    # used by request_context_update(). Otherwise a request can
+                    # arrive after this empty read but before the thread exits,
+                    # observe an apparently live worker, and remain stranded.
+                    self._context_worker = None
+                    return
             requested_epoch, before, after = pending
             snapshot = replace(
                 self.backend.create_snapshot(before, after),
@@ -91,8 +98,11 @@ class NeuralPinyinEngine:
             )
             with self._request_lock:
                 still_latest = requested_epoch == self._requested_context_epoch
-            if still_latest:
-                self._publish_snapshot(snapshot)
+                if still_latest:
+                    # Publish while holding the request lock so a secure reset
+                    # cannot invalidate the epoch and then lose a race to this
+                    # older snapshot publication.
+                    self._publish_snapshot(snapshot)
 
     def _publish_snapshot(self, snapshot: LogitsSnapshot) -> None:
         with self._snapshot_lock:
@@ -129,6 +139,32 @@ class NeuralPinyinEngine:
             limit=limit,
             after_text=snapshot.after_text,
         )
+
+    def has_snapshot(self, epoch: int) -> bool:
+        with self._snapshot_lock:
+            return epoch in self._snapshots
+
+    def reset_private_context(self) -> None:
+        """Fail closed when focus enters a secure or protected field.
+
+        Incrementing the requested epoch invalidates any forward already in
+        flight. Clearing pending work and every published snapshot ensures no
+        later query can address context captured before the secure transition.
+        """
+
+        with self._request_lock:
+            self._requested_context_epoch += 1
+            self._pending_context = None
+        with self._snapshot_lock:
+            self._snapshot = None
+            self._snapshots.clear()
+
+    def clear_history(self) -> None:
+        """Clear committed-text fallback state.
+
+        v0.1 does not persist commit history yet. Keeping the explicit method
+        makes secure-focus cleanup mandatory when that fallback is introduced.
+        """
 
     @property
     def context_epoch(self) -> int:

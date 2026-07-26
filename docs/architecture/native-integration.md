@@ -62,6 +62,13 @@ The TSF edit session must never perform model or pipe I/O. Its callback should
 enqueue a snapshot onto a WeaselTSF-owned worker queue and return immediately.
 Only the worker extends Weasel IPC.
 
+The standalone implementation of this post-callback boundary is
+`neural_weasel_context_bridge`. It coalesces snapshots on an owned worker,
+forwards `context_update`, waits for the exact service epoch to become ready,
+and then publishes `EditorContextEpoch`. See
+[context-bridge.md](context-bridge.md). It has no Weasel/librime header
+dependency and does not register a profile.
+
 Fast reads use `{8192, 4096}` UTF-16 code units. An idle timer may issue a
 second request with `{32768, 32768}`. `ShiftStart`/`ShiftEnd` report the actual
 movement; moving fewer units than requested marks that side as reaching the
@@ -143,6 +150,13 @@ accidentally sharing a global endpoint. The pipe server must additionally
 create the pipe with an ACL restricted to that SID and reject remote clients;
 the name itself is not an authorization boundary.
 
+The client also validates the connected server process before sending bytes:
+`GetNamedPipeServerProcessId` identifies the process, and both its `TokenUser`
+SID and the current process SID must be valid and equal. Any PID, token-query
+or SID failure closes the connection. This mitigates cross-user pipe-name
+squatting; the server must still use first-instance creation because same-user
+processes share the SID.
+
 ## Rime partial-consumption semantics
 
 The translator uses:
@@ -164,9 +178,13 @@ Candidate order is preserved from the service. The plugin does not add Rime
 Ice frequency, an artificial long-token bonus, or a traditional fallback.
 Coverage candidates are merely labelled for UI diagnostics.
 
-The current `EditorContextEpoch` is only an in-process handoff point. The
-actual WeaselServer IPC extension still needs to publish it after forwarding a
-context snapshot successfully. Until that exists, epoch zero is expected.
+`EditorContextEpoch` is now published by the standalone context bridge only
+after the service's health response confirms the exact assigned epoch is
+ready. Local bridge sequences reject stale responses; service epochs
+themselves are not compared across service-process restarts. Secure/failed
+capture resets the local epoch and sends `focus{secure:true}` instead of an
+empty context forward. The actual WeaselServer IPC adapter still needs to
+supply reconstructed snapshots and metadata to that bridge.
 
 ### Loading the translator on Windows
 

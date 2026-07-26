@@ -16,6 +16,14 @@ This file distinguishes implemented and tested behavior from planned integration
 - Asynchronous context updates and revision-addressable immutable snapshots.
 - Per-user Windows named-pipe protocol and client/server implementation.
 - Context redaction helpers and log-safe metadata.
+- Pipe first-instance protection, server-user identity checks, and listener
+  recovery after all persistent instances are occupied.
+- Secure-focus cleanup that invalidates pending/in-flight work and removes all
+  addressable model snapshots before acknowledgement.
+- Bounded multi-token constrained beam core with constraint-before-top-k,
+  canonical token paths, and cache-safe serial replay.
+- Source-level TSF profile discovery and latched Microsoft Pinyin fallback
+  state machine; neither is registered or activated.
 
 ## Verified runtime-independent gates
 
@@ -30,6 +38,9 @@ This file distinguishes implemented and tested behavior from planned integration
 - A 10,000-request persistent Named Pipe stress run at maximum client speed
   completed with zero missing, reordered, or wrong-epoch responses:
   p50 0.287 ms, p95 0.496 ms, p99 0.593 ms, maximum 21.120 ms.
+- 103 Python tests pass, including deterministic worker-exit races, secure
+  context invalidation, pipe squatting, capacity recovery, and 1,000 full-pinyin
+  syllable combinations.
 
 ## Pending GPU/runtime gates
 

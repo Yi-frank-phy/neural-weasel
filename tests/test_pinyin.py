@@ -13,6 +13,18 @@ from neural_weasel.pinyin import (
 )
 
 
+def _known_toneless_syllables() -> list[str]:
+    from pypinyin.constants import PINYIN_DICT
+
+    values: set[str] = set()
+    for readings in PINYIN_DICT.values():
+        for reading in readings.split(","):
+            normalized = reading.split(":", 1)[0].lower().replace("ü", "v").replace("u:", "v")
+            if normalized.isascii() and normalized.isalpha():
+                values.add(normalized)
+    return sorted(values)
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -85,3 +97,20 @@ def test_parse_raw_pinyin_preserves_explicit_boundaries_and_raw_key_positions() 
     assert parsed.explicit_boundaries == frozenset({2})
     assert parsed.raw_characters_for_letters(2) == 3
     assert parsed.raw_characters_for_letters(4) == 5
+
+
+def test_one_thousand_syllable_combinations_preserve_compaction_and_boundaries() -> None:
+    syllables = _known_toneless_syllables()
+    checked = 0
+    for first in syllables:
+        for second in syllables:
+            raw = f"{first}'{second}"
+            parsed = parse_raw_pinyin(raw)
+            assert parsed.compact == first + second
+            assert parsed.explicit_boundaries == frozenset({len(first)})
+            assert parsed.raw_characters_for_letters(len(first)) == len(first) + 1
+            assert parsed.raw_characters_for_letters(len(first + second)) == len(raw)
+            checked += 1
+            if checked == 1000:
+                return
+    raise AssertionError("pypinyin exposed fewer than 1,000 syllable combinations")

@@ -16,8 +16,7 @@ void EditorContextEpoch::Publish(std::uint64_t epoch) noexcept {
 }
 
 void EditorContextEpoch::Reset() noexcept {
-  Publish(0);
+  epoch_.store(0, std::memory_order_release);
 }
 
 }  // namespace neural_weasel::rime_plugin
-

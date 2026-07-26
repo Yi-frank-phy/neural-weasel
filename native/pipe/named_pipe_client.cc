@@ -11,6 +11,17 @@
 namespace neural_weasel::pipe {
 namespace {
 
+bool ReadTokenUserSid(HANDLE token, std::vector<std::uint8_t>* storage) {
+  DWORD required = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &required);
+  if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    return false;
+  }
+  storage->resize(required);
+  return GetTokenInformation(token, TokenUser, storage->data(), required,
+                             &required) != FALSE;
+}
+
 DWORD RemainingMilliseconds(std::chrono::steady_clock::time_point deadline) {
   const auto now = std::chrono::steady_clock::now();
   if (now >= deadline) {
@@ -45,20 +56,12 @@ std::wstring CurrentUserPipeName() {
     return {};
   }
 
-  DWORD required = 0;
-  GetTokenInformation(token, TokenUser, nullptr, 0, &required);
-  if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-    CloseHandle(token);
-    return {};
-  }
-
-  std::vector<std::uint8_t> storage(required);
-  if (!GetTokenInformation(token, TokenUser, storage.data(), required,
-                           &required)) {
-    CloseHandle(token);
-    return {};
-  }
+  std::vector<std::uint8_t> storage;
+  const bool read = ReadTokenUserSid(token, &storage);
   CloseHandle(token);
+  if (!read) {
+    return {};
+  }
 
   const auto* token_user =
       reinterpret_cast<const TOKEN_USER*>(storage.data());
@@ -172,10 +175,74 @@ bool NamedPipeClient::ConnectUntil(Clock::time_point deadline, DWORD* error) {
     return false;
   }
 
+  if (!VerifyServerIdentity(error)) {
+    DisconnectLocked();
+    return false;
+  }
+
   DWORD mode = PIPE_READMODE_BYTE;
   if (!SetNamedPipeHandleState(pipe_, &mode, nullptr, nullptr)) {
     *error = GetLastError();
     DisconnectLocked();
+    return false;
+  }
+  return true;
+}
+
+bool NamedPipeClient::VerifyServerIdentity(DWORD* error) {
+  ULONG server_process_id = 0;
+  if (!GetNamedPipeServerProcessId(pipe_, &server_process_id)) {
+    *error = GetLastError();
+    return false;
+  }
+  if (server_process_id == 0) {
+    *error = ERROR_INVALID_DATA;
+    return false;
+  }
+
+  HANDLE server_process =
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server_process_id);
+  if (server_process == nullptr) {
+    *error = GetLastError();
+    return false;
+  }
+
+  HANDLE server_token = nullptr;
+  if (!OpenProcessToken(server_process, TOKEN_QUERY, &server_token)) {
+    *error = GetLastError();
+    CloseHandle(server_process);
+    return false;
+  }
+
+  HANDLE client_token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &client_token)) {
+    *error = GetLastError();
+    CloseHandle(server_token);
+    CloseHandle(server_process);
+    return false;
+  }
+
+  std::vector<std::uint8_t> server_user;
+  std::vector<std::uint8_t> client_user;
+  const bool read_server = ReadTokenUserSid(server_token, &server_user);
+  const bool read_client = ReadTokenUserSid(client_token, &client_user);
+  CloseHandle(client_token);
+  CloseHandle(server_token);
+  CloseHandle(server_process);
+
+  if (!read_server || !read_client) {
+    *error = ERROR_ACCESS_DENIED;
+    return false;
+  }
+
+  const auto* server_token_user =
+      reinterpret_cast<const TOKEN_USER*>(server_user.data());
+  const auto* client_token_user =
+      reinterpret_cast<const TOKEN_USER*>(client_user.data());
+  if (!IsValidSid(server_token_user->User.Sid) ||
+      !IsValidSid(client_token_user->User.Sid) ||
+      !EqualSid(server_token_user->User.Sid, client_token_user->User.Sid)) {
+    *error = ERROR_ACCESS_DENIED;
     return false;
   }
   return true;

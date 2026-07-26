@@ -39,6 +39,8 @@ struct QueryResult {
 //
 // TryQuery is intentionally fail-fast: it never waits for another caller to
 // release the client mutex, and all pipe I/O shares one absolute deadline.
+// Before sending bytes, a new connection requires the server process TokenUser
+// SID to equal the current process TokenUser SID.
 class NamedPipeClient final {
  public:
   explicit NamedPipeClient(
@@ -58,6 +60,7 @@ class NamedPipeClient final {
   using Clock = std::chrono::steady_clock;
 
   bool ConnectUntil(Clock::time_point deadline, DWORD* error);
+  bool VerifyServerIdentity(DWORD* error);
   bool Transfer(bool write,
                 void* buffer,
                 std::size_t size,

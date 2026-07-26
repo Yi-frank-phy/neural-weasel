@@ -11,11 +11,13 @@ The repository currently contains the independently testable core:
 - token-to-pinyin index with heteronym support;
 - continuous full-pinyin prefix matching and single-character coverage;
 - immutable context-logit snapshots and ranked candidate queries;
+- bounded multi-token constrained-beam core for background expansion;
 - length-prefixed JSON protocol and Windows named-pipe service;
 - CLI commands for index building, prediction, serving, and benchmarking.
 
-The Weasel/librime integration is deliberately a later layer. The Python core must pass
-correctness and latency gates before it is allowed onto the TSF key path.
+The repository also contains a source-level Weasel/librime/TSF integration scaffold.
+It is deliberately not registered or installed until the Python core passes its
+correctness, GPU, and latency gates.
 
 The repository is licensed under GPL-3.0-or-later because the eventual native build
 links into GPLv3-licensed Weasel. Qwen model weights keep their own upstream license and
@@ -62,6 +64,6 @@ Supported:
 Not yet supported:
 
 - double pinyin, abbreviation, fuzzy pinyin, tones, or typo correction;
-- multi-token constrained beam;
-- production Weasel TSF profile and surrounding-text capture;
-- automatic Microsoft Pinyin fallback.
+- wiring multi-token beam results into the background snapshot pipeline;
+- a compiled and registered experimental Weasel TSF profile;
+- an activated automatic Microsoft Pinyin fallback.

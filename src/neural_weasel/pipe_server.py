@@ -12,6 +12,8 @@ from .protocol import MAX_MESSAGE_BYTES, ProtocolError, decode_message, encode_m
 PIPE_PREFIX = r"\\.\pipe\NeuralWeasel-v1-"
 MAX_PINYIN_KEYS = 512
 MAX_CANDIDATES = 50
+MAX_COMMIT_TEXT = 32_768
+IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9._:-]+")
 
 
 class PipeUnavailableError(RuntimeError):
@@ -148,9 +150,27 @@ def _optional_identifier(message: dict[str, Any], key: str) -> str | None:
     value = message.get(key)
     if value is None:
         return None
-    if not isinstance(value, str) or not value or len(value) > 128:
-        raise ProtocolError(f"{key} must be a non-empty string of at most 128 characters")
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or IDENTIFIER_PATTERN.fullmatch(value) is None
+    ):
+        raise ProtocolError(f"{key} must be a valid identifier of at most 128 characters")
     return value
+
+
+def _require_bool(message: dict[str, Any], key: str) -> bool:
+    value = message.get(key)
+    if not isinstance(value, bool):
+        raise ProtocolError(f"{key} must be a boolean")
+    return value
+
+
+def _reject_unknown_fields(message: dict[str, Any], allowed: frozenset[str]) -> None:
+    if not message.keys() <= allowed:
+        # Do not include caller-controlled field names: they may themselves contain private text.
+        raise ProtocolError("message contains unsupported fields")
 
 
 class NamedPipeServer:
@@ -194,20 +214,35 @@ class NamedPipeServer:
     def serve_forever(self) -> None:
         pywintypes, _, win32con, win32file, win32pipe = _win32_modules()
         security_attributes = _current_user_security_attributes()
+        first_instance = True
         while not self._stop_event.is_set():
-            handle = win32pipe.CreateNamedPipe(
-                self.pipe_name,
-                win32pipe.PIPE_ACCESS_DUPLEX,
-                win32pipe.PIPE_TYPE_BYTE
-                | win32pipe.PIPE_READMODE_BYTE
-                | win32pipe.PIPE_WAIT
-                | getattr(win32pipe, "PIPE_REJECT_REMOTE_CLIENTS", 0x8),
-                self.max_instances,
-                65_536,
-                65_536,
-                0,
-                security_attributes,
-            )
+            open_mode = win32pipe.PIPE_ACCESS_DUPLEX
+            if first_instance:
+                # Refuse to start behind a pre-created permissive pipe with the
+                # same predictable SID-derived name.
+                open_mode |= win32pipe.FILE_FLAG_FIRST_PIPE_INSTANCE
+            try:
+                handle = win32pipe.CreateNamedPipe(
+                    self.pipe_name,
+                    open_mode,
+                    win32pipe.PIPE_TYPE_BYTE
+                    | win32pipe.PIPE_READMODE_BYTE
+                    | win32pipe.PIPE_WAIT
+                    | getattr(win32pipe, "PIPE_REJECT_REMOTE_CLIENTS", 0x8),
+                    self.max_instances,
+                    65_536,
+                    65_536,
+                    0,
+                    security_attributes,
+                )
+            except pywintypes.error as error:
+                if not first_instance and error.winerror == 231:  # ERROR_PIPE_BUSY
+                    # All persistent instances are occupied. There is no
+                    # capacity for another listener until one disconnects.
+                    self._stop_event.wait(0.005)
+                    continue
+                raise
+            first_instance = False
             self._listening_event.set()
             try:
                 try:
@@ -270,8 +305,9 @@ class NamedPipeServer:
                 self._client_threads.discard(current)
 
     def handle_message(self, message: dict[str, Any]) -> dict[str, Any]:
-        request_id = message.get("request_id")
+        request_id = None
         try:
+            request_id = _optional_identifier(message, "request_id")
             if not isinstance(message.get("type"), str):
                 raise ProtocolError("type must be a string")
             message_type = message["type"]
@@ -280,6 +316,9 @@ class NamedPipeServer:
                 "context_update": self._handle_context_update,
                 "query_pinyin": self._handle_query_pinyin,
                 "reset": self._handle_reset,
+                "commit": self._handle_commit,
+                "focus": self._handle_focus,
+                "fatal": self._handle_fatal,
             }
             handler = handlers.get(message_type)
             if handler is None:
@@ -362,26 +401,40 @@ class NamedPipeServer:
                 request_id=message.get("request_id"),
                 retryable=True,
             )
-
-        candidates = []
-        for candidate in self.engine.query(raw_pinyin, limit, context_epoch=requested_epoch):
-            value = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
-            value["context_epoch"] = requested_epoch
-            candidates.append(value)
-        if not candidates and requested_epoch > latest_epoch:
+        if requested_epoch == 0:
+            requested_epoch = latest_epoch
+        elif requested_epoch > latest_epoch:
             return _error(
                 "context_not_ready",
                 "requested model context snapshot is not ready",
                 request_id=message.get("request_id"),
                 retryable=True,
             )
+        elif requested_epoch < latest_epoch:
+            has_snapshot = getattr(self.engine, "has_snapshot", None)
+            if callable(has_snapshot) and not has_snapshot(requested_epoch):
+                return _error(
+                    "context_expired",
+                    "requested model context snapshot has expired",
+                    request_id=message.get("request_id"),
+                    retryable=False,
+                )
+
+        candidates = []
+        for candidate in self.engine.query(raw_pinyin, limit, context_epoch=requested_epoch):
+            value = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
+            value["context_epoch"] = requested_epoch
+            candidates.append(value)
         return {
             "type": "candidates",
             "ok": True,
             "session_id": session_id,
             "revision": revision,
             "context_epoch": requested_epoch,
-            "stale": False,
+            # An empty result for an older epoch is ambiguous without an engine
+            # snapshot-membership API. Never claim it is current; callers should
+            # retry against the latest epoch.
+            "stale": not candidates and requested_epoch < latest_epoch,
             "candidates": candidates,
         }
 
@@ -398,4 +451,80 @@ class NamedPipeServer:
             "ok": True,
             "session_id": session_id,
             "context_epoch": int(self.engine.context_epoch),
+        }
+
+    def _handle_commit(self, message: dict[str, Any]) -> dict[str, Any]:
+        _reject_unknown_fields(
+            message,
+            frozenset({"type", "request_id", "session_id", "revision", "text"}),
+        )
+        session_id = _optional_identifier(message, "session_id")
+        if session_id is None:
+            raise ProtocolError("session_id is required")
+        revision = _require_int(message, "revision", 0)
+        text = message.get("text")
+        if not isinstance(text, str) or len(text) > MAX_COMMIT_TEXT:
+            raise ProtocolError(f"text must be a string of at most {MAX_COMMIT_TEXT} characters")
+
+        commit = getattr(self.engine, "commit", None)
+        if callable(commit):
+            commit(text)
+        return {
+            "type": "commit",
+            "ok": True,
+            "accepted": True,
+            "session_id": session_id,
+            "revision": revision,
+        }
+
+    def _handle_focus(self, message: dict[str, Any]) -> dict[str, Any]:
+        _reject_unknown_fields(
+            message,
+            frozenset({"type", "request_id", "session_id", "focused", "secure"}),
+        )
+        session_id = _optional_identifier(message, "session_id")
+        if session_id is None:
+            raise ProtocolError("session_id is required")
+        focused = _require_bool(message, "focused")
+        secure = _require_bool(message, "secure")
+
+        if secure:
+            cleanup_failed = False
+            for method_name in ("reset_private_context", "clear_history"):
+                method = getattr(self.engine, method_name, None)
+                if callable(method):
+                    try:
+                        method()
+                    except Exception:
+                        cleanup_failed = True
+            if cleanup_failed:
+                raise RuntimeError("secure context cleanup failed")
+        return {
+            "type": "focus",
+            "ok": True,
+            "accepted": True,
+            "session_id": session_id,
+            "focused": focused,
+            "secure": secure,
+        }
+
+    def _handle_fatal(self, message: dict[str, Any]) -> dict[str, Any]:
+        _reject_unknown_fields(
+            message,
+            frozenset({"type", "request_id", "session_id", "revision"}),
+        )
+        session_id = _optional_identifier(message, "session_id")
+        if session_id is None:
+            raise ProtocolError("session_id is required")
+        revision = _require_int(message, "revision", 0)
+
+        # This is deliberately only a protocol acknowledgement. System-profile
+        # switching belongs to the native TSF integration, never the model service.
+        return {
+            "type": "fatal",
+            "ok": True,
+            "acknowledged": True,
+            "service_alive": True,
+            "session_id": session_id,
+            "revision": revision,
         }

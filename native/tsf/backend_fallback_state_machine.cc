@@ -45,6 +45,13 @@ BackendFallbackStateMachine::Evaluate(Clock::time_point now,
     return Action::kCancelComposition;
   }
   if (state_ == State::kProfileActivationRequired) {
+    // Composition state can change after the failure was latched but before
+    // the TSF owner thread drives the transition. Never activate another
+    // profile while a Neural Weasel composition is still active.
+    if (composition_active) {
+      state_ = State::kCompositionCancellationRequired;
+      return Action::kCancelComposition;
+    }
     return Action::kActivateFallbackProfile;
   }
   return Action::kNone;

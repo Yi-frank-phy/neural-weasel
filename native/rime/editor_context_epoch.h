@@ -13,6 +13,9 @@ class EditorContextEpoch final {
   static EditorContextEpoch& Instance();
 
   std::uint64_t Load() const noexcept;
+  // Service epochs restart from one after a service process restart. Stale
+  // response rejection therefore belongs to ContextUpdateBridge's local
+  // sequence/generation boundary, not to a numeric max operation here.
   void Publish(std::uint64_t epoch) noexcept;
   void Reset() noexcept;
 
@@ -21,4 +24,3 @@ class EditorContextEpoch final {
 };
 
 }  // namespace neural_weasel::rime_plugin
-

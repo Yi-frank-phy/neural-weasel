@@ -46,6 +46,9 @@ class FakeEngine:
         self.context_epoch = 0
         self.requested_epoch = 0
         self.contexts: dict[int, tuple[str, str]] = {}
+        self.commits: list[str] = []
+        self.private_reset_count = 0
+        self.clear_history_count = 0
 
     def request_context_update(self, before: str, after: str = "") -> int:
         self.requested_epoch += 1
@@ -67,13 +70,27 @@ class FakeEngine:
         limit: int = 5,
         context_epoch: int | None = None,
     ) -> list[FakeCandidate]:
+        if context_epoch is not None and context_epoch not in self.contexts:
+            return []
         before, _ = self.contexts.get(context_epoch or self.context_epoch, ("", ""))
         text = "纠缠" if raw_pinyin == "jiuchan" and "协议" in before else "就餐"
         epoch = context_epoch or self.context_epoch
         return [FakeCandidate(text, raw_pinyin, len(raw_pinyin), -0.25, epoch)][:limit]
 
+    def has_snapshot(self, epoch: int) -> bool:
+        return epoch in self.contexts
+
     def reset(self) -> None:
         self.reset_count += 1
+
+    def commit(self, text: str) -> None:
+        self.commits.append(text)
+
+    def reset_private_context(self) -> None:
+        self.private_reset_count += 1
+
+    def clear_history(self) -> None:
+        self.clear_history_count += 1
 
 
 def _pipe_name() -> str:
@@ -213,6 +230,63 @@ def test_previous_snapshot_is_queryable_while_next_context_updates() -> None:
         server.stop()
 
 
+def test_query_epoch_zero_uses_latest_snapshot_and_future_epoch_waits() -> None:
+    engine = FakeEngine()
+    engine.context_epoch = 3
+    engine.contexts[3] = ("latest", "")
+    server = NamedPipeServer(engine, _pipe_name())
+
+    latest = server.handle_message(
+        {
+            "type": "query_pinyin",
+            "session_id": "s",
+            "revision": 1,
+            "context_epoch": 0,
+            "raw_keys": "ni",
+            "candidate_count": 5,
+        }
+    )
+    assert latest["ok"] is True
+    assert latest["context_epoch"] == 3
+    assert latest["stale"] is False
+
+    future = server.handle_message(
+        {
+            "type": "query_pinyin",
+            "session_id": "s",
+            "revision": 2,
+            "context_epoch": 4,
+            "raw_keys": "ni",
+            "candidate_count": 5,
+        }
+    )
+    assert future["ok"] is False
+    assert future["error"]["code"] == "context_not_ready"
+    assert future["error"]["retryable"] is True
+
+
+def test_expired_historical_epoch_returns_structured_error() -> None:
+    engine = FakeEngine()
+    engine.context_epoch = 5
+    engine.contexts[5] = ("latest", "")
+    server = NamedPipeServer(engine, _pipe_name())
+
+    response = server.handle_message(
+        {
+            "type": "query_pinyin",
+            "session_id": "s",
+            "revision": 1,
+            "context_epoch": 1,
+            "raw_keys": "ni",
+            "candidate_count": 5,
+        }
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "context_expired"
+    assert response["error"]["retryable"] is False
+
+
 def test_validation_errors_are_structured() -> None:
     server = NamedPipeServer(FakeEngine(), _pipe_name())
     server.start()
@@ -250,6 +324,49 @@ def test_pipe_dacl_contains_only_current_user() -> None:
     assert str(win32security.ConvertSidToStringSid(ace[2])) == current_user_sid_string()
 
 
+def test_server_refuses_a_precreated_pipe_with_the_same_name() -> None:
+    import pywintypes
+    import win32file
+    import win32pipe
+
+    pipe_name = _pipe_name()
+    squatter = win32pipe.CreateNamedPipe(
+        pipe_name,
+        win32pipe.PIPE_ACCESS_DUPLEX,
+        win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_READMODE_BYTE | win32pipe.PIPE_WAIT,
+        2,
+        4096,
+        4096,
+        0,
+        None,
+    )
+    try:
+        server = NamedPipeServer(FakeEngine(), pipe_name)
+        with pytest.raises(pywintypes.error) as captured:
+            server.serve_forever()
+        assert captured.value.winerror == 5  # ERROR_ACCESS_DENIED
+    finally:
+        win32file.CloseHandle(squatter)
+
+
+def test_listener_recovers_after_maximum_persistent_connections_disconnect() -> None:
+    server = NamedPipeServer(FakeEngine(), _pipe_name(), max_instances=1)
+    server.start()
+    try:
+        first = NamedPipeClient(server.pipe_name)
+        first.connect()
+        assert server._server_thread is not None
+        assert server._server_thread.is_alive()
+        first.close()
+
+        with NamedPipeClient(server.pipe_name, timeout_ms=1_000) as second:
+            response = second.request({"type": "health"})
+            assert response["ok"] is True
+        assert server._server_thread.is_alive()
+    finally:
+        server.stop()
+
+
 def test_context_failure_does_not_echo_private_text() -> None:
     private_text = "PRIVATE-CONTEXT-MUST-NOT-LEAK"
 
@@ -275,3 +392,158 @@ def test_context_failure_does_not_echo_private_text() -> None:
             assert response["error"]["code"] == "internal_error"
     finally:
         server.stop()
+
+
+def test_commit_calls_engine_without_echoing_text() -> None:
+    private_text = "PRIVATE-COMMIT-MUST-NOT-LEAK"
+    engine = FakeEngine()
+    server = NamedPipeServer(engine, _pipe_name())
+
+    response = server.handle_message(
+        {
+            "type": "commit",
+            "request_id": "commit-1",
+            "session_id": "session-a",
+            "revision": 8,
+            "text": private_text,
+        }
+    )
+
+    assert engine.commits == [private_text]
+    assert response == {
+        "type": "commit",
+        "ok": True,
+        "accepted": True,
+        "session_id": "session-a",
+        "revision": 8,
+        "request_id": "commit-1",
+    }
+    assert private_text not in repr(response)
+
+
+def test_commit_failure_does_not_leak_text_or_exception() -> None:
+    private_text = "PRIVATE-FAILING-COMMIT"
+
+    class FailingCommitEngine(FakeEngine):
+        def commit(self, text: str) -> None:
+            raise RuntimeError(f"failed to commit {text}")
+
+    response = NamedPipeServer(FailingCommitEngine(), _pipe_name()).handle_message(
+        {
+            "type": "commit",
+            "session_id": "session-a",
+            "revision": 1,
+            "text": private_text,
+        }
+    )
+
+    assert response["error"]["code"] == "internal_error"
+    assert private_text not in repr(response)
+
+
+def test_secure_focus_clears_private_state_but_normal_focus_does_not() -> None:
+    engine = FakeEngine()
+    server = NamedPipeServer(engine, _pipe_name())
+
+    normal = server.handle_message(
+        {
+            "type": "focus",
+            "session_id": "session-a",
+            "focused": True,
+            "secure": False,
+        }
+    )
+    assert normal["accepted"] is True
+    assert engine.private_reset_count == 0
+    assert engine.clear_history_count == 0
+
+    secure = server.handle_message(
+        {
+            "type": "focus",
+            "session_id": "session-a",
+            "focused": True,
+            "secure": True,
+        }
+    )
+    assert secure["secure"] is True
+    assert engine.private_reset_count == 1
+    assert engine.clear_history_count == 1
+
+
+def test_fatal_is_only_a_structured_acknowledgement() -> None:
+    engine = FakeEngine()
+    server = NamedPipeServer(engine, _pipe_name())
+
+    response = server.handle_message(
+        {
+            "type": "fatal",
+            "request_id": "fatal-1",
+            "session_id": "session-a",
+            "revision": 9,
+        }
+    )
+
+    assert response == {
+        "type": "fatal",
+        "ok": True,
+        "acknowledged": True,
+        "service_alive": True,
+        "session_id": "session-a",
+        "revision": 9,
+        "request_id": "fatal-1",
+    }
+    assert engine.reset_count == 0
+    assert engine.private_reset_count == 0
+    assert engine.clear_history_count == 0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"type": "commit", "session_id": "s", "revision": True, "text": "secret"},
+        {"type": "commit", "session_id": "s", "revision": 1, "text": 7},
+        {
+            "type": "focus",
+            "session_id": "s",
+            "focused": 1,
+            "secure": False,
+        },
+        {
+            "type": "focus",
+            "session_id": "s",
+            "focused": True,
+            "secure": "false",
+        },
+        {"type": "fatal", "session_id": "s", "revision": False},
+        {
+            "type": "fatal",
+            "session_id": "s",
+            "revision": 1,
+            "PRIVATE-FIELD-NAME": "secret",
+        },
+        {
+            "type": "commit",
+            "request_id": "private text must not be reflected",
+            "session_id": "s",
+            "revision": 1,
+            "text": "secret",
+        },
+        {
+            "type": "focus",
+            "session_id": "private session text",
+            "focused": True,
+            "secure": False,
+        },
+    ],
+)
+def test_lifecycle_messages_strictly_validate_fields_without_leaking_values(
+    message: dict[str, object],
+) -> None:
+    response = NamedPipeServer(FakeEngine(), _pipe_name()).handle_message(message)
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_request"
+    assert "secret" not in repr(response)
+    assert "PRIVATE-FIELD-NAME" not in repr(response)
+    assert "private text" not in repr(response)
+    assert "private session text" not in repr(response)
