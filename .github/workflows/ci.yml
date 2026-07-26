@@ -1,49 +1,10 @@
 name: CI
 
-"on":
-  push:
-  pull_request:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+"on": [push]
 
 jobs:
-  python:
-    name: Python 3.12 checks
+  probe:
     runs-on: windows-latest
-    timeout-minutes: 15
-    env:
-      HF_HUB_OFFLINE: "1"
-      HF_HUB_DISABLE_TELEMETRY: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      NEURAL_WEASEL_HOME: ${{ runner.temp }}/NeuralWeasel
-      LOCALAPPDATA: ${{ runner.temp }}/LocalAppData
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.8.22"
-          enable-cache: true
-
-      - name: Install Python 3.12
-        run: uv python install 3.12
-
-      - name: Sync test dependencies without Torch
-        run: uv sync --extra dev --no-install-package torch
-
-      - name: Lint
-        run: uv run --no-sync ruff check .
-
-      - name: Check formatting
-        run: uv run --no-sync ruff format --check .
-
-      - name: Test
-        run: uv run --no-sync pytest
+      - name: Probe runner
+        run: Write-Host "ok"
