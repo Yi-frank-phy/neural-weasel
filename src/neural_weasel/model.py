@@ -35,6 +35,13 @@ class LogitsSnapshot:
     after_text: str = field(repr=False, default="")
 
 
+@dataclass(slots=True)
+class _ContextCacheState:
+    token_ids: tuple[int, ...]
+    past_key_values: Any
+    logits: np.ndarray
+
+
 def _text_hash(text: str) -> str:
     import hashlib
 
@@ -83,11 +90,72 @@ class QwenBaseBackend:
         verify_model_device_map(self.model)
         require_runtime_headroom(torch)
         self._lock = threading.Lock()
+        self._cache_state_lock = threading.Lock()
+        self._cache_generation = 0
+        self._context_cache: _ContextCacheState | None = None
         self._epoch = 0
+
+    def invalidate_context_cache(self) -> None:
+        """Invalidate cached private context without waiting for a model forward.
+
+        A forward already in progress holds its cache through a local reference.
+        The generation check in ``create_snapshot`` prevents that stale forward
+        from installing the cache again after this method returns.
+        """
+
+        with self._cache_state_lock:
+            self._cache_generation += 1
+            self._context_cache = None
+
+    @staticmethod
+    def _cache_has_length(cache: Any, expected_length: int) -> bool:
+        get_seq_length = getattr(cache, "get_seq_length", None)
+        if not callable(get_seq_length):
+            return False
+        try:
+            return int(get_seq_length()) == expected_length
+        except (TypeError, ValueError, RuntimeError):
+            return False
+
+    def _forward_tokens(
+        self,
+        token_ids: list[int],
+        *,
+        total_length: int,
+        past_key_values: Any | None = None,
+    ) -> tuple[Any, float]:
+        input_ids = self.torch.tensor(
+            [token_ids],
+            dtype=self.torch.long,
+            device="cuda:0",
+        )
+        attention_mask = self.torch.ones(
+            (1, total_length),
+            dtype=self.torch.long,
+            device="cuda:0",
+        )
+        kwargs: dict[str, Any] = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "use_cache": True,
+            "logits_to_keep": 1,
+            "return_dict": True,
+        }
+        if past_key_values is not None:
+            kwargs["past_key_values"] = past_key_values
+
+        self.torch.cuda.synchronize(0)
+        started = time.perf_counter()
+        outputs = self.model(**kwargs)
+        self.torch.cuda.synchronize(0)
+        return outputs, (time.perf_counter() - started) * 1000
 
     def create_snapshot(self, before: str, after: str = "") -> LogitsSnapshot:
         # Base continuation uses raw text before the caret. The after text remains
         # metadata for de-duplication and future FIM experiments.
+        with self._cache_state_lock:
+            call_cache_generation = self._cache_generation
+
         with self._lock, self.torch.inference_mode():
             before_ids = self.tokenizer.encode(before, add_special_tokens=False)[
                 -self.max_before_tokens :
@@ -100,27 +168,70 @@ class QwenBaseBackend:
                 if fallback_id is None:
                     raise ModelPolicyError("tokenizer has no token usable for empty context")
                 before_ids = [fallback_id]
-            input_ids = self.torch.tensor(
-                [before_ids],
-                dtype=self.torch.long,
-                device="cuda:0",
-            )
-            attention_mask = self.torch.ones_like(input_ids)
-            self.torch.cuda.synchronize(0)
-            started = time.perf_counter()
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                use_cache=True,
-                logits_to_keep=1,
-                return_dict=True,
-            )
-            logits = np.asarray(outputs.logits[0, -1].float().cpu().numpy()).copy()
-            logits.flags.writeable = False
-            self.torch.cuda.synchronize(0)
-            elapsed_ms = (time.perf_counter() - started) * 1000
+
+            token_ids = tuple(before_ids)
+            with self._cache_state_lock:
+                if call_cache_generation == self._cache_generation:
+                    cached_state = self._context_cache
+                    # Incremental forwards mutate cache objects in place. Keep
+                    # the shared slot empty until the complete result is ready.
+                    self._context_cache = None
+                else:
+                    cached_state = None
+
+            if cached_state is not None and token_ids == cached_state.token_ids:
+                logits = cached_state.logits
+                past_key_values = cached_state.past_key_values
+                elapsed_ms = 0.0
+            else:
+                can_append = (
+                    cached_state is not None
+                    and cached_state.past_key_values is not None
+                    and len(token_ids) > len(cached_state.token_ids)
+                    and token_ids[: len(cached_state.token_ids)] == cached_state.token_ids
+                    and self._cache_has_length(
+                        cached_state.past_key_values,
+                        len(cached_state.token_ids),
+                    )
+                )
+                if can_append:
+                    suffix_ids = before_ids[len(cached_state.token_ids) :]
+                    try:
+                        outputs, elapsed_ms = self._forward_tokens(
+                            suffix_ids,
+                            total_length=len(before_ids),
+                            past_key_values=cached_state.past_key_values,
+                        )
+                    except Exception:
+                        # Cache updates are in-place and may be partial on any
+                        # exception. Never crop or reset this mixed
+                        # Gated-DeltaNet/KV cache; rebuild from all retained IDs.
+                        cached_state = None
+                        outputs, elapsed_ms = self._forward_tokens(
+                            before_ids,
+                            total_length=len(before_ids),
+                        )
+                else:
+                    outputs, elapsed_ms = self._forward_tokens(
+                        before_ids,
+                        total_length=len(before_ids),
+                    )
+
+                logits = np.asarray(outputs.logits[0, -1].float().cpu().numpy()).copy()
+                logits.flags.writeable = False
+                past_key_values = getattr(outputs, "past_key_values", None)
+
             self._epoch += 1
             require_runtime_headroom(self.torch)
+            new_cache_state = _ContextCacheState(
+                token_ids=token_ids,
+                past_key_values=past_key_values,
+                logits=logits,
+            )
+            with self._cache_state_lock:
+                if call_cache_generation == self._cache_generation:
+                    self._context_cache = new_cache_state
+
             return LogitsSnapshot(
                 epoch=self._epoch,
                 before_hash=_text_hash(before),

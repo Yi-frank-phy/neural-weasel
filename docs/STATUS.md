@@ -38,7 +38,7 @@ This file distinguishes implemented and tested behavior from planned integration
 - A 10,000-request persistent Named Pipe stress run at maximum client speed
   completed with zero missing, reordered, or wrong-epoch responses:
   p50 0.287 ms, p95 0.496 ms, p99 0.593 ms, maximum 21.120 ms.
-- 103 Python tests pass, including deterministic worker-exit races, secure
+- 109 Python tests pass, including deterministic worker-exit races, secure
   context invalidation, pipe squatting, capacity recovery, and 1,000 full-pinyin
   syllable combinations.
 
@@ -55,12 +55,23 @@ This file distinguishes implemented and tested behavior from planned integration
   candidate for context `该协议所消耗的` and pinyin `jiuchan`.
 - Peak CUDA allocation/reservation was 1,471/1,480 MiB, below the 3 GiB gate;
   5,596 MiB remained free on the 8 GiB GPU.
+- Safe append-only cache reuse is implemented only when the old token IDs are
+  an exact prefix of the new token IDs. Equal token sequences reuse logits;
+  tokenizer resegmentation and left-window movement force a full recomputation.
+  No mixed Gated DeltaNet/KV cache is cropped, reset, or deep-copied.
+- A real cached-suffix result matched the full-forward argmax. BF16 operation
+  ordering produced a maximum logit difference of 0.125 and mean difference of
+  approximately 0.02455.
 
 ## Failed or pending runtime gates
 
 - The first 0.8B context forward took 1,489 ms. In a separate six-update warm
   run the measured latencies were 929, 419, 398, 348, 351, and 371 ms. This does
   **not** pass the planned 0.8B p95 target of 100 ms.
+- After adding safe token-prefix cache reuse, a 29-update real append-only run
+  measured p50 99.787 ms, p95 141.319 ms, p99 155.553 ms, and maximum
+  157.403 ms. This is a substantial improvement but still does **not** pass the
+  planned p95 target.
 - Transformers reported that the Qwen3.5 Gated DeltaNet fast path was
   unavailable because optional `flash-linear-attention` / `causal-conv1d`
   components were not installed, so it used the plain PyTorch fallback.

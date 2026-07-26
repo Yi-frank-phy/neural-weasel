@@ -25,6 +25,7 @@ class FakeBackend:
         self.tokenizer = FakeTokenizer()
         self.model_id = "test/base-model"
         self.calls: list[tuple[str, str]] = []
+        self.cache_invalidations = 0
 
     def create_snapshot(self, before: str, after: str = "") -> LogitsSnapshot:
         self.calls.append((before, after))
@@ -37,6 +38,9 @@ class FakeBackend:
             latency_ms=1.0,
             after_text=after,
         )
+
+    def invalidate_context_cache(self) -> None:
+        self.cache_invalidations += 1
 
 
 class BlockingBackend(FakeBackend):
@@ -209,3 +213,4 @@ def test_secure_reset_clears_snapshots_and_discards_inflight_context(make_index)
     assert engine.query("ni", context_epoch=requested_epoch) == []
     assert engine._snapshot is None
     assert not engine._snapshots
+    assert backend.cache_invalidations == 1

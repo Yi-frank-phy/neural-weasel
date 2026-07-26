@@ -148,13 +148,16 @@ class NeuralPinyinEngine:
         """Fail closed when focus enters a secure or protected field.
 
         Incrementing the requested epoch invalidates any forward already in
-        flight. Clearing pending work and every published snapshot ensures no
-        later query can address context captured before the secure transition.
+        flight. Invalidating the backend's cache nonce prevents that forward
+        from retaining private model state after it completes. Clearing pending
+        work and every published snapshot ensures no later query can address
+        context captured before the secure transition.
         """
 
         with self._request_lock:
             self._requested_context_epoch += 1
             self._pending_context = None
+            self.backend.invalidate_context_cache()
         with self._snapshot_lock:
             self._snapshot = None
             self._snapshots.clear()
