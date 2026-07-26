@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 from .gpu import (
     memory_snapshot,
     require_runtime_headroom,
@@ -27,7 +29,7 @@ class LogitsSnapshot:
     epoch: int
     before_hash: str
     after_hash: str
-    logits: tuple[float, ...]
+    logits: np.ndarray
     created_monotonic: float
     latency_ms: float
     after_text: str = field(repr=False, default="")
@@ -112,7 +114,8 @@ class QwenBaseBackend:
                 logits_to_keep=1,
                 return_dict=True,
             )
-            logits = outputs.logits[0, -1].float().cpu()
+            logits = np.asarray(outputs.logits[0, -1].float().cpu().numpy()).copy()
+            logits.flags.writeable = False
             self.torch.cuda.synchronize(0)
             elapsed_ms = (time.perf_counter() - started) * 1000
             self._epoch += 1
@@ -121,7 +124,7 @@ class QwenBaseBackend:
                 epoch=self._epoch,
                 before_hash=_text_hash(before),
                 after_hash=_text_hash(after),
-                logits=tuple(logits.tolist()),
+                logits=logits,
                 created_monotonic=time.monotonic(),
                 latency_ms=elapsed_ms,
                 after_text=self.tokenizer.decode(

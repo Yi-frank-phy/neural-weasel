@@ -26,8 +26,10 @@ class FakeLogits:
     def cpu(self):
         return self
 
-    def tolist(self) -> list[float]:
-        return [0.25, 0.75]
+    def numpy(self):
+        import numpy as np
+
+        return np.asarray([0.25, 0.75], dtype=np.float32)
 
 
 class FakeCuda:
@@ -113,7 +115,8 @@ def test_snapshot_keeps_recent_before_tokens_and_bounded_after_tokens(
 
     assert backend.torch.tensors[0].data == [[3, 4, 5]]
     assert snapshot.after_text == "0,1"
-    assert snapshot.logits == (0.25, 0.75)
+    assert snapshot.logits.tolist() == [0.25, 0.75]
+    assert not snapshot.logits.flags.writeable
     assert snapshot.epoch == 1
     assert backend.model.calls[0]["use_cache"] is True
     assert backend.model.calls[0]["logits_to_keep"] == 1

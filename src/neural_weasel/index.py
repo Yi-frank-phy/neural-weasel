@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .paths import indexes_root
 from .pinyin import ParsedPinyinInput, concatenate_path, is_all_han, pronunciation_paths
 
@@ -36,6 +38,19 @@ class IndexedPronunciation:
             position += len(syllable)
             values.add(position)
         return frozenset(values)
+
+
+@dataclass(frozen=True, slots=True)
+class PinyinQueryGroup:
+    priority: tuple[int, int, int]
+    entries: tuple[IndexedPronunciation, ...]
+    token_ids: np.ndarray | None
+
+
+@dataclass(frozen=True, slots=True)
+class PinyinQueryPlan:
+    raw: str
+    groups: tuple[PinyinQueryGroup, ...]
 
 
 def tokenizer_fingerprint(tokenizer: Any) -> str:
@@ -234,7 +249,9 @@ class PinyinIndex:
         self.path = path
         self.root = _TrieNode()
         self.metadata: dict[str, object] = {}
+        self._query_plans: dict[tuple[str, tuple[int, ...]], PinyinQueryPlan] = {}
         self._load()
+        self.prewarm_prefixes()
 
     def _load(self) -> None:
         connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
@@ -297,6 +314,51 @@ class PinyinIndex:
             results.extend(current.terminals)
             stack.extend(current.children.values())
         return self._apply_explicit_boundaries(results, parsed)
+
+    def query_plan(self, parsed: ParsedPinyinInput) -> PinyinQueryPlan:
+        key = (parsed.compact, tuple(sorted(parsed.explicit_boundaries)))
+        cached = self._query_plans.get(key)
+        if cached is not None:
+            return cached
+
+        grouped: defaultdict[tuple[int, int, int], list[IndexedPronunciation]] = (
+            defaultdict(list)
+        )
+        for entry in self.compatible(parsed):
+            priority = (
+                0 if entry.pinyin == parsed.compact else 1,
+                -entry.syllables,
+                1 if entry.coverage else 0,
+            )
+            grouped[priority].append(entry)
+
+        groups: list[PinyinQueryGroup] = []
+        for priority in sorted(grouped):
+            entries = tuple(grouped[priority])
+            token_ids = None
+            if not priority[2]:
+                token_ids = np.fromiter(
+                    (entry.token_id for entry in entries),
+                    dtype=np.int64,
+                    count=len(entries),
+                )
+                token_ids.flags.writeable = False
+            groups.append(
+                PinyinQueryGroup(
+                    priority=priority,
+                    entries=entries,
+                    token_ids=token_ids,
+                )
+            )
+        plan = PinyinQueryPlan(raw=parsed.compact, groups=tuple(groups))
+        self._query_plans[key] = plan
+        return plan
+
+    def prewarm_prefixes(self, prefixes: str = "abcdefghijklmnopqrstuvwxyz") -> None:
+        from .pinyin import parse_raw_pinyin
+
+        for prefix in prefixes:
+            self.query_plan(parse_raw_pinyin(prefix))
 
     @staticmethod
     def _apply_explicit_boundaries(

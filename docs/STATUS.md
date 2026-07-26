@@ -11,17 +11,29 @@ This file distinguishes implemented and tested behavior from planned integration
 - Continuous full-pinyin token index with heteronyms, explicit apostrophe boundaries,
   incomplete prefixes, and single-character coverage.
 - Model-revision, tokenizer, pypinyin-data, and schema cache invalidation.
-- Cached candidate ranking with no arbitrary pre-ranking top-k truncation.
+- Precompiled pinyin query plans and NumPy exact top-k over the complete legal
+  token set, with no arbitrary pre-ranking truncation.
 - Asynchronous context updates and revision-addressable immutable snapshots.
 - Per-user Windows named-pipe protocol and client/server implementation.
 - Context redaction helpers and log-safe metadata.
 
-## Pending runtime gates
+## Verified runtime-independent gates
 
-- Download and benchmark `Qwen/Qwen3.5-0.8B-Base`.
-- Verify the 0.8B BF16 peak stays below 3 GiB.
-- Build the official tokenizer index and validate 3,500 common characters.
-- Run the 10,000-key stress test.
+- Official `Qwen/Qwen3.5-0.8B-Base` tokenizer index built:
+  102,368 model-token pronunciation rows and 43,026 coverage rows.
+- All 3,755 GB2312 level-1 Han characters are inputtable.
+- On the real 0.8B index with a 248,320-element cached logit vector, 500-query
+  microbenchmarks measured:
+  - `j`: p50 0.191 ms, p95 0.240 ms, p99 0.291 ms;
+  - `jiuc`: p50 0.045 ms, p95 0.084 ms, p99 0.139 ms;
+  - `jiuchan`: p50 0.114 ms, p95 0.151 ms, p99 0.253 ms.
+
+## Pending GPU/runtime gates
+
+- Finish installing CUDA PyTorch and download the 0.8B Base weights.
+- Verify strict CUDA UUID binding and text-only model construction.
+- Measure context-forward latency and confirm 0.8B BF16 peak stays below 3 GiB.
+- Run the end-to-end 10,000-key Pipe stress test.
 
 ## Native integration status
 
@@ -32,4 +44,3 @@ headers/libraries. Those build tools were not present at initial bootstrap.
 
 Do not register the experimental TSF profile until the Python core and named-pipe
 latency gates pass.
-
