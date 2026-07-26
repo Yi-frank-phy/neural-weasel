@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from .gpu import discover_target_gpu, verify_torch_binding
+from .index import (
+    PinyinIndex,
+    PinyinIndexBuilder,
+    default_index_path,
+    resolved_tokenizer_revision,
+    tokenizer_fingerprint,
+)
+from .paths import configure_hf_cache
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="neural-weasel")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("gpu-info", help="verify strict RTX 4060 CUDA isolation")
+
+    build = subparsers.add_parser("build-index", help="build a model-token pinyin index")
+    build.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    build.add_argument("--revision", default="main")
+    build.add_argument("--output", type=Path)
+
+    predict = subparsers.add_parser("predict", help="run one constrained Base-model query")
+    predict.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    predict.add_argument("--index", type=Path)
+    predict.add_argument("--before", required=True)
+    predict.add_argument("--after", default="")
+    predict.add_argument("--pinyin", required=True)
+    predict.add_argument("--limit", type=int, default=5)
+
+    serve = subparsers.add_parser("serve", help="start the per-user Windows named-pipe server")
+    serve.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    serve.add_argument("--index", type=Path)
+
+    simulate = subparsers.add_parser(
+        "simulate",
+        help="interactive candidate simulator; forward once, then query every edited pinyin",
+    )
+    simulate.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    simulate.add_argument("--index", type=Path)
+    simulate.add_argument("--before", required=True)
+    simulate.add_argument("--after", default="")
+
+    benchmark = subparsers.add_parser(
+        "benchmark",
+        help="measure cached pinyin-query latency after one model forward",
+    )
+    benchmark.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    benchmark.add_argument("--index", type=Path)
+    benchmark.add_argument("--before", required=True)
+    benchmark.add_argument("--after", default="")
+    benchmark.add_argument("--pinyin", required=True)
+    benchmark.add_argument("--iterations", type=int, default=1000)
+
+    coverage = subparsers.add_parser(
+        "coverage-check",
+        help="verify all 3,755 GB2312 level-1 characters are inputtable",
+    )
+    coverage.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    coverage.add_argument("--index", type=Path)
+
+    return parser
+
+
+def _load_tokenizer(model_id: str, revision: str = "main"):
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(model_id, revision=revision, use_fast=True)
+
+
+def _resolve_index(model_id: str, explicit: Path | None) -> Path:
+    if explicit:
+        return explicit
+    tokenizer = _load_tokenizer(model_id)
+    return default_index_path(
+        model_id,
+        tokenizer_fingerprint(tokenizer),
+        resolved_tokenizer_revision(tokenizer),
+    )
+
+
+def main() -> int:
+    configure_hf_cache()
+    args = _parser().parse_args()
+    if args.command == "gpu-info":
+        import torch
+
+        isolated = verify_torch_binding(torch)
+        physical = discover_target_gpu()
+        print(
+            json.dumps(
+                {
+                    "name": isolated.name,
+                    "uuid": isolated.uuid,
+                    "physical_index": physical.index,
+                    "memory_total_mib": physical.memory_total_mib,
+                    "memory_free_mib": physical.memory_free_mib,
+                    "torch_cuda": torch.version.cuda,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "build-index":
+        tokenizer = _load_tokenizer(args.model, args.revision)
+        builder = PinyinIndexBuilder(tokenizer, args.model, args.revision)
+        path = builder.build(args.output)
+        index = PinyinIndex(path)
+        print(json.dumps({"path": str(path), "stats": index.stats()}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "coverage-check":
+        from .common_chars import gb2312_level1_characters
+
+        index = PinyinIndex(_resolve_index(args.model, args.index))
+        expected = frozenset(gb2312_level1_characters())
+        covered = index.covered_characters()
+        missing = sorted(expected - covered)
+        print(
+            json.dumps(
+                {
+                    "expected": len(expected),
+                    "covered": len(expected & covered),
+                    "missing_count": len(missing),
+                    "missing": missing[:100],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0 if not missing else 1
+
+    if args.command in {"predict", "serve", "simulate", "benchmark"}:
+        from .engine import NeuralPinyinEngine
+        from .model import QwenBaseBackend
+
+        index_path = _resolve_index(args.model, args.index)
+        if not index_path.exists():
+            print(
+                f"index not found: {index_path}\n"
+                f"run: neural-weasel build-index --model {args.model}",
+                file=sys.stderr,
+            )
+            return 2
+        backend = QwenBaseBackend(args.model)
+        engine = NeuralPinyinEngine(backend, PinyinIndex(index_path))
+
+        if args.command == "predict":
+            snapshot = engine.update_context(args.before, args.after)
+            candidates = engine.query(args.pinyin, args.limit)
+            print(
+                json.dumps(
+                    {
+                        "diagnostics": backend.diagnostics(),
+                        "context_epoch": snapshot.epoch,
+                        "context_latency_ms": round(snapshot.latency_ms, 3),
+                        "candidates": [candidate.to_dict() for candidate in candidates],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+
+        if args.command == "simulate":
+            snapshot = engine.update_context(args.before, args.after)
+            print(
+                f"context epoch {snapshot.epoch}, forward {snapshot.latency_ms:.1f} ms; "
+                "type full pinyin, blank line exits"
+            )
+            while True:
+                try:
+                    raw = input("pinyin> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if not raw:
+                    break
+                candidates = engine.query(raw, 5)
+                for number, candidate in enumerate(candidates, start=1):
+                    score = "-" if candidate.score is None else f"{candidate.score:.3f}"
+                    print(
+                        f"{number}. {candidate.text} [{candidate.pinyin}] "
+                        f"consume={candidate.consumed_keys} score={score}"
+                    )
+            return 0
+
+        if args.command == "benchmark":
+            from .benchmark import benchmark_queries
+
+            snapshot = engine.update_context(args.before, args.after)
+            summary = benchmark_queries(
+                engine,
+                args.pinyin,
+                iterations=args.iterations,
+            )
+            print(
+                json.dumps(
+                    {
+                        "diagnostics": backend.diagnostics(),
+                        "context_latency_ms": round(snapshot.latency_ms, 3),
+                        "query_latency": summary.to_dict(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+
+        from .pipe_server import NamedPipeServer
+
+        NamedPipeServer(engine).serve_forever()
+        return 0
+
+    raise AssertionError(f"unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

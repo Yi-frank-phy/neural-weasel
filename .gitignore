@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+*.py[cod]
+*.pyd
+*.dll
+*.lib
+*.obj
+*.pdb
+build/
+dist/
+
+# Models, generated indexes, private context and runtime logs live outside Git.
+.local-data/
+models/
+indexes/
+logs/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
