@@ -42,11 +42,30 @@ This file distinguishes implemented and tested behavior from planned integration
   context invalidation, pipe squatting, capacity recovery, and 1,000 full-pinyin
   syllable combinations.
 
-## Pending GPU/runtime gates
+## Verified GPU/runtime gates
 
-- Finish installing CUDA PyTorch and download the 0.8B Base weights.
-- Verify strict CUDA UUID binding and text-only model construction.
-- Measure context-forward latency and confirm 0.8B BF16 peak stays below 3 GiB.
+- CUDA PyTorch 2.11.0+cu128 is installed in the project environment.
+- The launcher isolated the process to
+  `NVIDIA GeForce RTX 4060 Laptop GPU`
+  (`GPU-bf42efb8-87be-5177-685f-03af505a60c0`) before importing PyTorch.
+- The official `Qwen/Qwen3.5-0.8B-Base` weight blob was verified against its
+  1,746,942,600-byte size and SHA-256 digest before being admitted to the local
+  Hugging Face cache.
+- A real BF16 text-only forward produced `纠缠` as the first constrained
+  candidate for context `该协议所消耗的` and pinyin `jiuchan`.
+- Peak CUDA allocation/reservation was 1,471/1,480 MiB, below the 3 GiB gate;
+  5,596 MiB remained free on the 8 GiB GPU.
+
+## Failed or pending runtime gates
+
+- The first 0.8B context forward took 1,489 ms. In a separate six-update warm
+  run the measured latencies were 929, 419, 398, 348, 351, and 371 ms. This does
+  **not** pass the planned 0.8B p95 target of 100 ms.
+- Transformers reported that the Qwen3.5 Gated DeltaNet fast path was
+  unavailable because optional `flash-linear-attention` / `causal-conv1d`
+  components were not installed, so it used the plain PyTorch fallback.
+- Do not migrate to the 4B checkpoint or claim production readiness until the
+  background context-refresh bottleneck has a simple, reproducible solution.
 - Repeat the 10,000-key stress test through the compiled C++ translator.
 
 ## Native integration status
