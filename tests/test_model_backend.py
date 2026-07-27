@@ -354,4 +354,3 @@ def test_qwen_runtime_private_invalidation_matches_backend_contract() -> None:
     backend.invalidate_private_state()
 
     assert backend._context_cache is None
-

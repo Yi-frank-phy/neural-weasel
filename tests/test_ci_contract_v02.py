@@ -16,4 +16,3 @@ def test_torch_bound_tests_skip_collection_when_torch_is_absent(test_path: str) 
     source = Path(test_path).read_text(encoding="utf-8")
 
     assert 'pytest.importorskip("torch"' in source
-

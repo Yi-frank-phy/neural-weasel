@@ -33,4 +33,3 @@ Weasel. In particular, stock librime `1.15.0` cannot load external plugin DLLs
 on Windows; the resulting static library must be linked into the experimental
 Weasel build and explicitly loaded. The current files are an integration
 skeleton, not an installer.
-

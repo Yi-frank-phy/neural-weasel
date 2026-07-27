@@ -277,4 +277,3 @@ def constrained_beam_search[StateT](
             )
 
     return sorted(finished.values(), key=_candidate_sort_key)[:limit]
-

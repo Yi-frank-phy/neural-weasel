@@ -124,4 +124,3 @@ def test_model_device_map_accepts_only_explicit_cuda_zero() -> None:
 def test_model_policy_rejects_instruct_checkpoint_before_loading_ml_stack() -> None:
     with pytest.raises(ModelPolicyError, match="Base-only"):
         QwenBaseBackend("Qwen/Qwen3.5-0.8B-Instruct")
-

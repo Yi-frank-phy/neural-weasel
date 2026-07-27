@@ -10,4 +10,3 @@ try {
     Pop-Location
 }
 
-

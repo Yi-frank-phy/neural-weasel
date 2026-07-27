@@ -60,4 +60,3 @@ def make_index(tmp_path: Path):
         return PinyinIndex(path)
 
     return factory
-

@@ -70,4 +70,3 @@ HRESULT DriveFallbackOnce(
     const InputProcessorProfile& fallback_profile);
 
 }  // namespace neural_weasel::tsf
-

@@ -189,4 +189,3 @@ def safe_service_query(
         return query(deadline_ms)
     except (OSError, TimeoutError, ValueError):
         return []
-

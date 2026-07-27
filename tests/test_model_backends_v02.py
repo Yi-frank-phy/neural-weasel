@@ -140,4 +140,3 @@ def test_snapshot_age_is_diagnostic_not_a_rejection(runtime: FakeRuntime) -> Non
 
     assert scores.shape == (1,)
     assert backend.diagnostics()["snapshot_age_ms"] >= 10_000
-

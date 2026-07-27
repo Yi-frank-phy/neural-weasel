@@ -547,4 +547,3 @@ def test_lifecycle_messages_strictly_validate_fields_without_leaking_values(
     assert "PRIVATE-FIELD-NAME" not in repr(response)
     assert "private text" not in repr(response)
     assert "private session text" not in repr(response)
-

@@ -321,4 +321,3 @@ class QwenBaseBackend:
             "gpu_uuid": self.target_gpu.uuid,
             "memory": memory_snapshot(self.torch),
         }
-

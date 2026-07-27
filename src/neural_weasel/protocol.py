@@ -55,4 +55,3 @@ class Revision:
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ProtocolError("invalid session/revision/context_epoch") from error
-

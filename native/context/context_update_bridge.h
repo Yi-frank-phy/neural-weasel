@@ -123,4 +123,3 @@ class ContextUpdateBridge final {
 };
 
 }  // namespace neural_weasel::context
-

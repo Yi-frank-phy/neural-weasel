@@ -317,4 +317,3 @@ def test_rejects_raw_logits_and_out_of_range_token_ids() -> None:
             tokenizer=tokenizer,
             raw_pinyin="ni",
         )
-

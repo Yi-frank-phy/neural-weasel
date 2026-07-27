@@ -77,4 +77,3 @@ def test_revision_parses_wire_values() -> None:
 def test_revision_rejects_missing_or_unparseable_values(message: dict[str, object]) -> None:
     with pytest.raises(ProtocolError, match="invalid session"):
         Revision.from_message(message)
-

@@ -23,4 +23,3 @@ static void rime_ai_translator_finalize() {
 }
 
 RIME_REGISTER_MODULE(ai_translator)
-

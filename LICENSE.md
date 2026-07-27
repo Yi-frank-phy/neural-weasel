@@ -19,4 +19,3 @@ The eventual native input-method build links with the GPLv3-licensed Weasel
 project. This repository therefore uses GPL-3.0-or-later consistently rather
 than applying a conflicting permissive license to that combined work.
 
-

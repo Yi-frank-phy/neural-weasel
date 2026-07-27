@@ -30,4 +30,3 @@ def validate_experimental_manifest(manifest: ProfileInstallManifest) -> None:
         component.casefold() for component in manifest.install_directory.parts
     }:
         raise ValueError("install directory must contain an experimental-profile boundary")
-

@@ -44,4 +44,3 @@ def test_capture_policy_is_fail_closed_on_each_security_signal() -> None:
     assert is_secure_capture(**(base | {"app_id": "VAULT.EXE", "blacklisted_apps": {"vault.exe"}}))
     assert is_secure_capture(**(base | {"secure_desktop": True}))
     assert is_secure_capture(**(base | {"protected_field": True}))
-

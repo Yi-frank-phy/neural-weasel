@@ -214,4 +214,3 @@ def test_secure_reset_clears_snapshots_and_discards_inflight_context(make_index)
     assert engine._snapshot is None
     assert not engine._snapshots
     assert backend.cache_invalidations == 1
-

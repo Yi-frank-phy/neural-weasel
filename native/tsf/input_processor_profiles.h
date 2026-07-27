@@ -66,4 +66,3 @@ HRESULT ActivateEnabledInputProcessorProfile(
     const InputProcessorProfile& profile);
 
 }  // namespace neural_weasel::tsf
-

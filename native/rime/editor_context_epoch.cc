@@ -20,4 +20,3 @@ void EditorContextEpoch::Reset() noexcept {
 }
 
 }  // namespace neural_weasel::rime_plugin
-
