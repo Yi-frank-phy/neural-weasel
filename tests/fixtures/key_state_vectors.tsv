@@ -1,0 +1,13 @@
+# case	mode	intent	has_candidate	candidate_is_completion	candidate_fresh	service_available	expected
+english_space	english	space	1	1	1	1	commit_literal_space
+english_tab	english	tab	1	1	1	1	accept_completion
+english_escape	english	escape	1	1	1	1	dismiss_completion
+english_enter	english	enter	1	1	1	1	commit_literal_enter
+chinese_space	chinese	space	1	0	1	1	commit_selected
+chinese_escape	chinese	escape	1	0	1	1	cancel
+backspace	english	backspace	1	1	1	1	update_literal
+numbered_selection	chinese	numbered_selection	1	0	1	1	commit_numbered
+english_numbered_selection	english	numbered_selection	1	1	1	1	keep_literal
+no_candidate	english	tab	0	0	1	1	keep_literal
+stale_candidate	english	tab	1	1	0	1	keep_literal
+service_failure	english	space	1	1	1	0	commit_literal_space

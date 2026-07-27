@@ -14,10 +14,9 @@ from neural_weasel.profile_manifest import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Regression fixture only: neither value may ever become an allowed mutation
-# target. The Microsoft value is deliberately represented as a non-experimental
-# profile identifier rather than used by runtime fallback selection.
-OFFICIAL_WEASEL_FIXTURE_CLSID = "{3D02CAB6-2B8E-4781-BA20-1C9267529467}"
+# Regression fixtures only: these values may never become mutation targets.
+OFFICIAL_WEASEL_FIXTURE_CLSID = "{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}"
+OFFICIAL_WEASEL_FIXTURE_PROFILE = "{3D02CAB6-2B8E-4781-BA20-1C9267529467}"
 MICROSOFT_PINYIN_FIXTURE_PROFILE = "{F3BA9077-6C7E-11D4-97FA-0080C882687E}"
 
 
@@ -90,8 +89,13 @@ def test_required_powershell_scripts_are_fail_closed() -> None:
     assert EXPERIMENTAL_PROFILE_GUID in combined
     assert "experimental-profile" in combined
     assert "SetDefault" not in install
-    assert "--no-default" in install
+    assert "SetDefaultInputMethod" not in combined
+    assert "ActivateProfile" not in combined
+    assert "--dry-run" in combined
+    assert "build-manifest.json" in install
+    assert "Get-FileHash" in install
     assert OFFICIAL_WEASEL_FIXTURE_CLSID not in combined
+    assert OFFICIAL_WEASEL_FIXTURE_PROFILE not in combined
     assert MICROSOFT_PINYIN_FIXTURE_PROFILE not in combined
     assert "Refusing" in uninstall
 
@@ -105,3 +109,49 @@ def test_uninstall_has_no_identifier_override_parameters() -> None:
     assert "--clsid $ExperimentalClsid" in uninstall
     assert "--profile-guid $ExperimentalProfileGuid" in uninstall
 
+
+def test_experimental_identity_is_consistent_across_all_mutation_boundaries() -> None:
+    header = (ROOT / "native/tsf/experimental_profile_ids.h").read_text(encoding="utf-8")
+    profile_tool = (ROOT / "native/profile_tool/profile_tool.cpp").read_text(encoding="utf-8")
+    bundle = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
+    for path in (
+        ROOT / "scripts/install-dev-profile.ps1",
+        ROOT / "scripts/uninstall-dev-profile.ps1",
+        ROOT / "scripts/diagnose.ps1",
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert EXPERIMENTAL_CLSID in text
+        assert EXPERIMENTAL_PROFILE_GUID in text
+
+    assert EXPERIMENTAL_CLSID in header
+    assert EXPERIMENTAL_PROFILE_GUID in header
+    assert "IsExpectedIdentity" in profile_tool
+    assert "Refusing non-experimental identifier" in profile_tool
+    assert EXPERIMENTAL_CLSID in bundle
+    assert EXPERIMENTAL_PROFILE_GUID in bundle
+
+
+def test_pinned_overlay_rewrites_all_official_runtime_identities() -> None:
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+
+    assert "9cc96e20dc71b80876b12f689bb5863c76c2a7ed" in overlay
+    assert OFFICIAL_WEASEL_FIXTURE_CLSID.strip("{}") in overlay
+    assert OFFICIAL_WEASEL_FIXTURE_PROFILE.strip("{}") in overlay
+    assert "NeuralWeaselExperimentalIPC" in overlay
+    assert "NeuralWeaselServer.exe" in overlay
+    assert "Software\\\\NeuralWeasel\\\\Experimental" in overlay
+    assert "NeuralWeaselExperimentalTSF.dll" in overlay
+    assert "CaptureWeaselContext" in overlay
+    assert "rime_require_module_ai_translator" in overlay
+
+
+def test_ci_runs_disposable_install_safety_suite_without_global_registration() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    safety = (ROOT / "scripts/test-install-safety.ps1").read_text(encoding="utf-8")
+
+    assert "test-install-safety.ps1" in workflow
+    assert "-DryRun" in safety
+    assert "missing TSF DLL" in safety
+    assert "identifier conflict" in safety
+    assert "non-experimental GUID" in safety
+    assert "SetDefault" not in safety
