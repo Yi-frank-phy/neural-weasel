@@ -33,12 +33,16 @@ This file distinguishes implemented and tested behavior from planned integration
 - Fail-closed experimental profile manifest and four required PowerShell entry
   scripts.
 - Measured backend comparison and bilingual replay harnesses, exposed as CLI commands.
-- Current non-Windows run: **136 passed, 21 Windows-only tests skipped**.
+- Last complete non-Windows run before the CI-portability follow-ups:
+  **136 passed, 21 Windows-only tests skipped**. The follow-ups add contract tests
+  and do not change runtime code.
 - Current Linux native check: the pure bilingual key-semantics C++ test compiles and
   runs successfully.
-- Windows CI is configured to compile the native boundaries, librime translator and
-  bilingual processor against fixed librime `1.15.0`; the result must be checked on
-  the branch workflow before treating native compilation as verified.
+- GitHub Actions CI run 21 on the branch is green:
+  - Python 3.12: **149 passed, 3 Torch-bound modules skipped** in the intentionally
+    Torch-free job; lint and format checks passed.
+  - MSVC: native boundaries, librime translator, and bilingual processor compiled
+    against fixed librime `1.15.0`; all native CTest state-machine tests passed.
 
 ## v0.2 implemented but not validated on target hardware
 

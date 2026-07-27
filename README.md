@@ -111,6 +111,11 @@ There is currently no safe end-user installation sequence. In particular:
 The install/uninstall scripts and GUID manifest are safety-tested preparation, not an
 installable release.
 
+The branch CI does compile the repository-owned static librime translator/key
+processor and native state-machine tests with MSVC against librime `1.15.0`. This is
+build evidence for the integration boundary, not evidence that an independent TSF
+profile can be installed.
+
 ## Scope of the tested core
 
 Supported:
