@@ -241,22 +241,22 @@ $SourceDirectories = @(
     'WeaselTSF',
     'WeaselUI'
 )
-$Replacements = [ordered]@{
-    'WeaselNamedPipe' = 'NeuralWeaselExperimentalIPC'
-    'WeaselIPCWindow_1.0' = 'NeuralWeaselExperimentalIPCWindow_1.0'
-    '(WEASEL)Furandōru-Sukāretto-' = '(NEURAL-WEASEL-EXPERIMENTAL)-'
-    'WeaselDeployerExclusiveMutex' = 'NeuralWeaselExperimentalDeployerMutex'
-    'WeaselServer.exe' = '__NEURAL_WEASEL_SERVER_EXE__'
-    'WeaselServer.pdb' = '__NEURAL_WEASEL_SERVER_PDB__'
-    'WeaselDeployer.exe' = 'NeuralWeaselProfileTool.exe'
-    'WeaselTSF Button' = 'Neural Weasel Experimental TSF'
-    'start_service.bat' = 'NeuralWeaselServer.exe'
-    'Software\\Rime\\Weasel' = 'Software\\NeuralWeasel\\Experimental'
-    'Software\\Rime\\weasel' = 'Software\\NeuralWeasel\\Experimental'
-    '%AppData%\\Rime' = '%LOCALAPPDATA%\\NeuralWeasel\\Experimental\\RimeUser'
-    '%TEMP%\\rime.weasel' = '%LOCALAPPDATA%\\NeuralWeasel\\Experimental\\Logs'
-    'rime.weasel' = 'rime.neural_weasel_experimental'
-}
+$Replacements = @(
+    [pscustomobject]@{ Old = 'WeaselNamedPipe'; New = 'NeuralWeaselExperimentalIPC' }
+    [pscustomobject]@{ Old = 'WeaselIPCWindow_1.0'; New = 'NeuralWeaselExperimentalIPCWindow_1.0' }
+    [pscustomobject]@{ Old = '(WEASEL)Furandōru-Sukāretto-'; New = '(NEURAL-WEASEL-EXPERIMENTAL)-' }
+    [pscustomobject]@{ Old = 'WeaselDeployerExclusiveMutex'; New = 'NeuralWeaselExperimentalDeployerMutex' }
+    [pscustomobject]@{ Old = 'WeaselServer.exe'; New = '__NEURAL_WEASEL_SERVER_EXE__' }
+    [pscustomobject]@{ Old = 'WeaselServer.pdb'; New = '__NEURAL_WEASEL_SERVER_PDB__' }
+    [pscustomobject]@{ Old = 'WeaselDeployer.exe'; New = 'NeuralWeaselProfileTool.exe' }
+    [pscustomobject]@{ Old = 'WeaselTSF Button'; New = 'Neural Weasel Experimental TSF' }
+    [pscustomobject]@{ Old = 'start_service.bat'; New = 'NeuralWeaselServer.exe' }
+    [pscustomobject]@{ Old = 'Software\\Rime\\Weasel'; New = 'Software\\NeuralWeasel\\Experimental' }
+    [pscustomobject]@{ Old = 'Software\\Rime\\weasel'; New = 'Software\\NeuralWeasel\\Experimental' }
+    [pscustomobject]@{ Old = '%AppData%\\Rime'; New = '%LOCALAPPDATA%\\NeuralWeasel\\Experimental\\RimeUser' }
+    [pscustomobject]@{ Old = '%TEMP%\\rime.weasel'; New = '%LOCALAPPDATA%\\NeuralWeasel\\Experimental\\Logs' }
+    [pscustomobject]@{ Old = 'rime.weasel'; New = 'rime.neural_weasel_experimental' }
+)
 foreach ($Directory in $SourceDirectories) {
     Get-ChildItem -LiteralPath (Join-Path $ResolvedWeaselRoot $Directory) `
         -File -Recurse |
@@ -264,9 +264,9 @@ foreach ($Directory in $SourceDirectories) {
         ForEach-Object {
             $Content = Read-SourceFile -Path $_.FullName
             $Changed = $false
-            foreach ($Entry in $Replacements.GetEnumerator()) {
-                if ($Content.Contains($Entry.Key)) {
-                    $Content = $Content.Replace($Entry.Key, $Entry.Value)
+            foreach ($Entry in $Replacements) {
+                if ($Content.Contains($Entry.Old)) {
+                    $Content = $Content.Replace($Entry.Old, $Entry.New)
                     $Changed = $true
                 }
             }
