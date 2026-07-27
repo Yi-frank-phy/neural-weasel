@@ -88,3 +88,21 @@ def test_serve_cli_exposes_explicit_backend_selection() -> None:
 
     assert full.backend == "full"
     assert sparse.backend == "sparse"
+
+
+def test_backend_benchmark_cli_is_directly_runnable() -> None:
+    parser = _parser()
+
+    args = parser.parse_args(
+        [
+            "benchmark-backends",
+            "--before",
+            "The protocol is",
+            "--allowed-counts",
+            "8",
+            "32",
+        ]
+    )
+
+    assert args.command == "benchmark-backends"
+    assert args.allowed_counts == [8, 32]
