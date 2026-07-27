@@ -38,6 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="start the per-user Windows named-pipe server")
     serve.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
     serve.add_argument("--index", type=Path)
+    serve.add_argument("--backend", choices=("full", "sparse"), default="full")
 
     simulate = subparsers.add_parser(
         "simulate",
@@ -65,6 +66,25 @@ def _parser() -> argparse.ArgumentParser:
     )
     coverage.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
     coverage.add_argument("--index", type=Path)
+
+    compare = subparsers.add_parser(
+        "benchmark-backends",
+        help="compare full-logits and sparse projection on identical legal tokens",
+    )
+    compare.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    compare.add_argument("--before", required=True)
+    compare.add_argument("--after", default="")
+    compare.add_argument("--allowed-counts", type=int, nargs="+", default=[32, 128, 512])
+    compare.add_argument("--iterations", type=int, default=20)
+
+    replay = subparsers.add_parser(
+        "replay",
+        help="run the minimal bilingual replay fixture on the local Base model",
+    )
+    replay.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    replay.add_argument("--index", type=Path)
+    replay.add_argument("--fixture", type=Path, required=True)
+    replay.add_argument("--backend", choices=("full", "sparse"), default="full")
 
     return parser
 
@@ -139,6 +159,127 @@ def main() -> int:
         )
         return 0 if not missing else 1
 
+    if args.command == "benchmark-backends":
+        from .backend_benchmark import benchmark_backend_pair
+        from .backends import FullLogitsSnapshotBackend, SparseProjectionBackend
+        from .model import QwenBaseBackend
+        from .unified import LatinPrefixConstraint
+
+        runtime = QwenBaseBackend(args.model)
+        latin = LatinPrefixConstraint.from_tokenizer(runtime.tokenizer)
+        legal_token_ids = tuple(
+            dict.fromkeys(
+                completion.token_path[0]
+                for completion in latin.completions
+                if completion.token_path
+            )
+        )
+        if not legal_token_ids:
+            print("tokenizer exposes no legal Latin token candidates", file=sys.stderr)
+            return 2
+        allowed_sets = [
+            legal_token_ids[: min(count, len(legal_token_ids))]
+            for count in args.allowed_counts
+            if count > 0
+        ]
+        if not allowed_sets:
+            print("--allowed-counts must contain a positive value", file=sys.stderr)
+            return 2
+        report = benchmark_backend_pair(
+            FullLogitsSnapshotBackend(runtime),
+            SparseProjectionBackend(runtime),
+            before=args.before,
+            after=args.after,
+            allowed_token_sets=allowed_sets,
+            iterations=args.iterations,
+        )
+        print(
+            json.dumps(
+                {
+                    "model": args.model,
+                    "legal_latin_token_count": len(legal_token_ids),
+                    "diagnostics": runtime.diagnostics(),
+                    "comparison": report.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "replay":
+        import time
+        from dataclasses import replace
+
+        from .model import QwenBaseBackend
+        from .replay import ReplayObservation, load_replay_cases, run_replay
+        from .service_factory import build_bilingual_engine
+
+        index_path = _resolve_index(args.model, args.index)
+        if not index_path.exists():
+            print(
+                f"index not found: {index_path}\n"
+                f"run: neural-weasel build-index --model {args.model}",
+                file=sys.stderr,
+            )
+            return 2
+        runtime = QwenBaseBackend(args.model)
+        engine = build_bilingual_engine(
+            runtime=runtime,
+            index=PinyinIndex(index_path),
+            backend_kind=args.backend,
+        )
+        loaded_cases = load_replay_cases(args.fixture)
+        cases = [
+            replace(case, requested_epoch=index) for index, case in enumerate(loaded_cases, start=1)
+        ]
+        refresh_measurements = []
+
+        def query(case):
+            refresh_started = time.perf_counter()
+            state = engine.update_context(case.context)
+            refresh_measurements.append((time.perf_counter() - refresh_started) * 1000)
+            query_started = time.perf_counter()
+            candidates = engine.query(case.input, 5, context_epoch=state.epoch)
+            query_latency = (time.perf_counter() - query_started) * 1000
+            return ReplayObservation(
+                candidates=candidates,
+                snapshot_age_ms=max(
+                    0.0,
+                    (time.monotonic() - state.created_monotonic) * 1000,
+                ),
+                used_epoch=state.epoch,
+                query_latency_ms=query_latency,
+            )
+
+        # The callback appends one measured refresh before run_replay validates
+        # and summarizes the list, so seed only the contract check here.
+        if not cases:
+            print("replay fixture contains no cases", file=sys.stderr)
+            return 2
+        observations = []
+        for case in cases:
+            observations.append((case, query(case)))
+        observation_by_id = {case.id: observation for case, observation in observations}
+        report = run_replay(
+            cases,
+            lambda case: observation_by_id[case.id],
+            model_refresh_measurements_ms=refresh_measurements,
+        )
+        print(
+            json.dumps(
+                {
+                    "model": args.model,
+                    "backend": args.backend,
+                    "diagnostics": engine.diagnostics(),
+                    "replay": report.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
     if args.command in {"predict", "serve", "simulate", "benchmark"}:
         from .engine import NeuralPinyinEngine
         from .model import QwenBaseBackend
@@ -151,8 +292,22 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        backend = QwenBaseBackend(args.model)
-        engine = NeuralPinyinEngine(backend, PinyinIndex(index_path))
+        runtime = QwenBaseBackend(args.model)
+
+        if args.command == "serve":
+            from .pipe_server import NamedPipeServer
+            from .service_factory import build_bilingual_engine
+
+            engine = build_bilingual_engine(
+                runtime=runtime,
+                index=PinyinIndex(index_path),
+                backend_kind=args.backend,
+            )
+            NamedPipeServer(engine).serve_forever()
+            return 0
+
+        backend = runtime
+        engine = NeuralPinyinEngine(runtime, PinyinIndex(index_path))
 
         if args.command == "predict":
             snapshot = engine.update_context(args.before, args.after)
@@ -215,11 +370,6 @@ def main() -> int:
                 )
             )
             return 0
-
-        from .pipe_server import NamedPipeServer
-
-        NamedPipeServer(engine).serve_forever()
-        return 0
 
     raise AssertionError(f"unhandled command: {args.command}")
 

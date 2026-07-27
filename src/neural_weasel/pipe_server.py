@@ -315,6 +315,7 @@ class NamedPipeServer:
                 "health": self._handle_health,
                 "context_update": self._handle_context_update,
                 "query_pinyin": self._handle_query_pinyin,
+                "query_candidates": self._handle_query_candidates,
                 "reset": self._handle_reset,
                 "commit": self._handle_commit,
                 "focus": self._handle_focus,
@@ -436,6 +437,57 @@ class NamedPipeServer:
             # retry against the latest epoch.
             "stale": not candidates and requested_epoch < latest_epoch,
             "candidates": candidates,
+        }
+
+    def _handle_query_candidates(self, message: dict[str, Any]) -> dict[str, Any]:
+        session_id = _optional_identifier(message, "session_id")
+        if session_id is None:
+            raise ProtocolError("session_id is required")
+        revision = _require_int(message, "revision", 0)
+        requested_epoch = _require_int(message, "context_epoch", 0)
+        raw_keys = message.get("raw_keys")
+        if not isinstance(raw_keys, str) or len(raw_keys) > MAX_PINYIN_KEYS:
+            raise ProtocolError(
+                f"raw_keys must be a string of at most {MAX_PINYIN_KEYS} characters"
+            )
+        limit = _require_int(message, "candidate_count", 1)
+        if limit > MAX_CANDIDATES:
+            raise ProtocolError(f"candidate_count must not exceed {MAX_CANDIDATES}")
+
+        latest_epoch = int(self.engine.context_epoch)
+        if requested_epoch > latest_epoch:
+            return _error(
+                "context_not_ready",
+                "requested model context snapshot is not ready",
+                request_id=message.get("request_id"),
+                retryable=True,
+            )
+        if requested_epoch < latest_epoch:
+            has_snapshot = getattr(self.engine, "has_snapshot", None)
+            if callable(has_snapshot) and not has_snapshot(requested_epoch):
+                return _error(
+                    "context_expired",
+                    "requested model context snapshot has expired",
+                    request_id=message.get("request_id"),
+                    retryable=False,
+                )
+
+        values = []
+        for candidate in self.engine.query(raw_keys, limit, context_epoch=requested_epoch):
+            value = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
+            value["context_epoch"] = requested_epoch
+            values.append(value)
+        context_kind = getattr(self.engine, "context_kind", None)
+        input_mode = context_kind(requested_epoch) if callable(context_kind) else "ambiguous"
+        return {
+            "type": "candidates",
+            "ok": True,
+            "session_id": session_id,
+            "revision": revision,
+            "context_epoch": requested_epoch,
+            "stale": bool(requested_epoch < latest_epoch),
+            "input_mode": input_mode,
+            "candidates": values,
         }
 
     def _handle_reset(self, message: dict[str, Any]) -> dict[str, Any]:

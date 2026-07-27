@@ -51,3 +51,42 @@ jobs:
 
       - name: Test
         run: uv run --no-sync pytest
+
+  native-windows:
+    name: Native Windows boundaries
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check out fixed librime source
+        uses: actions/checkout@v4
+        with:
+          repository: rime/librime
+          ref: 1.15.0
+          path: external/librime
+
+      - name: Install native header dependencies
+        shell: pwsh
+        run: >-
+          vcpkg install
+          nlohmann-json:x64-windows
+          boost-signals2:x64-windows
+          boost-unordered:x64-windows
+
+      - name: Configure native targets
+        shell: pwsh
+        run: |
+          cmake -S native -B build/native -A x64 `
+            -DNEURAL_WEASEL_BUILD_NATIVE_TESTS=ON `
+            -DNEURAL_WEASEL_BUILD_RIME_PLUGIN=ON `
+            -DRIME_ROOT="$env:GITHUB_WORKSPACE/external/librime" `
+            -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build native targets
+        run: cmake --build build/native --config Release
+
+      - name: Run native tests
+        run: ctest --test-dir build/native -C Release --output-on-failure

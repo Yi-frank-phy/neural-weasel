@@ -1,0 +1,5 @@
+{"id":"english-physics","style":"english_theoretical_physics","context":"The receiver-centred placement is operationally","input":"asy","expected":"asymmetric","requested_epoch":2}
+{"id":"chinese-technical","style":"chinese_technical","context":"该协议所消耗的","input":"jiuchan","expected":"纠缠","requested_epoch":3}
+{"id":"mixed-model","style":"mixed_chinese_english","context":"这个模型使用","input":"qwen","expected":"Qwen","requested_epoch":4}
+{"id":"acronym","style":"model_name_acronym","context":"The baseline is","input":"gpt","expected":"GPT-5.6","requested_epoch":5}
+{"id":"rapid-stale","style":"rapid_input","context":"The protocol is","input":"non","expected":"nonlocal","requested_epoch":7}

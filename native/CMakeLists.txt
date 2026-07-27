@@ -63,6 +63,13 @@ target_link_libraries(neural_weasel_context_bridge PUBLIC
   neural_weasel_pipe
 )
 
+add_library(neural_weasel_bilingual_key_semantics STATIC
+  rime/bilingual_key_semantics.cc
+)
+target_include_directories(neural_weasel_bilingual_key_semantics
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   enable_testing()
   add_executable(neural_weasel_context_bridge_test
@@ -94,6 +101,15 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   )
   add_test(NAME neural_weasel_fallback_state_machine_test
            COMMAND neural_weasel_fallback_state_machine_test)
+
+  add_executable(neural_weasel_bilingual_key_semantics_test
+    rime/bilingual_key_semantics_test.cc
+  )
+  target_link_libraries(neural_weasel_bilingual_key_semantics_test PRIVATE
+    neural_weasel_bilingual_key_semantics
+  )
+  add_test(NAME neural_weasel_bilingual_key_semantics_test
+           COMMAND neural_weasel_bilingual_key_semantics_test)
 endif()
 
 if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
@@ -105,16 +121,32 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   endif()
   find_package(nlohmann_json CONFIG REQUIRED)
 
+  # A source-only librime checkout does not contain rime/build_config.h.
+  # Generate the same header that librime's root CMake project would create,
+  # without configuring or building librime and all of its dependencies.
+  set(RIME_DATA_DIR "rime-data")
+  set(RIME_PLUGINS_DIR "rime-plugins")
+  set(RIME_GENERATED_INCLUDE_DIR
+      "${CMAKE_CURRENT_BINARY_DIR}/rime_generated")
+  file(MAKE_DIRECTORY "${RIME_GENERATED_INCLUDE_DIR}/rime")
+  configure_file(
+    "${RIME_ROOT}/src/rime/build_config.h.in"
+    "${RIME_GENERATED_INCLUDE_DIR}/rime/build_config.h"
+  )
+
   # librime 1.15.0 does not implement external plugin loading on Windows.
   # Produce a static integration library which the experimental Weasel build
   # must link and explicitly load before rime_api->initialize().
   add_library(neural_weasel_rime_plugin STATIC
     rime/ai_translator.cc
     rime/ai_translator_module.cc
+    rime/bilingual_key_processor.cc
   )
   target_include_directories(neural_weasel_rime_plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${RIME_GENERATED_INCLUDE_DIR}
     ${RIME_ROOT}/src
+    ${RIME_ROOT}/include
   )
   target_compile_definitions(neural_weasel_rime_plugin PRIVATE
     UNICODE
@@ -124,6 +156,7 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   )
   target_link_libraries(neural_weasel_rime_plugin PUBLIC
     neural_weasel_context_bridge
+    neural_weasel_bilingual_key_semantics
     neural_weasel_pipe
     nlohmann_json::nlohmann_json
   )

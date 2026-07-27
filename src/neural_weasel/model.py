@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .backends import RuntimeSnapshot
 from .gpu import (
     memory_snapshot,
     require_runtime_headroom,
@@ -94,6 +95,69 @@ class QwenBaseBackend:
         self._cache_generation = 0
         self._context_cache: _ContextCacheState | None = None
         self._epoch = 0
+
+    def load(self) -> None:
+        """The constructor performs the strict one-time Qwen load."""
+
+    def full_logits(self, before: str, after: str = "") -> RuntimeSnapshot:
+        snapshot = self.create_snapshot(before, after)
+        return RuntimeSnapshot(
+            payload=snapshot.logits,
+            before_hash=snapshot.before_hash,
+            after_hash=snapshot.after_hash,
+            latency_ms=snapshot.latency_ms,
+        )
+
+    def continuation_hidden(self, before: str, after: str = "") -> RuntimeSnapshot:
+        """Run the Qwen base transformer without the full-vocabulary lm head."""
+
+        with self._lock, self.torch.inference_mode():
+            before_ids = self.tokenizer.encode(before, add_special_tokens=False)[
+                -self.max_before_tokens :
+            ]
+            if not before_ids:
+                fallback_id = self.tokenizer.bos_token_id or self.tokenizer.eos_token_id
+                if fallback_id is None:
+                    raise ModelPolicyError("tokenizer has no token usable for empty context")
+                before_ids = [fallback_id]
+
+            input_ids = self.torch.tensor(
+                [before_ids],
+                dtype=self.torch.long,
+                device="cuda:0",
+            )
+            attention_mask = self.torch.ones(
+                (1, len(before_ids)),
+                dtype=self.torch.long,
+                device="cuda:0",
+            )
+            self.torch.cuda.synchronize(0)
+            started = time.perf_counter()
+            outputs = self.model.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+                return_dict=True,
+            )
+            self.torch.cuda.synchronize(0)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            hidden = outputs.last_hidden_state[0, -1].detach()
+            require_runtime_headroom(self.torch)
+            return RuntimeSnapshot(
+                payload=hidden,
+                before_hash=_text_hash(before),
+                after_hash=_text_hash(after),
+                latency_ms=elapsed_ms,
+            )
+
+    def output_weight(self):
+        return self.model.get_output_embeddings().weight
+
+    def output_bias(self):
+        return getattr(self.model.get_output_embeddings(), "bias", None)
+
+    def invalidate_private_state(self) -> None:
+        self.invalidate_context_cache()
 
     def invalidate_context_cache(self) -> None:
         """Invalidate cached private context without waiting for a model forward.
