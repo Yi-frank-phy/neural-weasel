@@ -5,14 +5,14 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch", reason="backend tensor tests require Torch")
-
 from neural_weasel.backends import (
     FullLogitsSnapshotBackend,
     ModelBackend,
     RuntimeSnapshot,
     SparseProjectionBackend,
 )
+
+torch = pytest.importorskip("torch", reason="backend tensor tests require Torch")
 
 
 @dataclass

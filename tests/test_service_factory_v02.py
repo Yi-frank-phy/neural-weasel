@@ -5,12 +5,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch", reason="sparse service tests require Torch")
-
 from neural_weasel.backends import RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
 from neural_weasel.internal_cli import _parser
 from neural_weasel.service_factory import build_bilingual_engine
+
+torch = pytest.importorskip("torch", reason="sparse service tests require Torch")
 
 
 class FakeTokenizer:
