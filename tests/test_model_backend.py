@@ -308,7 +308,7 @@ class FakeCausalLMWithBase(FakeModel):
         super().__init__()
         self.hidden_vector = FakeHiddenVector()
         self.model = FakeBaseModel(self.hidden_vector)
-        self.output_embedding = object()
+        self.output_embedding = SimpleNamespace(weight=object(), bias=None)
 
     def get_output_embeddings(self):
         return self.output_embedding
@@ -343,7 +343,7 @@ def test_qwen_sparse_runtime_bypasses_full_vocabulary_lm_head(
     assert result.payload is backend.model.hidden_vector
     assert len(backend.model.model.calls) == 1
     assert backend.model.calls == []
-    assert backend.output_weight() is backend.model.output_embedding
+    assert backend.output_weight() is backend.model.output_embedding.weight
 
 
 def test_qwen_runtime_private_invalidation_matches_backend_contract() -> None:
