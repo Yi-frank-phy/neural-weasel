@@ -27,6 +27,7 @@ class ReplayObservation:
     candidates: Sequence[Candidate]
     snapshot_age_ms: float
     used_epoch: int
+    query_latency_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,9 +82,12 @@ def run_replay(
     for case in cases:
         started = time.perf_counter()
         observation = query(case)
-        query_measurements.append((time.perf_counter() - started) * 1000)
         if not isinstance(observation, ReplayObservation):
             raise TypeError("query must return ReplayObservation")
+        measured = (time.perf_counter() - started) * 1000
+        query_measurements.append(
+            observation.query_latency_ms if observation.query_latency_ms is not None else measured
+        )
         observations.append((case, observation))
 
     case_count = len(observations)

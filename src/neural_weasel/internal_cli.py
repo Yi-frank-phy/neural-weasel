@@ -77,6 +77,15 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--allowed-counts", type=int, nargs="+", default=[32, 128, 512])
     compare.add_argument("--iterations", type=int, default=20)
 
+    replay = subparsers.add_parser(
+        "replay",
+        help="run the minimal bilingual replay fixture on the local Base model",
+    )
+    replay.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    replay.add_argument("--index", type=Path)
+    replay.add_argument("--fixture", type=Path, required=True)
+    replay.add_argument("--backend", choices=("full", "sparse"), default="full")
+
     return parser
 
 
@@ -191,6 +200,79 @@ def main() -> int:
                     "legal_latin_token_count": len(legal_token_ids),
                     "diagnostics": runtime.diagnostics(),
                     "comparison": report.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "replay":
+        import time
+        from dataclasses import replace
+
+        from .model import QwenBaseBackend
+        from .replay import ReplayObservation, load_replay_cases, run_replay
+        from .service_factory import build_bilingual_engine
+
+        index_path = _resolve_index(args.model, args.index)
+        if not index_path.exists():
+            print(
+                f"index not found: {index_path}\n"
+                f"run: neural-weasel build-index --model {args.model}",
+                file=sys.stderr,
+            )
+            return 2
+        runtime = QwenBaseBackend(args.model)
+        engine = build_bilingual_engine(
+            runtime=runtime,
+            index=PinyinIndex(index_path),
+            backend_kind=args.backend,
+        )
+        loaded_cases = load_replay_cases(args.fixture)
+        cases = [
+            replace(case, requested_epoch=index) for index, case in enumerate(loaded_cases, start=1)
+        ]
+        refresh_measurements = []
+
+        def query(case):
+            refresh_started = time.perf_counter()
+            state = engine.update_context(case.context)
+            refresh_measurements.append((time.perf_counter() - refresh_started) * 1000)
+            query_started = time.perf_counter()
+            candidates = engine.query(case.input, 5, context_epoch=state.epoch)
+            query_latency = (time.perf_counter() - query_started) * 1000
+            return ReplayObservation(
+                candidates=candidates,
+                snapshot_age_ms=max(
+                    0.0,
+                    (time.monotonic() - state.created_monotonic) * 1000,
+                ),
+                used_epoch=state.epoch,
+                query_latency_ms=query_latency,
+            )
+
+        # The callback appends one measured refresh before run_replay validates
+        # and summarizes the list, so seed only the contract check here.
+        if not cases:
+            print("replay fixture contains no cases", file=sys.stderr)
+            return 2
+        observations = []
+        for case in cases:
+            observations.append((case, query(case)))
+        observation_by_id = {case.id: observation for case, observation in observations}
+        report = run_replay(
+            cases,
+            lambda case: observation_by_id[case.id],
+            model_refresh_measurements_ms=refresh_measurements,
+        )
+        print(
+            json.dumps(
+                {
+                    "model": args.model,
+                    "backend": args.backend,
+                    "diagnostics": engine.diagnostics(),
+                    "replay": report.to_dict(),
                 },
                 ensure_ascii=False,
                 indent=2,
