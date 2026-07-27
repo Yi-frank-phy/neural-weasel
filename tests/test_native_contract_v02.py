@@ -50,7 +50,9 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     assert "NeuralWeaselExperimentalTSF.dll" in (
         ROOT / "scripts/build-windows-bundle.ps1"
     ).read_text(encoding="utf-8")
-    assert "xmake build -y WeaselTSF WeaselServer" in workflow
+    assert 'xmake-version: "3.0.9"' in workflow
+    assert "xmake build -y WeaselTSF" in workflow
+    assert "xmake build -y WeaselServer" in workflow
     assert "neural-weasel-experimental-x64" in workflow
     assert "verify-windows-bundle.py" in workflow
 

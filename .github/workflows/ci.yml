@@ -81,10 +81,10 @@ jobs:
         with:
           arch: x64
 
-      - name: Install xmake 2.9.4
+      - name: Install xmake 3.0.9
         uses: xmake-io/github-action-setup-xmake@v1
         with:
-          xmake-version: "2.9.4"
+          xmake-version: "3.0.9"
 
       - name: Install native header dependencies
         shell: pwsh
@@ -117,10 +117,37 @@ jobs:
             -Value "set BOOST_ROOT=$Boost"
           "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
 
+      - name: Restore pinned native dependency outputs
+        id: native_deps_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ runner.temp }}/boost_1_78_0/stage/lib
+            external/weasel/lib
+            external/weasel/lib64
+            external/weasel/include
+            external/weasel/output/rime.dll
+            external/weasel/output/Win32/rime.dll
+          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v1
+
       - name: Build pinned Boost and Weasel librime dependencies
+        if: steps.native_deps_cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: external/weasel
         run: build.bat boost librime
+
+      - name: Save pinned native dependency outputs
+        if: steps.native_deps_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/boost_1_78_0/stage/lib
+            external/weasel/lib
+            external/weasel/lib64
+            external/weasel/include
+            external/weasel/output/rime.dll
+            external/weasel/output/Win32/rime.dll
+          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v1
 
       - name: Apply isolated experimental Weasel overlay
         shell: pwsh
@@ -157,7 +184,8 @@ jobs:
           VCPKG_ROOT: C:/vcpkg
         run: |
           xmake f -p windows -a x64 -m release -y
-          xmake build -y WeaselTSF WeaselServer
+          xmake build -y WeaselTSF
+          xmake build -y WeaselServer
 
       - name: Assemble hashed installable bundle
         shell: pwsh
