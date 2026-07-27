@@ -128,7 +128,7 @@ jobs:
             -LiteralPath "$env:GITHUB_WORKSPACE/external/weasel/env.bat" `
             -Value @(
               "set BOOST_ROOT=$Boost",
-              'set BJAM_TOOLSET=msvc'
+              'set BJAM_TOOLSET=msvc-14.2'
             )
           "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
 
@@ -145,7 +145,7 @@ jobs:
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v2
+          key: neural-weasel-native-deps-windows-msvc14.2-boost1.78.0-weasel9cc96e2-v3
 
       - name: Bootstrap pinned Boost.Build for current MSVC
         shell: pwsh
@@ -207,7 +207,7 @@ jobs:
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v2
+          key: neural-weasel-native-deps-windows-msvc14.2-boost1.78.0-weasel9cc96e2-v3
 
       - name: Apply isolated experimental Weasel overlay
         shell: pwsh
