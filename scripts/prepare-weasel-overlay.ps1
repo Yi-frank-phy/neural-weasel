@@ -79,6 +79,14 @@ if ($LASTEXITCODE -ne 0 -or $ActualRevision -ne $ExpectedWeaselRevision) {
     throw "Refusing unpinned Weasel tree. Expected $ExpectedWeaselRevision, got $ActualRevision"
 }
 
+$RootXmake = Join-Path $ResolvedWeaselRoot 'xmake.lua'
+Replace-Literal -Path $RootXmake `
+    -Old 'add_includedirs("$(projectdir)/include")' `
+    -New @'
+add_includedirs("$(projectdir)/include")
+add_includedirs("$(projectdir)/librime/src")
+'@
+
 $Globals = Join-Path $ResolvedWeaselRoot 'WeaselTSF/Globals.cpp'
 Replace-RegexOnce -Path $Globals `
     -Pattern '// \{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A\}\s+static const GUID c_clsidTextService = \{.*?\};' `

@@ -74,8 +74,8 @@ def test_context_capture_is_hooked_into_pinned_tsf_without_model_on_edit_thread(
 
     assert "CaptureWeaselContext(pContext, _tfClientId)" in overlay
     assert "ClearWeaselContext" in overlay
+    assert 'add_includedirs("$(projectdir)/librime/src")' in overlay
     assert "TF_ES_ASYNCDONTCARE | TF_ES_READ" in adapter
-    assert "IS_PASSWORD" in adapter
     assert "IS_PASSWORD" in adapter
     assert "IS_PRIVATE" in adapter
     assert "IS_NUMERIC_PASSWORD" in adapter
