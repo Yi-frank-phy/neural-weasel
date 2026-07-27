@@ -121,6 +121,19 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   endif()
   find_package(nlohmann_json CONFIG REQUIRED)
 
+  # A source-only librime checkout does not contain rime/build_config.h.
+  # Generate the same header that librime's root CMake project would create,
+  # without configuring or building librime and all of its dependencies.
+  set(RIME_DATA_DIR "rime-data")
+  set(RIME_PLUGINS_DIR "rime-plugins")
+  set(RIME_GENERATED_INCLUDE_DIR
+      "${CMAKE_CURRENT_BINARY_DIR}/rime_generated")
+  file(MAKE_DIRECTORY "${RIME_GENERATED_INCLUDE_DIR}/rime")
+  configure_file(
+    "${RIME_ROOT}/src/rime/build_config.h.in"
+    "${RIME_GENERATED_INCLUDE_DIR}/rime/build_config.h"
+  )
+
   # librime 1.15.0 does not implement external plugin loading on Windows.
   # Produce a static integration library which the experimental Weasel build
   # must link and explicitly load before rime_api->initialize().
@@ -131,6 +144,7 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   )
   target_include_directories(neural_weasel_rime_plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${RIME_GENERATED_INCLUDE_DIR}
     ${RIME_ROOT}/src
   )
   target_compile_definitions(neural_weasel_rime_plugin PRIVATE
