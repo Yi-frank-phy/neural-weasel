@@ -38,6 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="start the per-user Windows named-pipe server")
     serve.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
     serve.add_argument("--index", type=Path)
+    serve.add_argument("--backend", choices=("full", "sparse"), default="full")
 
     simulate = subparsers.add_parser(
         "simulate",
@@ -151,8 +152,22 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        backend = QwenBaseBackend(args.model)
-        engine = NeuralPinyinEngine(backend, PinyinIndex(index_path))
+        runtime = QwenBaseBackend(args.model)
+
+        if args.command == "serve":
+            from .pipe_server import NamedPipeServer
+            from .service_factory import build_bilingual_engine
+
+            engine = build_bilingual_engine(
+                runtime=runtime,
+                index=PinyinIndex(index_path),
+                backend_kind=args.backend,
+            )
+            NamedPipeServer(engine).serve_forever()
+            return 0
+
+        backend = runtime
+        engine = NeuralPinyinEngine(runtime, PinyinIndex(index_path))
 
         if args.command == "predict":
             snapshot = engine.update_context(args.before, args.after)
@@ -215,11 +230,6 @@ def main() -> int:
                 )
             )
             return 0
-
-        from .pipe_server import NamedPipeServer
-
-        NamedPipeServer(engine).serve_forever()
-        return 0
 
     raise AssertionError(f"unhandled command: {args.command}")
 
