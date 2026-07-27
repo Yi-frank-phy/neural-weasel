@@ -112,9 +112,24 @@ jobs:
               -not (Test-Path -LiteralPath (Join-Path $Boost 'bootstrap.bat'))) {
             throw 'Pinned Boost archive did not produce a complete source tree.'
           }
+          $YamlCMake = Join-Path $env:GITHUB_WORKSPACE `
+            'external/weasel/librime/deps/yaml-cpp/CMakeLists.txt'
+          $YamlContent = Get-Content -LiteralPath $YamlCMake -Raw
+          $YamlOld = 'cmake_minimum_required(VERSION 3.4)'
+          if (-not $YamlContent.Contains($YamlOld)) {
+            throw 'Pinned yaml-cpp compatibility seam changed.'
+          }
+          Set-Content -LiteralPath $YamlCMake -NoNewline `
+            -Value $YamlContent.Replace(
+              $YamlOld,
+              'cmake_minimum_required(VERSION 3.5)'
+            )
           Set-Content `
             -LiteralPath "$env:GITHUB_WORKSPACE/external/weasel/env.bat" `
-            -Value "set BOOST_ROOT=$Boost"
+            -Value @(
+              "set BOOST_ROOT=$Boost",
+              'set BJAM_TOOLSET=msvc'
+            )
           "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
 
       - name: Restore pinned native dependency outputs
@@ -122,13 +137,30 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
+            ${{ runner.temp }}/boost_1_78_0/b2.exe
+            ${{ runner.temp }}/boost_1_78_0/bjam.exe
             ${{ runner.temp }}/boost_1_78_0/stage/lib
             external/weasel/lib
             external/weasel/lib64
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v1
+          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v2
+
+      - name: Bootstrap pinned Boost.Build for current MSVC
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "$env:BOOST_ROOT/b2.exe")) {
+            Push-Location $env:BOOST_ROOT
+            try {
+              ./bootstrap.bat msvc
+              if ($LASTEXITCODE -ne 0) {
+                throw "Boost.Build bootstrap failed with exit code $LASTEXITCODE."
+              }
+            } finally {
+              Pop-Location
+            }
+          }
 
       - name: Build pinned Boost and Weasel librime dependencies
         if: steps.native_deps_cache.outputs.cache-hit != 'true'
@@ -136,18 +168,39 @@ jobs:
         working-directory: external/weasel
         run: build.bat boost librime
 
+      - name: Verify pinned native dependency outputs
+        shell: pwsh
+        run: |
+          $Required = @(
+            "$env:BOOST_ROOT/b2.exe",
+            "$env:GITHUB_WORKSPACE/external/weasel/lib64/rime.lib",
+            "$env:GITHUB_WORKSPACE/external/weasel/output/rime.dll",
+            "$env:GITHUB_WORKSPACE/external/weasel/include/rime_api.h"
+          )
+          foreach ($Path in $Required) {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              throw "Pinned native dependency output is missing: $Path"
+            }
+          }
+          if (-not (Get-ChildItem -LiteralPath "$env:BOOST_ROOT/stage/lib" `
+              -Filter '*.lib' -File -ErrorAction SilentlyContinue)) {
+            throw 'Pinned Boost library output is missing.'
+          }
+
       - name: Save pinned native dependency outputs
         if: steps.native_deps_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
+            ${{ runner.temp }}/boost_1_78_0/b2.exe
+            ${{ runner.temp }}/boost_1_78_0/bjam.exe
             ${{ runner.temp }}/boost_1_78_0/stage/lib
             external/weasel/lib
             external/weasel/lib64
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v1
+          key: neural-weasel-native-deps-windows-msvc14.51-boost1.78.0-weasel9cc96e2-v2
 
       - name: Apply isolated experimental Weasel overlay
         shell: pwsh
