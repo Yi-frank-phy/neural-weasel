@@ -145,10 +145,7 @@ def test_latin_prefix_supports_multitoken_case_hyphen_and_apostrophe() -> None:
         candidate.text == "Qwen3.5"
         for candidate in engine.query("这个模型使用", "qwen", state=state)
     )
-    assert any(
-        candidate.text == "don't"
-        for candidate in engine.query("I", "DON", state=state)
-    )
+    assert any(candidate.text == "don't" for candidate in engine.query("I", "DON", state=state))
 
 
 def test_context_policy_is_asymmetric_and_no_context_is_deterministic() -> None:
@@ -181,7 +178,9 @@ def test_retyping_uses_only_the_current_prefix() -> None:
         ),
     )
 
-    assert any(candidate.text == "asymmetric" for candidate in engine.query("The", "asy", state=state))
+    assert any(
+        candidate.text == "asymmetric" for candidate in engine.query("The", "asy", state=state)
+    )
     retyped = engine.query("The", "non", state=state)
     assert any(candidate.text == "nonlocal" for candidate in retyped)
     assert not any(candidate.text == "asymmetric" for candidate in retyped)

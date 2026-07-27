@@ -14,6 +14,13 @@ class Candidate:
     completes_input: bool
     syllables: int
     token_id: int | None = None
+    constraint_kind: str = "pinyin"
+    script: str = "han"
+    model_score: float | None = None
+    constraint_cost: float = 0.0
+    language_prior: float = 0.0
+    total_score: float = 0.0
+    token_path: tuple[int, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
