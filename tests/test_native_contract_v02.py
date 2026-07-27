@@ -42,3 +42,12 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     assert "NEURAL_WEASEL_BUILD_RIME_PLUGIN=ON" in workflow
     assert "NEURAL_WEASEL_BUILD_NATIVE_TESTS=ON" in workflow
     assert "ctest" in workflow
+
+
+def test_plugin_build_generates_librime_build_config_header() -> None:
+    """AT-WIN-06: source-only librime checkouts receive their generated header."""
+    cmake = (ROOT / "native/CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert "src/rime/build_config.h.in" in cmake
+    assert "configure_file(" in cmake
+    assert "rime_generated" in cmake
