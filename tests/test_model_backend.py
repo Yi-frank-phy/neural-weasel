@@ -274,3 +274,83 @@ def test_cache_invalidation_does_not_wait_and_stale_forward_cannot_reinstall(
     assert not worker.is_alive()
     assert len(result) == 1
     assert backend._context_cache is None
+
+
+class FakeHiddenVector:
+    def detach(self):
+        return self
+
+
+class FakeLastHidden:
+    def __init__(self, vector: FakeHiddenVector) -> None:
+        self.vector = vector
+
+    def __getitem__(self, key):
+        assert key == (0, -1)
+        return self.vector
+
+
+class FakeBaseModel:
+    def __init__(self, vector: FakeHiddenVector) -> None:
+        self.vector = vector
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            last_hidden_state=FakeLastHidden(self.vector),
+            past_key_values=FakeCache(len(kwargs["input_ids"].data[0])),
+        )
+
+
+class FakeCausalLMWithBase(FakeModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hidden_vector = FakeHiddenVector()
+        self.model = FakeBaseModel(self.hidden_vector)
+        self.output_embedding = object()
+
+    def get_output_embeddings(self):
+        return self.output_embedding
+
+
+def test_qwen_runtime_exposes_full_logits_backend_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AT-MB-01/03: the legacy full snapshot remains the correctness runtime."""
+    monkeypatch.setattr(model_module, "require_runtime_headroom", lambda torch: None)
+    backend = make_backend()
+
+    result = backend.full_logits("context", "after")
+
+    assert result.payload.tolist() == [0.25, 0.75]
+    assert result.before_hash
+    assert result.after_hash
+    assert result.latency_ms >= 0
+    assert backend.load() is None
+
+
+def test_qwen_sparse_runtime_bypasses_full_vocabulary_lm_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AT-MB-04: hidden snapshot calls the base model, not CausalLM.forward."""
+    monkeypatch.setattr(model_module, "require_runtime_headroom", lambda torch: None)
+    backend = make_backend()
+    backend.model = FakeCausalLMWithBase()
+
+    result = backend.continuation_hidden("context", "")
+
+    assert result.payload is backend.model.hidden_vector
+    assert len(backend.model.model.calls) == 1
+    assert backend.model.calls == []
+    assert backend.output_weight() is backend.model.output_embedding
+
+
+def test_qwen_runtime_private_invalidation_matches_backend_contract() -> None:
+    """AT-MB-07: generic invalidation clears the Qwen context cache."""
+    backend = make_backend()
+    backend._context_cache = object()
+
+    backend.invalidate_private_state()
+
+    assert backend._context_cache is None
