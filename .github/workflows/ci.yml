@@ -94,15 +94,23 @@ jobs:
           boost-signals2:x64-windows
           boost-unordered:x64-windows
 
-      - name: Resolve runner Boost source
+      - name: Acquire pinned Boost 1.78.0 source
         shell: pwsh
         run: |
-          $Boost = Get-ChildItem Env: |
-            Where-Object { $_.Name -like 'BOOST_ROOT_*' } |
-            Sort-Object Name -Descending |
-            Select-Object -ExpandProperty Value -First 1
-          if (-not $Boost -or -not (Test-Path -LiteralPath (Join-Path $Boost 'boost'))) {
-            throw 'A complete Boost source tree is required for the pinned Weasel build.'
+          $Archive = Join-Path $env:RUNNER_TEMP 'boost_1_78_0.7z'
+          $Boost = Join-Path $env:RUNNER_TEMP 'boost_1_78_0'
+          Invoke-WebRequest `
+            -Uri 'https://archives.boost.io/release/1.78.0/source/boost_1_78_0.7z' `
+            -OutFile $Archive
+          $Expected = '090cefea470bca990fa3f3ed793d865389426915b37a2a3258524a7258f0790c'
+          $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($Actual -ne $Expected) {
+            throw "Boost archive hash mismatch: $Actual"
+          }
+          7z x $Archive "-o$env:RUNNER_TEMP" -y
+          if (-not (Test-Path -LiteralPath (Join-Path $Boost 'boost')) -or
+              -not (Test-Path -LiteralPath (Join-Path $Boost 'bootstrap.bat'))) {
+            throw 'Pinned Boost archive did not produce a complete source tree.'
           }
           "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
 
