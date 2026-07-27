@@ -151,15 +151,22 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path -LiteralPath "$env:BOOST_ROOT/b2.exe")) {
-            Push-Location $env:BOOST_ROOT
+            $Engine = Join-Path $env:BOOST_ROOT 'tools/build/src/engine'
+            Push-Location $Engine
             try {
-              ./bootstrap.bat msvc
+              cmd.exe /d /c 'build.bat msvc'
               if ($LASTEXITCODE -ne 0) {
                 throw "Boost.Build bootstrap failed with exit code $LASTEXITCODE."
               }
             } finally {
               Pop-Location
             }
+            $BuiltB2 = Join-Path $Engine 'b2.exe'
+            if (-not (Test-Path -LiteralPath $BuiltB2 -PathType Leaf)) {
+              throw 'Boost.Build bootstrap did not produce b2.exe.'
+            }
+            Copy-Item -LiteralPath $BuiltB2 `
+              -Destination "$env:BOOST_ROOT/b2.exe" -Force
           }
 
       - name: Build pinned Boost and Weasel librime dependencies

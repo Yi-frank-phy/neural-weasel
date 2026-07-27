@@ -51,7 +51,8 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
         ROOT / "scripts/build-windows-bundle.ps1"
     ).read_text(encoding="utf-8")
     assert 'xmake-version: "3.0.9"' in workflow
-    assert "./bootstrap.bat msvc" in workflow
+    assert "build.bat msvc" in workflow
+    assert "Boost.Build bootstrap did not produce b2.exe" in workflow
     assert "Verify pinned native dependency outputs" in workflow
     assert "external/weasel/lib64/rime.lib" in workflow
     assert "xmake build -y WeaselTSF" in workflow
