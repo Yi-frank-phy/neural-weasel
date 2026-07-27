@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import torch
+import pytest
+
+torch = pytest.importorskip("torch", reason="backend tensor tests require Torch")
 
 from neural_weasel.backend_benchmark import benchmark_backend_pair
 from neural_weasel.backends import (

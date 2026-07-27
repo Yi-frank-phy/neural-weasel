@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch", reason="backend tensor tests require Torch")
 
 from neural_weasel.backends import (
     FullLogitsSnapshotBackend,

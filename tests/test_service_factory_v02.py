@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch", reason="sparse service tests require Torch")
 
 from neural_weasel.backends import RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
