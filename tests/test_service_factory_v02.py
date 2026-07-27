@@ -106,3 +106,20 @@ def test_backend_benchmark_cli_is_directly_runnable() -> None:
 
     assert args.command == "benchmark-backends"
     assert args.allowed_counts == [8, 32]
+
+
+def test_replay_cli_is_directly_runnable() -> None:
+    parser = _parser()
+
+    args = parser.parse_args(
+        [
+            "replay",
+            "--fixture",
+            "benchmarks/replay_v02.jsonl",
+            "--backend",
+            "sparse",
+        ]
+    )
+
+    assert args.command == "replay"
+    assert args.backend == "sparse"
