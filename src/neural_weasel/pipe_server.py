@@ -477,6 +477,8 @@ class NamedPipeServer:
             value = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
             value["context_epoch"] = requested_epoch
             values.append(value)
+        context_kind = getattr(self.engine, "context_kind", None)
+        input_mode = context_kind(requested_epoch) if callable(context_kind) else "ambiguous"
         return {
             "type": "candidates",
             "ok": True,
@@ -484,6 +486,7 @@ class NamedPipeServer:
             "revision": revision,
             "context_epoch": requested_epoch,
             "stale": bool(requested_epoch < latest_epoch),
+            "input_mode": input_mode,
             "candidates": values,
         }
 

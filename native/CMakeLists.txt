@@ -63,6 +63,13 @@ target_link_libraries(neural_weasel_context_bridge PUBLIC
   neural_weasel_pipe
 )
 
+add_library(neural_weasel_bilingual_key_semantics STATIC
+  rime/bilingual_key_semantics.cc
+)
+target_include_directories(neural_weasel_bilingual_key_semantics
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   enable_testing()
   add_executable(neural_weasel_context_bridge_test
@@ -94,6 +101,15 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   )
   add_test(NAME neural_weasel_fallback_state_machine_test
            COMMAND neural_weasel_fallback_state_machine_test)
+
+  add_executable(neural_weasel_bilingual_key_semantics_test
+    rime/bilingual_key_semantics_test.cc
+  )
+  target_link_libraries(neural_weasel_bilingual_key_semantics_test PRIVATE
+    neural_weasel_bilingual_key_semantics
+  )
+  add_test(NAME neural_weasel_bilingual_key_semantics_test
+           COMMAND neural_weasel_bilingual_key_semantics_test)
 endif()
 
 if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
@@ -111,6 +127,7 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   add_library(neural_weasel_rime_plugin STATIC
     rime/ai_translator.cc
     rime/ai_translator_module.cc
+    rime/bilingual_key_processor.cc
   )
   target_include_directories(neural_weasel_rime_plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -124,6 +141,7 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   )
   target_link_libraries(neural_weasel_rime_plugin PUBLIC
     neural_weasel_context_bridge
+    neural_weasel_bilingual_key_semantics
     neural_weasel_pipe
     nlohmann_json::nlohmann_json
   )

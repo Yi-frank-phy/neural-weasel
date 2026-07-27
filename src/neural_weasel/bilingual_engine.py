@@ -78,6 +78,11 @@ class BilingualImeEngine:
     def has_snapshot(self, epoch: int) -> bool:
         return self.coordinator.state_for_epoch(epoch) is not None
 
+    def context_kind(self, epoch: int) -> str:
+        with self._contexts_lock:
+            before, _ = self._contexts.get(epoch, ("", ""))
+        return self.script_policy.classify(before)
+
     @property
     def context_epoch(self) -> int:
         return self.coordinator.context_epoch

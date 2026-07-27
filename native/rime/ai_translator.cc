@@ -6,6 +6,8 @@
 
 #include <nlohmann/json.hpp>
 #include <rime/candidate.h>
+#include <rime/context.h>
+#include <rime/engine.h>
 #include <rime/segmentation.h>
 
 #include "rime/editor_context_epoch.h"
@@ -50,7 +52,7 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
   const std::uint64_t context_epoch = EditorContextEpoch::Instance().Load();
   const std::string request_session_id = std::to_string(session_id_);
   const Json request = {
-      {"type", "query_pinyin"},
+      {"type", "query_candidates"},
       {"session_id", request_session_id},
       {"revision", request_revision},
       {"context_epoch", context_epoch},
@@ -73,6 +75,12 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
         !response["candidates"].is_array()) {
       return nullptr;
     }
+    const std::string input_mode =
+        response.value("input_mode", std::string{"ambiguous"});
+    engine_->context()->set_property("neural_input_mode", input_mode);
+    if (engine_->context()->get_option("_neural_completion_suppressed")) {
+      return nullptr;
+    }
 
     auto translation = ::rime::New<::rime::FifoTranslation>();
     std::size_t accepted = 0;
@@ -88,8 +96,15 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
         continue;
       }
 
+      const std::string constraint_kind =
+          item.value("constraint_kind", std::string{});
+      const std::string candidate_type =
+          constraint_kind == "literal"
+              ? "neural_literal"
+              : constraint_kind == "latin_prefix" ? "neural_latin"
+                                                   : "neural_pinyin";
       auto candidate = ::rime::New<::rime::SimpleCandidate>(
-          "ai", segment.start, segment.start + consumed,
+          candidate_type, segment.start, segment.start + consumed,
           item["text"].get<std::string>(), CandidateComment(item));
       if (item.contains("score") && item["score"].is_number()) {
         candidate->set_quality(item["score"].get<double>());
