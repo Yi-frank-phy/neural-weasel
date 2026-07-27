@@ -2,6 +2,80 @@
 
 This file distinguishes implemented and tested behavior from planned integration work.
 
+## v0.2 implemented and tested
+
+- Specification-first contract in:
+  - `docs/specs/v0.2-testable-bilingual-ime.md`;
+  - `docs/specs/v0.2-acceptance-tests.md`;
+  - `docs/architecture/unified-constraint-engine.md`.
+- Every v0.2 feature group has a separate failing-test commit before its feature
+  commit.
+- Minimal `ModelBackend` protocol with immutable state, diagnostics, private-state
+  invalidation, full-logits CPU indexing, and sparse selected-row lm-head projection.
+- Qwen runtime adapters for both paths. The sparse adapter calls the base transformer
+  (`model.model`) and does not produce a complete vocabulary logit vector.
+- Full/sparse deterministic top-1, top-k set, and score-consistency tests.
+- Unified Candidate fields, one ranking/de-duplication path, pinyin constraint, Latin
+  prefix constraint, and asymmetric context script policy.
+- English-context Han candidates are hard rejected even when assigned a higher model
+  score.
+- Chinese context permits Latin candidates; no proper-name whitelist is used.
+- Literal-safe key reducers in Python and native C++:
+  - English `Space` commits literal plus a space;
+  - `Tab` explicitly accepts completion;
+  - `Escape` dismisses completion while preserving literal text;
+  - Chinese `Space` remains Rime-default candidate acceptance.
+- Retained immutable snapshot epochs and a background coordinator. Candidate query
+  never calls context refresh/model forward and can use the old epoch while a new
+  epoch is in flight.
+- Unified `query_candidates` pipe protocol while retaining the v0.1
+  `query_pinyin` handler for regression compatibility.
+- Fail-closed experimental profile manifest and four required PowerShell entry
+  scripts.
+- Measured backend comparison and bilingual replay harnesses, exposed as CLI commands.
+- Current non-Windows run: **136 passed, 21 Windows-only tests skipped**.
+- Current Linux native check: the pure bilingual key-semantics C++ test compiles and
+  runs successfully.
+- Windows CI is configured to compile the native boundaries, librime translator and
+  bilingual processor against fixed librime `1.15.0`; the result must be checked on
+  the branch workflow before treating native compilation as verified.
+
+## v0.2 implemented but not validated on target hardware
+
+- Real Qwen sparse hidden-state publication and selected-row projection.
+- Real full/sparse latency, GPU memory, publication latency, and numerical tolerance
+  comparison.
+- Real bilingual replay using either backend.
+
+The required commands exist, but this environment does not expose the user's RTX 4060
+Laptop GPU or cached model. No v0.2 performance numbers are claimed.
+
+## v0.2 partial/scaffold only
+
+- `scripts/install-dev-profile.ps1` and
+  `scripts/uninstall-dev-profile.ps1` validate and target only the reserved
+  experimental identity and directory.
+- The scripts require `NeuralWeaselExperimentalTSF.dll` and
+  `NeuralWeaselProfileTool.exe`, neither of which is produced by this branch.
+- Existing context capture, pipe client, Rime translator, fallback state machine, and
+  profile planning remain source-level integration boundaries.
+
+## v0.2 not implemented
+
+- A consistently isolated Weasel 0.17.4 fork producing the experimental TSF DLL,
+  WeaselServer, RimeWithWeasel module, renamed IPC endpoint, and profile tool.
+- Installation, manual profile switching, Chinese/English editor smoke tests, and
+  uninstall verification in a Windows test user or VM.
+- Live conditional Base-model sequence scoring for cross-token English words. The
+  shared representation and tests support multi-token paths, but the live tokenizer
+  catalog currently emits only one-token completions and uses the selected next-token
+  score.
+- Candidate refresh notification from a completed asynchronous multi-token English
+  expansion.
+
+These omissions mean the branch does **not** meet the requested “user can install and
+start typing” completion condition and must not be described as such.
+
 ## Implemented in the repository
 
 - Python 3.12 project and reproducible `uv.lock`.
@@ -63,7 +137,7 @@ This file distinguishes implemented and tested behavior from planned integration
   ordering produced a maximum logit difference of 0.125 and mean difference of
   approximately 0.02455.
 
-## Failed or pending runtime gates
+## Historical v0.1 runtime observations
 
 - The first 0.8B context forward took 1,489 ms. In a separate six-update warm
   run the measured latencies were 929, 419, 398, 348, 351, and 371 ms. This does
@@ -72,20 +146,17 @@ This file distinguishes implemented and tested behavior from planned integration
   measured the full snapshot-ready path (GPU forward plus immutable CPU logit
   copy) at p50 98.031 ms, p95 135.565 ms, p99 160.248 ms, and maximum
   164.536 ms. This is a substantial improvement but still does **not** pass the
-  planned p95 target.
+  former p95 target.
 - Transformers reported that the Qwen3.5 Gated DeltaNet fast path was
   unavailable because optional `flash-linear-attention` / `causal-conv1d`
   components were not installed, so it used the plain PyTorch fallback.
-- Do not migrate to the 4B checkpoint or claim production readiness until the
-  background context-refresh bottleneck has a simple, reproducible solution.
+- v0.2 records these refresh times but no longer treats p95 under 100 ms as a
+  release gate. Candidate quality under stale snapshots is the relevant replay metric.
 - Repeat the 10,000-key stress test through the compiled C++ translator.
 
 ## Native integration status
 
-The `native/` tree is an experimental source scaffold. It is not installed into the
-system and does not replace the existing Weasel profile. Building it requires the
-Visual Studio C++ workload, CMake, the exact Weasel 0.17.4 source tree, and librime
-headers/libraries. Those build tools were not present at initial bootstrap.
-
-Do not register the experimental TSF profile until the Python core and named-pipe
-latency gates pass.
+The `native/` tree does not replace the existing Weasel profile. Its standalone CMake
+boundaries and librime plugin are compiled by Windows CI, but a safe independent
+Weasel fork remains missing. Do not register an official Weasel binary under the
+experimental identifiers.
