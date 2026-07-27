@@ -248,7 +248,17 @@ class NamedPipeServer:
                 try:
                     win32pipe.ConnectNamedPipe(handle, None)
                 except pywintypes.error as error:
-                    if error.winerror != 535:  # ERROR_PIPE_CONNECTED
+                    if error.winerror == 535:  # ERROR_PIPE_CONNECTED
+                        pass
+                    elif error.winerror == 232:  # ERROR_NO_DATA
+                        # A client can connect and close between CreateNamedPipe
+                        # and ConnectNamedPipe. The instance is no longer
+                        # reusable, but the listener itself must stay alive.
+                        win32file.CloseHandle(handle)
+                        if self._stop_event.is_set():
+                            break
+                        continue
+                    else:
                         raise
                 if self._stop_event.is_set():
                     win32file.CloseHandle(handle)
