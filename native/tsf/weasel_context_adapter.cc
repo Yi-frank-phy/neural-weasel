@@ -85,8 +85,8 @@ CapturePolicyDecision ClassifyInputScope(ITfContext* context,
   }
 
   ITfProperty* property = nullptr;
-  PROPVARIANT value;
-  PropVariantInit(&value);
+  VARIANT value;
+  VariantInit(&value);
   const HRESULT property_result =
       context->GetProperty(GUID_PROP_INPUTSCOPE, &property);
   HRESULT value_result = E_FAIL;
@@ -111,7 +111,11 @@ CapturePolicyDecision ClassifyInputScope(ITfContext* context,
         for (UINT index = 0; index < count; ++index) {
           sensitive =
               sensitive || scopes[index] == IS_PASSWORD ||
-              scopes[index] == IS_PIN;
+              scopes[index] == IS_PRIVATE ||
+              scopes[index] == IS_NUMERIC_PASSWORD ||
+              scopes[index] == IS_NUMERIC_PIN ||
+              scopes[index] == IS_ALPHANUMERIC_PIN ||
+              scopes[index] == IS_ALPHANUMERIC_PIN_SET;
         }
       }
       CoTaskMemFree(scopes);
@@ -119,7 +123,7 @@ CapturePolicyDecision ClassifyInputScope(ITfContext* context,
     }
   }
 
-  PropVariantClear(&value);
+  VariantClear(&value);
   SafeRelease(property);
   SafeRelease(selection.range);
   if (sensitive) {

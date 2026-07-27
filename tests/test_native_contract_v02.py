@@ -74,6 +74,10 @@ def test_context_capture_is_hooked_into_pinned_tsf_without_model_on_edit_thread(
     assert "ClearWeaselContext" in overlay
     assert "TF_ES_ASYNCDONTCARE | TF_ES_READ" in adapter
     assert "IS_PASSWORD" in adapter
-    assert "IS_PIN" in adapter
+    assert "IS_PASSWORD" in adapter
+    assert "IS_PRIVATE" in adapter
+    assert "IS_NUMERIC_PASSWORD" in adapter
+    assert "IS_NUMERIC_PIN" in adapter
+    assert "IS_ALPHANUMERIC_PIN" in adapter
     assert "ContextUpdateBridge" in adapter
     assert "all pipe I/O" in bridge
