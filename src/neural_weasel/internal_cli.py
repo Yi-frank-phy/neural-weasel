@@ -67,6 +67,16 @@ def _parser() -> argparse.ArgumentParser:
     coverage.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
     coverage.add_argument("--index", type=Path)
 
+    compare = subparsers.add_parser(
+        "benchmark-backends",
+        help="compare full-logits and sparse projection on identical legal tokens",
+    )
+    compare.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    compare.add_argument("--before", required=True)
+    compare.add_argument("--after", default="")
+    compare.add_argument("--allowed-counts", type=int, nargs="+", default=[32, 128, 512])
+    compare.add_argument("--iterations", type=int, default=20)
+
     return parser
 
 
@@ -139,6 +149,54 @@ def main() -> int:
             )
         )
         return 0 if not missing else 1
+
+    if args.command == "benchmark-backends":
+        from .backend_benchmark import benchmark_backend_pair
+        from .backends import FullLogitsSnapshotBackend, SparseProjectionBackend
+        from .model import QwenBaseBackend
+        from .unified import LatinPrefixConstraint
+
+        runtime = QwenBaseBackend(args.model)
+        latin = LatinPrefixConstraint.from_tokenizer(runtime.tokenizer)
+        legal_token_ids = tuple(
+            dict.fromkeys(
+                completion.token_path[0]
+                for completion in latin.completions
+                if completion.token_path
+            )
+        )
+        if not legal_token_ids:
+            print("tokenizer exposes no legal Latin token candidates", file=sys.stderr)
+            return 2
+        allowed_sets = [
+            legal_token_ids[: min(count, len(legal_token_ids))]
+            for count in args.allowed_counts
+            if count > 0
+        ]
+        if not allowed_sets:
+            print("--allowed-counts must contain a positive value", file=sys.stderr)
+            return 2
+        report = benchmark_backend_pair(
+            FullLogitsSnapshotBackend(runtime),
+            SparseProjectionBackend(runtime),
+            before=args.before,
+            after=args.after,
+            allowed_token_sets=allowed_sets,
+            iterations=args.iterations,
+        )
+        print(
+            json.dumps(
+                {
+                    "model": args.model,
+                    "legal_latin_token_count": len(legal_token_ids),
+                    "diagnostics": runtime.diagnostics(),
+                    "comparison": report.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
 
     if args.command in {"predict", "serve", "simulate", "benchmark"}:
         from .engine import NeuralPinyinEngine
