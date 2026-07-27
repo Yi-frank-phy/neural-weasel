@@ -32,3 +32,13 @@ def test_processor_has_no_model_or_pipe_dependency() -> None:
     assert "NamedPipeClient" not in source
     assert "TryQuery" not in source
     assert "model" not in source.casefold()
+
+
+def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
+    """Release evidence requires a real MSVC compile, not source inspection."""
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "native-windows" in workflow
+    assert "NEURAL_WEASEL_BUILD_RIME_PLUGIN=ON" in workflow
+    assert "NEURAL_WEASEL_BUILD_NATIVE_TESTS=ON" in workflow
+    assert "ctest" in workflow
