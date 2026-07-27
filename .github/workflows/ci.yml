@@ -112,6 +112,9 @@ jobs:
               -not (Test-Path -LiteralPath (Join-Path $Boost 'bootstrap.bat'))) {
             throw 'Pinned Boost archive did not produce a complete source tree.'
           }
+          Set-Content `
+            -LiteralPath "$env:GITHUB_WORKSPACE/external/weasel/env.bat" `
+            -Value "set BOOST_ROOT=$Boost"
           "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
 
       - name: Build pinned Boost and Weasel librime dependencies
