@@ -164,3 +164,4 @@ The `native/` tree does not replace the existing Weasel profile. Its standalone 
 boundaries and librime plugin are compiled by Windows CI, but a safe independent
 Weasel fork remains missing. Do not register an official Weasel binary under the
 experimental identifiers.
+

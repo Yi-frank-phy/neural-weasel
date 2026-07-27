@@ -144,3 +144,4 @@ def require_runtime_headroom(
         raise GpuBindingError(
             f"VRAM headroom {snapshot['free_mib']} MiB is below required {minimum_free_mib} MiB"
         )
+

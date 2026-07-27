@@ -102,3 +102,4 @@ def benchmark_backend_pair(
         memory=dict(memory) if isinstance(memory, dict) else {},
         queries=tuple(rows),
     )
+

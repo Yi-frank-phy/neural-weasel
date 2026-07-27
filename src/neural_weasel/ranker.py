@@ -101,3 +101,4 @@ def rank_candidates(
             if len(results) >= limit:
                 return results
     return results
+

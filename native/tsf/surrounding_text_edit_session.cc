@@ -192,3 +192,4 @@ HRESULT RequestSurroundingText(ITfContext* context,
 }
 
 }  // namespace neural_weasel::tsf
+

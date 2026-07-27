@@ -99,3 +99,4 @@ def pronunciation_paths(text: str, max_paths: int = 256) -> tuple[tuple[str, ...
 
 def concatenate_path(path: Iterable[str]) -> str:
     return "".join(path)
+

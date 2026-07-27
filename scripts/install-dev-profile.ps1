@@ -43,3 +43,4 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host 'Installed 神经小狼毫（实验） without changing the default input method.'
 Write-Host 'Switch to it manually from the Windows input-method list.'
+

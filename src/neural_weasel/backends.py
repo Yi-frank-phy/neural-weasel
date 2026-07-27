@@ -197,3 +197,4 @@ class SparseProjectionBackend(_SnapshotBackend):
                 if bias is not None:
                     scores = scores + bias.index_select(0, index)
         return np.asarray(scores.float().cpu().numpy(), dtype=np.float32)
+

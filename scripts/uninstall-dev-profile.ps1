@@ -26,3 +26,4 @@ if (Test-Path -LiteralPath $InstallRoot -PathType Container) {
 }
 
 Write-Host 'Removed only the 神经小狼毫（实验） development profile.'
+

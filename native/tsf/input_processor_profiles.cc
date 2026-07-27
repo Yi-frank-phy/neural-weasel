@@ -195,3 +195,4 @@ HRESULT ActivateEnabledInputProcessorProfile(
 }
 
 }  // namespace neural_weasel::tsf
+

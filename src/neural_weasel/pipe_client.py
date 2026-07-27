@@ -109,3 +109,4 @@ class NamedPipeClient:
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         self.close()
+

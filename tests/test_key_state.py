@@ -90,3 +90,4 @@ def test_backspace_to_empty_returns_to_idle() -> None:
     assert transition.state.is_idle
     assert transition.state.literal == ""
     assert transition.state.candidates == ()
+

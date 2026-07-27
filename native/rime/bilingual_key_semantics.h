@@ -30,3 +30,4 @@ KeyOutcome ResolveKeyOutcome(InputMode mode,
                             bool has_completion) noexcept;
 
 }  // namespace neural_weasel::rime_plugin
+

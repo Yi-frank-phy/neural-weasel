@@ -79,3 +79,4 @@ HRESULT RequestSurroundingText(ITfContext* context,
                                SnapshotCallback callback);
 
 }  // namespace neural_weasel::tsf
+

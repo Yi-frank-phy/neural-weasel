@@ -57,3 +57,4 @@ def benchmark_queries(
         p99_ms=_percentile(samples, 0.99),
         maximum_ms=max(samples),
     )
+

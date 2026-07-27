@@ -309,3 +309,4 @@ def test_wide_prefix_does_not_drop_highest_logit_after_arbitrary_cap(make_index)
     )
 
     assert candidates[0].token_id == 5001
+

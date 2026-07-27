@@ -104,3 +104,4 @@ def test_uninstall_has_no_identifier_override_parameters() -> None:
     assert "[string]$ProfileGuid" not in uninstall
     assert "--clsid $ExperimentalClsid" in uninstall
     assert "--profile-guid $ExperimentalProfileGuid" in uninstall
+

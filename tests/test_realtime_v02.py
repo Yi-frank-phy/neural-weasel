@@ -130,3 +130,4 @@ def test_private_invalidation_clears_published_state() -> None:
     assert coordinator.query("", "literal")[0].text == "literal"
     assert runtime.invalidations == 1
     assert state.epoch == 1
+

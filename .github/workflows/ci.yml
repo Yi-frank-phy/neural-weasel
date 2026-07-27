@@ -90,3 +90,4 @@ jobs:
 
       - name: Run native tests
         run: ctest --test-dir build/native -C Release --output-on-failure
+

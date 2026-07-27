@@ -145,3 +145,4 @@ def run_replay(
         stale_snapshot_query_count=stale_queries,
         stale_snapshot_error_count=stale_errors,
     )
+

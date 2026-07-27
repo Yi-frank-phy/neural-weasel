@@ -26,3 +26,4 @@ def build_bilingual_engine(
         pinyin_constraint=PinyinConstraint(index),
         latin_prefix_constraint=LatinPrefixConstraint.from_tokenizer(runtime.tokenizer),
     )
+

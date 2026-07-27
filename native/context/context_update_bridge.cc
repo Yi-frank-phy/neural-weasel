@@ -509,3 +509,4 @@ void ContextUpdateBridge::SetResult(ContextUpdateResult result) noexcept {
 }
 
 }  // namespace neural_weasel::context
+

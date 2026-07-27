@@ -150,3 +150,4 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
         )
 
     raise ValueError(f"unsupported key action: {action}")
+

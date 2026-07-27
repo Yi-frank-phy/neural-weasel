@@ -165,6 +165,15 @@ def test_context_policy_is_asymmetric_and_no_context_is_deterministic() -> None:
     assert policy.language_prior("chinese", Script.LATIN, "QWEN") == 0.0
 
 
+def test_chinese_latin_penalty_is_fixed_configurable_and_not_margin_driven() -> None:
+    default_policy = ContextScriptPolicy()
+    configured_policy = ContextScriptPolicy(chinese_latin_penalty=-0.5)
+
+    assert default_policy.language_prior("chinese", Script.LATIN, "qwen") == -0.35
+    assert configured_policy.language_prior("chinese", Script.LATIN, "qwen") == -0.5
+    assert configured_policy.language_prior("chinese", Script.LATIN, "Qwen3.5") == 0.0
+
+
 def test_retyping_uses_only_the_current_prefix() -> None:
     """AT-EN-06: Latin constraint has no hidden composition history."""
     backend, state = make_backend({1: 3.0, 2: 2.0})

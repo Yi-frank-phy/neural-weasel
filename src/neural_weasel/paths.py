@@ -25,3 +25,4 @@ def indexes_root() -> Path:
     path = data_root() / "indexes"
     path.mkdir(parents=True, exist_ok=True)
     return path
+

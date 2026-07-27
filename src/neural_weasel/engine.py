@@ -173,3 +173,4 @@ class NeuralPinyinEngine:
     def context_epoch(self) -> int:
         with self._snapshot_lock:
             return self._snapshot.epoch if self._snapshot else 0
+

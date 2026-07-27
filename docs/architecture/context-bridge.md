@@ -161,3 +161,4 @@ then simulates a service restart and verifies that ready epoch 1 replaces a
 previous-process epoch 100. The secure snapshot contains sentinel private text;
 neither sentinel may appear in any request, and the cleanup request contains
 no `before` or `after` fields.
+

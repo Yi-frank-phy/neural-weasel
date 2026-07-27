@@ -127,3 +127,4 @@ def test_replay_rejects_fixed_or_missing_measurements(tmp_path: Path) -> None:
 def test_fixture_is_valid_json_lines() -> None:
     for line in FIXTURE.read_text(encoding="utf-8").splitlines():
         assert isinstance(json.loads(line), dict)
+

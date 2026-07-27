@@ -112,3 +112,4 @@ def is_secure_capture(
         or normalized_app in normalized_blacklist
         or bool(SECURE_INPUT_SCOPES.intersection(input_scopes))
     )
+

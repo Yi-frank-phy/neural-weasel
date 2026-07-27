@@ -30,3 +30,4 @@ class AiTranslator final : public ::rime::Translator {
 };
 
 }  // namespace neural_weasel::rime_plugin
+

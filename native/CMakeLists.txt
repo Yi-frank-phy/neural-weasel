@@ -161,3 +161,4 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
     nlohmann_json::nlohmann_json
   )
 endif()
+

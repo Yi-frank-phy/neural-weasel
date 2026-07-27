@@ -14,3 +14,4 @@ class BilingualKeyProcessor final : public ::rime::Processor {
 };
 
 }  // namespace neural_weasel::rime_plugin
+

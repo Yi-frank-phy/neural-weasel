@@ -124,3 +124,4 @@ def test_replay_cli_is_directly_runnable() -> None:
 
     assert args.command == "replay"
     assert args.backend == "sparse"
+

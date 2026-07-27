@@ -25,3 +25,4 @@ KeyOutcome ResolveKeyOutcome(InputMode mode,
 }
 
 }  // namespace neural_weasel::rime_plugin
+

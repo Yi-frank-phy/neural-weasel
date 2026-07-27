@@ -320,3 +320,4 @@ void NamedPipeClient::DisconnectLocked() {
 }
 
 }  // namespace neural_weasel::pipe
+

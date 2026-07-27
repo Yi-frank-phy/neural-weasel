@@ -580,3 +580,4 @@ class NamedPipeServer:
             "session_id": session_id,
             "revision": revision,
         }
+

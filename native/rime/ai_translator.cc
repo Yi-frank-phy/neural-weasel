@@ -122,3 +122,4 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
 }
 
 }  // namespace neural_weasel::rime_plugin
+

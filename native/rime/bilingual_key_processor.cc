@@ -89,3 +89,4 @@ bool IsCompletion(const ::rime::an<::rime::Candidate>& candidate) {
 }
 
 }  // namespace neural_weasel::rime_plugin
+

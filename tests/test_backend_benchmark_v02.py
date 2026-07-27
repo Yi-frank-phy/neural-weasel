@@ -69,3 +69,4 @@ def test_backend_benchmark_records_consistency_latency_and_memory() -> None:
         assert row["max_abs_score_error"] <= 1e-4
         assert row["full_query_ms_p50"] > 0
         assert row["sparse_query_ms_p50"] > 0
+

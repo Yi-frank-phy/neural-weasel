@@ -24,3 +24,4 @@ class EditorContextEpoch final {
 };
 
 }  // namespace neural_weasel::rime_plugin
+

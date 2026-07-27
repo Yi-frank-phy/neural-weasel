@@ -139,3 +139,4 @@ Not yet supported:
   service (the current live tokenizer catalog is one-token);
 - a compiled, registered, and smoke-tested independent Weasel TSF profile;
 - an activated automatic Microsoft Pinyin fallback.
+

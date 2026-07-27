@@ -54,3 +54,4 @@ def test_plugin_build_generates_librime_build_config_header() -> None:
     assert "configure_file(" in cmake
     assert "rime_generated" in cmake
     assert "${RIME_ROOT}/include" in cmake
+

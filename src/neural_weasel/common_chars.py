@@ -21,3 +21,4 @@ def gb2312_level1_characters() -> tuple[str, ...]:
     if len(characters) != 3755:
         raise RuntimeError(f"unexpected GB2312 level-1 character count: {len(characters)}")
     return tuple(characters)
+

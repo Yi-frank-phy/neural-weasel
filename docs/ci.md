@@ -45,3 +45,4 @@ created:
 uv run --no-sync ruff check .
 uv run --no-sync pytest
 ```
+

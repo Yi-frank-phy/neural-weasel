@@ -114,3 +114,4 @@ def test_one_thousand_syllable_combinations_preserve_compaction_and_boundaries()
             if checked == 1000:
                 return
     raise AssertionError("pypinyin exposed fewer than 1,000 syllable combinations")
+

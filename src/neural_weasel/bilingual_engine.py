@@ -103,3 +103,4 @@ class BilingualImeEngine:
 
     def diagnostics(self) -> dict[str, object]:
         return self.coordinator.diagnostics()
+

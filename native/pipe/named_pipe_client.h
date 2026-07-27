@@ -75,3 +75,4 @@ class NamedPipeClient final {
 };
 
 }  // namespace neural_weasel::pipe
+
