@@ -4,8 +4,12 @@ namespace neural_weasel::rime_plugin {
 
 KeyOutcome ResolveKeyOutcome(InputMode mode,
                             KeyIntent intent,
-                            bool has_completion) noexcept {
-  if (mode != InputMode::kEnglish) {
+                            bool has_completion,
+                            bool candidate_fresh,
+                            bool service_available) noexcept {
+  has_completion =
+      has_completion && candidate_fresh && service_available;
+  if (mode != InputMode::kEnglish && !has_completion) {
     return KeyOutcome::kUseRimeDefault;
   }
   switch (intent) {
@@ -18,11 +22,14 @@ KeyOutcome ResolveKeyOutcome(InputMode mode,
       return KeyOutcome::kDismissCompletion;
     case KeyIntent::kEnter:
       return KeyOutcome::kCommitLiteralAndForwardEnter;
+    case KeyIntent::kBackspace:
     case KeyIntent::kOther:
       return KeyOutcome::kUseRimeDefault;
+    case KeyIntent::kNumberedSelection:
+      return mode == InputMode::kEnglish ? KeyOutcome::kKeepLiteral
+                                         : KeyOutcome::kUseRimeDefault;
   }
   return KeyOutcome::kUseRimeDefault;
 }
 
 }  // namespace neural_weasel::rime_plugin
-

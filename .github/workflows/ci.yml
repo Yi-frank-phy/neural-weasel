@@ -15,7 +15,7 @@ jobs:
   python:
     name: Python 3.12 checks
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       HF_HUB_OFFLINE: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
@@ -49,24 +49,42 @@ jobs:
       - name: Check formatting
         run: uv run --no-sync ruff format --check .
 
-      - name: Test
+      - name: Run Python and install-safety tests
         run: uv run --no-sync pytest
 
-  native-windows:
-    name: Native Windows boundaries
+  windows-vertical-slice:
+    name: Windows experimental artifact bundle
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check out fixed librime source
+      - name: Check out pinned Weasel 0.17.4 tree
+        uses: actions/checkout@v4
+        with:
+          repository: rime/weasel
+          ref: 9cc96e20dc71b80876b12f689bb5863c76c2a7ed
+          path: external/weasel
+          submodules: recursive
+
+      - name: Check out fixed librime headers for boundary targets
         uses: actions/checkout@v4
         with:
           repository: rime/librime
           ref: 1.15.0
-          path: external/librime
+          path: external/librime-boundary
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install xmake 2.9.4
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: "2.9.4"
 
       - name: Install native header dependencies
         shell: pwsh
@@ -76,18 +94,86 @@ jobs:
           boost-signals2:x64-windows
           boost-unordered:x64-windows
 
-      - name: Configure native targets
+      - name: Resolve runner Boost source
+        shell: pwsh
+        run: |
+          $Boost = Get-ChildItem Env: |
+            Where-Object { $_.Name -like 'BOOST_ROOT_*' } |
+            Sort-Object Name -Descending |
+            Select-Object -ExpandProperty Value -First 1
+          if (-not $Boost -or -not (Test-Path -LiteralPath (Join-Path $Boost 'boost'))) {
+            throw 'A complete Boost source tree is required for the pinned Weasel build.'
+          }
+          "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
+
+      - name: Build pinned Boost and Weasel librime dependencies
+        shell: cmd
+        working-directory: external/weasel
+        run: build.bat boost librime
+
+      - name: Apply isolated experimental Weasel overlay
+        shell: pwsh
+        run: |
+          ./scripts/prepare-weasel-overlay.ps1 `
+            -WeaselRoot "$env:GITHUB_WORKSPACE/external/weasel"
+
+      - name: Configure repository native targets
         shell: pwsh
         run: |
           cmake -S native -B build/native -A x64 `
             -DNEURAL_WEASEL_BUILD_NATIVE_TESTS=ON `
             -DNEURAL_WEASEL_BUILD_RIME_PLUGIN=ON `
-            -DRIME_ROOT="$env:GITHUB_WORKSPACE/external/librime" `
+            -DNEURAL_WEASEL_BUILD_PROFILE_TOOL=ON `
+            -DRIME_ROOT="$env:GITHUB_WORKSPACE/external/librime-boundary" `
             -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
-      - name: Build native targets
-        run: cmake --build build/native --config Release
+      - name: Build repository native targets
+        run: cmake --build build/native --config Release --parallel
 
-      - name: Run native tests
+      - name: Run native CTest suite
         run: ctest --test-dir build/native -C Release --output-on-failure
 
+      - name: Build experimental TSF, server, and static neural module
+        shell: pwsh
+        working-directory: external/weasel
+        env:
+          VERSION_MAJOR: "0"
+          VERSION_MINOR: "17"
+          VERSION_PATCH: "4"
+          FILE_VERSION: "0.17.4.0"
+          PRODUCT_VERSION: "0.17.4-neural-experimental"
+          NEURAL_WEASEL_ROOT: ${{ github.workspace }}
+          VCPKG_ROOT: C:/vcpkg
+        run: |
+          xmake f -p windows -a x64 -m release -y
+          xmake build -y WeaselTSF WeaselServer
+
+      - name: Assemble hashed installable bundle
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-bundle.ps1 `
+            -WeaselRoot "$env:GITHUB_WORKSPACE/external/weasel" `
+            -NativeBuildRoot "$env:GITHUB_WORKSPACE/build/native" `
+            -RepositoryCommit "$env:GITHUB_SHA"
+
+      - name: Verify binary and resource isolation
+        shell: pwsh
+        run: |
+          python scripts/verify-windows-bundle.py `
+            dist/neural-weasel-experimental
+
+      - name: Exercise fail-closed install and uninstall dry runs
+        shell: pwsh
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}/NeuralWeaselLocalAppData
+        run: |
+          ./scripts/test-install-safety.ps1 `
+            -BundleRoot ./dist/neural-weasel-experimental
+
+      - name: Upload complete Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: neural-weasel-experimental-x64
+          path: dist/neural-weasel-experimental
+          if-no-files-found: error
+          retention-days: 14

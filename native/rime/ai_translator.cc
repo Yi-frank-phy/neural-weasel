@@ -1,7 +1,6 @@
 #include "rime/ai_translator.h"
 
 #include <algorithm>
-#include <exception>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -47,30 +46,33 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
   if (!segment.HasTag("abc") || input.empty()) {
     return nullptr;
   }
-
-  const std::uint64_t request_revision = ++revision_;
-  const std::uint64_t context_epoch = EditorContextEpoch::Instance().Load();
-  const std::string request_session_id = std::to_string(session_id_);
-  const Json request = {
-      {"type", "query_candidates"},
-      {"session_id", request_session_id},
-      {"revision", request_revision},
-      {"context_epoch", context_epoch},
-      {"raw_keys", input},
-      {"candidate_count", kCandidateCount},
-  };
-
-  auto result = pipe_.TryQuery(request.dump(), query_timeout_);
-  if (!result) {
-    return nullptr;
-  }
+  engine_->context()->set_property("neural_candidate_fresh", "0");
 
   try {
+    const std::uint64_t request_revision = ++revision_;
+    const std::uint64_t context_epoch = EditorContextEpoch::Instance().Load();
+    const std::string request_session_id = std::to_string(session_id_);
+    const Json request = {
+        {"type", "query_candidates"},
+        {"session_id", request_session_id},
+        {"revision", request_revision},
+        {"context_epoch", context_epoch},
+        {"raw_keys", input},
+        {"candidate_count", kCandidateCount},
+    };
+
+    auto result = pipe_.TryQuery(request.dump(), query_timeout_);
+    if (!result) {
+      return nullptr;
+    }
+
     const Json response = Json::parse(result.payload);
     if (response.value("type", "") != "candidates" ||
         response.value("session_id", std::string{}) != request_session_id ||
         response.value("revision", std::uint64_t{0}) != request_revision ||
-        response.value("context_epoch", std::uint64_t{0}) != context_epoch ||
+        !IsResponseEpochAcceptable(
+            context_epoch,
+            response.value("context_epoch", std::uint64_t{0})) ||
         !response.contains("candidates") ||
         !response["candidates"].is_array()) {
       return nullptr;
@@ -115,11 +117,11 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
     if (accepted == 0) {
       return nullptr;
     }
+    engine_->context()->set_property("neural_candidate_fresh", "1");
     return translation;
-  } catch (const std::exception&) {
+  } catch (...) {
     return nullptr;
   }
 }
 
 }  // namespace neural_weasel::rime_plugin
-

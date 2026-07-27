@@ -57,9 +57,7 @@ class BilingualImeEngine:
         limit: int = 5,
         context_epoch: int | None = None,
     ) -> list[Candidate]:
-        if context_epoch is None:
-            state = self.coordinator.latest_state
-        elif context_epoch == 0:
+        if context_epoch is None or context_epoch == 0:
             state = self.coordinator.latest_state
         else:
             state = self.coordinator.state_for_epoch(context_epoch)

@@ -14,6 +14,8 @@ enum class KeyIntent {
   kTab,
   kEscape,
   kEnter,
+  kBackspace,
+  kNumberedSelection,
 };
 
 enum class KeyOutcome {
@@ -27,7 +29,8 @@ enum class KeyOutcome {
 
 KeyOutcome ResolveKeyOutcome(InputMode mode,
                             KeyIntent intent,
-                            bool has_completion) noexcept;
+                            bool has_completion,
+                            bool candidate_fresh = true,
+                            bool service_available = true) noexcept;
 
 }  // namespace neural_weasel::rime_plugin
-

@@ -2,9 +2,9 @@
 
 ## Safety boundary
 
-The native code in `native/tsf/` is a compile-oriented integration skeleton.
-It does not register or unregister a TSF service, edit COM registry keys,
-activate a profile during tests, or alter the installed Weasel profile.
+The planner in `native/tsf/` remains read-only. The separate profile tool is the
+only mutating boundary; CI invokes it only in dry-run mode and never alters an
+installed profile.
 
 The reserved experimental identifiers are:
 
@@ -24,11 +24,9 @@ return one of:
 - `kUnregisterExperimentalProfile` when exactly that profile is present;
 - `kConflict` when only one reserved identifier has been reused.
 
-There is intentionally no executor. A future installer must separately
-implement COM server registration, profile registration and rollback, then
-call `ITfInputProcessorProfileMgr::RegisterProfile` or `UnregisterProfile`.
-That executor must refuse any CLSID/profile GUID other than the reserved pair
-and must never use Weasel's official identifiers.
+`NeuralWeaselProfileTool.exe` implements per-user COM, category, and profile
+registration/unregistration. It refuses any CLSID/profile GUID other than the
+reserved pair and verifies the TSF DLL identity exports.
 
 ## Microsoft Pinyin selection
 
@@ -126,11 +124,9 @@ No fallback test should invoke `DriveFallbackOnce()` with a real profile
 manager outside an isolated VM/test user. Unit tests should drive the pure
 state machine and use a fake activation boundary.
 
-## Build risks not yet verified
+## Remaining manual risks
 
-This workstation currently has no `cmake`, MSVC `cl`, `clang-cl`, or MinGW
-compiler on `PATH`, so the new C++ files have not been compiled. The remaining
-risks are:
+Windows CI provides compilation evidence. The remaining interactive risks are:
 
 - the selected Windows SDK must expose
   `IID_ITfInputProcessorProfileMgr`, `GUID_TFCAT_TIP_KEYBOARD` and the Vista+
@@ -143,10 +139,8 @@ risks are:
   and TSF owner thread;
 - profile descriptions vary by Windows display language, so discovery aliases
   need verification on the user's installation;
-- the future installer must implement COM registration and category
-  registration in addition to the profile-layer plan represented here.
+- profile visibility, DLL unload, and unregister cleanup must be verified in a
+  disposable Windows user or VM.
 
-The first native verification should compile these files with the same Visual
-Studio toolset and Windows SDK used by the Weasel `0.17.4` fork, then enumerate
-profiles in a read-only diagnostic executable before any mutation code exists.
-
+The next verification step is the isolated manual smoke test, including
+read-only diagnosis before registration and complete removal afterward.

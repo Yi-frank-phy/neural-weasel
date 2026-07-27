@@ -33,13 +33,22 @@ KeyIntent IntentFor(const ::rime::KeyEvent& event) {
     case XK_Return:
     case XK_KP_Enter:
       return KeyIntent::kEnter;
+    case XK_BackSpace:
+      return KeyIntent::kBackspace;
     default:
+      if (event.keycode() >= XK_1 && event.keycode() <= XK_9) {
+        return KeyIntent::kNumberedSelection;
+      }
       return KeyIntent::kOther;
   }
 }
 
 bool IsCompletion(const ::rime::an<::rime::Candidate>& candidate) {
   return candidate && candidate->type() == "neural_latin";
+}
+
+bool IsNeuralCandidate(const ::rime::an<::rime::Candidate>& candidate) {
+  return candidate && candidate->type().rfind("neural_", 0) == 0;
 }
 
 }  // namespace
@@ -61,8 +70,27 @@ bool IsCompletion(const ::rime::an<::rime::Candidate>& candidate) {
   }
 
   auto selected = context->GetSelectedCandidate();
+  const auto intent = IntentFor(key_event);
+  const bool candidate_fresh =
+      context->get_property("neural_candidate_fresh") == "1";
+  const auto mode = CurrentInputMode(context);
+  if (!candidate_fresh &&
+      (intent == KeyIntent::kTab ||
+       intent == KeyIntent::kNumberedSelection)) {
+    return ::rime::kAccepted;
+  }
+  if (!candidate_fresh && IsNeuralCandidate(selected)) {
+    if (intent == KeyIntent::kSpace) {
+      const std::string suffix =
+          mode == InputMode::kEnglish ? " " : "";
+      engine_->CommitText(context->input() + suffix);
+      context->Clear();
+      return ::rime::kAccepted;
+    }
+  }
   const auto outcome = ResolveKeyOutcome(
-      CurrentInputMode(context), IntentFor(key_event), IsCompletion(selected));
+      mode, intent, IsCompletion(selected), candidate_fresh,
+      candidate_fresh);
   switch (outcome) {
     case KeyOutcome::kCommitLiteralSpace:
       engine_->CommitText(context->input() + " ");
@@ -89,4 +117,3 @@ bool IsCompletion(const ::rime::an<::rime::Candidate>& candidate) {
 }
 
 }  // namespace neural_weasel::rime_plugin
-

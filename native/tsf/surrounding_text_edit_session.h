@@ -39,6 +39,12 @@ struct SurroundingTextSnapshot {
 
 using SnapshotCallback = std::function<void(SurroundingTextSnapshot)>;
 
+SurroundingTextSnapshot CaptureSurroundingText(
+    ITfContext* context,
+    TfEditCookie edit_cookie,
+    SurroundingTextLimits limits,
+    CapturePolicyDecision policy);
+
 // A self-contained read-only edit session suitable for adapting into Weasel's
 // CEditSession hierarchy. The caller must complete fail-closed sensitive-field
 // classification before constructing an allowed session.
@@ -57,10 +63,6 @@ class SurroundingTextEditSession final : public ITfEditSession {
  private:
   ~SurroundingTextEditSession() = default;
 
-  static HRESULT ReadRange(ITfRange* range,
-                           TfEditCookie edit_cookie,
-                           LONG maximum_code_units,
-                           std::wstring* output);
   void Deliver(SurroundingTextSnapshot snapshot) noexcept;
 
   std::atomic<ULONG> references_{1};
@@ -79,4 +81,3 @@ HRESULT RequestSurroundingText(ITfContext* context,
                                SnapshotCallback callback);
 
 }  // namespace neural_weasel::tsf
-

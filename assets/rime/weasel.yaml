@@ -1,0 +1,6 @@
+config_version: "0.1"
+
+style:
+  display_tray_icon: true
+  inline_preedit: false
+  label_format: "%s."

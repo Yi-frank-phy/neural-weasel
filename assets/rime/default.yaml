@@ -1,0 +1,12 @@
+config_version: "0.1"
+
+schema_list:
+  - schema: neural_weasel
+
+menu:
+  page_size: 9
+
+switcher:
+  caption: 神经小狼毫（实验）
+  hotkeys:
+    - Control+grave
