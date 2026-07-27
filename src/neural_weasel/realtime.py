@@ -108,6 +108,10 @@ class SnapshotCoordinator:
         with self._state_lock:
             return self._state
 
+    def state_for_epoch(self, epoch: int) -> BackendState | None:
+        with self._state_lock:
+            return self._states.get(epoch)
+
     @property
     def context_epoch(self) -> int:
         state = self.latest_state

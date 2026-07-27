@@ -227,6 +227,35 @@ class LatinPrefixConstraint:
     def __init__(self, completions: Sequence[LatinCompletion]) -> None:
         self.completions = tuple(completions)
 
+    @classmethod
+    def from_tokenizer(cls, tokenizer: Any) -> LatinPrefixConstraint:
+        """Build the bounded one-token baseline directly from model vocabulary."""
+
+        special_ids = set(getattr(tokenizer, "all_special_ids", ()))
+        completions: list[LatinCompletion] = []
+        seen: set[tuple[str, int]] = set()
+        for token_id in range(len(tokenizer)):
+            if token_id in special_ids:
+                continue
+            text = tokenizer.decode(
+                [token_id],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            ).lstrip()
+            if (
+                not text
+                or len(text) > 48
+                or _LATIN_PREFIX.fullmatch(text) is None
+                or contains_han(text)
+            ):
+                continue
+            key = (text, token_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            completions.append(LatinCompletion(text=text, token_path=(token_id,)))
+        return cls(completions)
+
     def candidates(
         self,
         raw_keys: str,

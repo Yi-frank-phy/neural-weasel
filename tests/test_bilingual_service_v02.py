@@ -97,7 +97,7 @@ def test_query_candidates_protocol_uses_unified_engine(make_index) -> None:
     """AT-UC-01/RT-06: service publishes unified candidates with exact epoch."""
     engine = make_engine(make_index)
     state = engine.update_context("The receiver-centred placement is operationally")
-    server = NamedPipeServer(engine)
+    server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\NeuralWeasel-test")
 
     response = server.handle_message(
         {
@@ -121,7 +121,7 @@ def test_query_candidates_protocol_uses_unified_engine(make_index) -> None:
 def test_query_candidates_without_snapshot_returns_literal_not_error(make_index) -> None:
     """AT-EN-03/RT-05: cold service preserves literal typing."""
     engine = make_engine(make_index)
-    server = NamedPipeServer(engine)
+    server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\NeuralWeasel-test")
 
     response = server.handle_message(
         {
