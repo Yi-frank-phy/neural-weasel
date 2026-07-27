@@ -68,9 +68,13 @@ jobs:
           ref: 1.15.0
           path: external/librime
 
-      - name: Install nlohmann-json
+      - name: Install native header dependencies
         shell: pwsh
-        run: vcpkg install nlohmann-json:x64-windows
+        run: >-
+          vcpkg install
+          nlohmann-json:x64-windows
+          boost-signals2:x64-windows
+          boost-unordered:x64-windows
 
       - name: Configure native targets
         shell: pwsh

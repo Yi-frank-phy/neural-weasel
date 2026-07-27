@@ -146,6 +146,7 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${RIME_GENERATED_INCLUDE_DIR}
     ${RIME_ROOT}/src
+    ${RIME_ROOT}/include
   )
   target_compile_definitions(neural_weasel_rime_plugin PRIVATE
     UNICODE
