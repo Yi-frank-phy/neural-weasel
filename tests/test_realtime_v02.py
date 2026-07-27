@@ -46,9 +46,7 @@ def make_coordinator(runtime: BlockingRuntime):
     backend = FullLogitsSnapshotBackend(runtime)
     engine = UnifiedConstraintEngine(
         backend=backend,
-        latin_prefix_constraint=LatinPrefixConstraint(
-            [LatinCompletion("asymmetric", (1,))]
-        ),
+        latin_prefix_constraint=LatinPrefixConstraint([LatinCompletion("asymmetric", (1,))]),
     )
     return backend, SnapshotCoordinator(backend=backend, engine=engine)
 
