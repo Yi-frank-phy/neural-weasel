@@ -111,9 +111,9 @@ def test_sparse_projection_matches_full_logits(runtime: FakeRuntime) -> None:
 
     np.testing.assert_allclose(sparse_scores, full_scores, rtol=0, atol=1e-4)
     assert allowed[int(np.argmax(sparse_scores))] == allowed[int(np.argmax(full_scores))]
-    assert {
-        allowed[index] for index in np.argsort(-sparse_scores)[:3]
-    } == {allowed[index] for index in np.argsort(-full_scores)[:3]}
+    assert {allowed[index] for index in np.argsort(-sparse_scores)[:3]} == {
+        allowed[index] for index in np.argsort(-full_scores)[:3]
+    }
 
 
 def test_state_from_another_backend_or_generation_is_rejected(runtime: FakeRuntime) -> None:
