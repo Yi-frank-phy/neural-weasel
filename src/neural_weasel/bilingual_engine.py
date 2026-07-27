@@ -60,9 +60,11 @@ class BilingualImeEngine:
         if context_epoch is None:
             state = self.coordinator.latest_state
         elif context_epoch == 0:
-            state = None
+            state = self.coordinator.latest_state
         else:
             state = self.coordinator.state_for_epoch(context_epoch)
+            if state is None:
+                return []
         if state is None:
             return self.constraint_engine.query("", raw_keys, state=None, limit=limit)
         with self._contexts_lock:
@@ -103,4 +105,3 @@ class BilingualImeEngine:
 
     def diagnostics(self) -> dict[str, object]:
         return self.coordinator.diagnostics()
-

@@ -53,8 +53,11 @@ def detect_script(text: str) -> Script:
 class ContextScriptPolicy:
     """Explainable asymmetric policy; no independent language classifier."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, chinese_latin_penalty: float = -0.35) -> None:
+        if chinese_latin_penalty > 0:
+            raise ValueError("Chinese-context Latin penalty must not be positive")
         self.stable_script: Script | None = None
+        self.chinese_latin_penalty = float(chinese_latin_penalty)
 
     def classify(self, before: str) -> str:
         bounded = before[-128:]
@@ -110,19 +113,15 @@ class ContextScriptPolicy:
         context_kind: str,
         script: Script,
         raw_keys: str,
-        *,
-        model_margin: float | None = None,
     ) -> float:
         if context_kind == "english":
             return 0.0 if script == Script.LATIN else -math.inf
         if context_kind == "chinese":
             if script != Script.LATIN:
                 return 0.0
-            if self._explicit_latin_shape(raw_keys) or (
-                model_margin is not None and model_margin >= 1.5
-            ):
+            if self._explicit_latin_shape(raw_keys):
                 return 0.0
-            return -0.35
+            return self.chinese_latin_penalty
 
         preferred = self.stable_script or Script.HAN
         return 0.15 if script == preferred else 0.0
@@ -426,4 +425,3 @@ class UnifiedConstraintEngine:
             policy=self.script_policy,
             limit=limit,
         )
-
