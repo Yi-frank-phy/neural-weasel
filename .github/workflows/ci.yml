@@ -314,12 +314,70 @@ jobs:
           xmake build -y WeaselServer
 
       - name: Assemble hashed installable bundle
+        id: assemble_bundle
+        continue-on-error: true
         shell: pwsh
         run: |
-          ./scripts/build-windows-bundle.ps1 `
-            -WeaselRoot "$env:GITHUB_WORKSPACE/external/weasel" `
-            -NativeBuildRoot "$env:GITHUB_WORKSPACE/build/native" `
-            -RepositoryCommit "$env:GITHUB_SHA"
+          $Diagnostics = Join-Path $env:RUNNER_TEMP 'bundle-diagnostics'
+          New-Item -ItemType Directory -Path $Diagnostics -Force | Out-Null
+          try {
+            ./scripts/build-windows-bundle.ps1 `
+              -WeaselRoot "$env:GITHUB_WORKSPACE/external/weasel" `
+              -NativeBuildRoot "$env:GITHUB_WORKSPACE/build/native" `
+              -RepositoryCommit "$env:GITHUB_SHA"
+          } catch {
+            $_ | Format-List * -Force | Out-String | Set-Content `
+              -LiteralPath (Join-Path $Diagnostics 'bundle-exception.txt')
+            $_.ScriptStackTrace | Set-Content `
+              -LiteralPath (Join-Path $Diagnostics 'bundle-stack.txt')
+            throw
+          }
+
+      - name: Capture bundle output diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          $Diagnostics = Join-Path $env:RUNNER_TEMP 'bundle-diagnostics'
+          New-Item -ItemType Directory -Path $Diagnostics -Force | Out-Null
+          $Roots = @(
+            "$env:GITHUB_WORKSPACE/external/weasel/output",
+            "$env:GITHUB_WORKSPACE/external/weasel/build",
+            "$env:GITHUB_WORKSPACE/build/native",
+            "$env:GITHUB_WORKSPACE/dist/neural-weasel-experimental"
+          )
+          foreach ($Root in $Roots) {
+            "=== $Root ===" | Add-Content `
+              -LiteralPath (Join-Path $Diagnostics 'binary-tree.txt')
+            if (Test-Path -LiteralPath $Root) {
+              Get-ChildItem -LiteralPath $Root -Recurse -File `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Extension -in @('.dll', '.exe', '.lib', '.pdb', '.json')
+                } |
+                Select-Object -First 1000 FullName, Length |
+                Format-Table -AutoSize | Out-String | Add-Content `
+                  -LiteralPath (Join-Path $Diagnostics 'binary-tree.txt')
+            } else {
+              '<missing>' | Add-Content `
+                -LiteralPath (Join-Path $Diagnostics 'binary-tree.txt')
+            }
+          }
+
+      - name: Upload bundle failure diagnostics
+        if: always() && steps.assemble_bundle.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: neural-weasel-bundle-diagnostics
+          path: |
+            ${{ runner.temp }}/bundle-diagnostics
+            dist/neural-weasel-experimental
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop after bundle assembly failure
+        if: steps.assemble_bundle.outcome == 'failure'
+        shell: pwsh
+        run: throw 'Bundle assembly failed; see neural-weasel-bundle-diagnostics.'
 
       - name: Verify binary and resource isolation
         shell: pwsh
