@@ -122,17 +122,20 @@ Replace-Literal -Path $TsfXmake -Old '  set_kind("shared")' -New @'
               "WIN32_LEAN_AND_MEAN", "NOMINMAX")
 '@
 Replace-Literal -Path $TsfXmake -Old 'set_filename(fname)' `
-    -New 'set_filename("NeuralWeaselExperimentalTSF.dll")'
+    -New 'set_basename("NeuralWeaselExperimentalTSF")'
 Replace-Literal -Path $TsfXmake -Old (
     'os.cp(path.join(target:targetdir(), "weasel*.dll"), "$(projectdir)/output")'
 ) -New (
-    'os.cp(path.join(target:targetdir(), "NeuralWeaselExperimentalTSF.dll"), "$(projectdir)/output")'
+    'os.cp(target:targetfile(), "$(projectdir)/output/NeuralWeaselExperimentalTSF.dll")'
 )
 Replace-Literal -Path $TsfXmake -Old (
     'os.cp(path.join(target:targetdir(), "weasel*.pdb"), "$(projectdir)/output")'
-) -New (
-    'os.cp(path.join(target:targetdir(), "NeuralWeaselExperimentalTSF.pdb"), "$(projectdir)/output")'
-)
+) -New @'
+local pdb = path.join(target:targetdir(), "NeuralWeaselExperimentalTSF.pdb")
+    if os.isfile(pdb) then
+      os.cp(pdb, "$(projectdir)/output/NeuralWeaselExperimentalTSF.pdb")
+    end
+'@
 
 $TextEditSink = Join-Path $ResolvedWeaselRoot 'WeaselTSF/TextEditSink.cpp'
 Replace-Literal -Path $TextEditSink -Old '#include "WeaselTSF.h"' -New @'
