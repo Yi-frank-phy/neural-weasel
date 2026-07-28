@@ -43,8 +43,9 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
 
     assert "windows-vertical-slice" in workflow
     assert "runs-on: windows-2022" in workflow
-    assert 'toolset: "14.3"' in workflow
-    assert 'vsversion: "2022"' in workflow
+    assert "Configure VS 2022 MSVC" in workflow
+    assert 'toolset: "14.3"' not in workflow
+    assert "vsversion:" not in workflow
     assert "set BJAM_TOOLSET=msvc-14.3" in workflow
     assert "set PLATFORM_TOOLSET=v143" in workflow
     assert "NEURAL_WEASEL_BUILD_RIME_PLUGIN=ON" in workflow
@@ -58,7 +59,11 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     assert 'xmake-version: "3.0.9"' in workflow
     assert "build.bat msvc" in workflow
     assert "Boost.Build bootstrap did not produce b2.exe" in workflow
-    assert "Pinned Boost/Weasel native dependency build did not produce verified x64 outputs" in workflow
+    expected_failure = (
+        "Pinned Boost/Weasel native dependency build did not produce "
+        "verified x64 outputs"
+    )
+    assert expected_failure in workflow
     assert "Verify pinned native dependency outputs" in workflow
     assert "external/weasel/lib64/rime.lib" in workflow
     assert "xmake build -y WeaselTSF" in workflow
