@@ -54,7 +54,7 @@ jobs:
 
   windows-vertical-slice:
     name: Windows experimental artifact bundle
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 90
 
     steps:
@@ -76,10 +76,12 @@ jobs:
           ref: 1.15.0
           path: external/librime-boundary
 
-      - name: Configure MSVC
+      - name: Configure VS 2022 MSVC v143
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+          toolset: "14.3"
+          vsversion: "2022"
 
       - name: Install xmake 3.0.9
         uses: xmake-io/github-action-setup-xmake@v1
@@ -128,7 +130,8 @@ jobs:
             -LiteralPath "$env:GITHUB_WORKSPACE/external/weasel/env.bat" `
             -Value @(
               "set BOOST_ROOT=$Boost",
-              'set BJAM_TOOLSET=msvc-14.2'
+              'set BJAM_TOOLSET=msvc-14.3',
+              'set PLATFORM_TOOLSET=v143'
             )
           "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
 
@@ -145,9 +148,9 @@ jobs:
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows-msvc14.2-boost1.78.0-weasel9cc96e2-v3
+          key: neural-weasel-native-deps-windows2022-msvc14.3-v143-boost1.78.0-weasel9cc96e2-v4
 
-      - name: Bootstrap pinned Boost.Build for current MSVC
+      - name: Bootstrap pinned Boost.Build for VS 2022
         shell: pwsh
         run: |
           if (-not (Test-Path -LiteralPath "$env:BOOST_ROOT/b2.exe")) {
@@ -171,9 +174,74 @@ jobs:
 
       - name: Build pinned Boost and Weasel librime dependencies
         if: steps.native_deps_cache.outputs.cache-hit != 'true'
-        shell: cmd
-        working-directory: external/weasel
-        run: build.bat boost librime
+        shell: pwsh
+        run: |
+          $WeaselRoot = Join-Path $env:GITHUB_WORKSPACE 'external/weasel'
+          $StdOut = Join-Path $env:RUNNER_TEMP 'weasel-native-deps.stdout.log'
+          $StdErr = Join-Path $env:RUNNER_TEMP 'weasel-native-deps.stderr.log'
+          $Process = Start-Process `
+            -FilePath 'cmd.exe' `
+            -ArgumentList @('/d', '/c', 'build.bat boost librime') `
+            -WorkingDirectory $WeaselRoot `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $StdOut `
+            -RedirectStandardError $StdErr
+
+          Write-Host '--- dependency build stdout tail ---'
+          Get-Content -LiteralPath $StdOut -Tail 400 -ErrorAction SilentlyContinue
+          Write-Host '--- dependency build stderr tail ---'
+          Get-Content -LiteralPath $StdErr -Tail 400 -ErrorAction SilentlyContinue
+
+          $Required = @(
+            "$env:BOOST_ROOT/b2.exe",
+            "$WeaselRoot/lib64/rime.lib",
+            "$WeaselRoot/output/rime.dll",
+            "$WeaselRoot/include/rime_api.h"
+          )
+          $Missing = @($Required | Where-Object {
+            -not (Test-Path -LiteralPath $_ -PathType Leaf)
+          })
+          $BoostLibraries = @(
+            Get-ChildItem -LiteralPath "$env:BOOST_ROOT/stage/lib" `
+              -Filter '*.lib' -File -ErrorAction SilentlyContinue
+          )
+          $BuildReportedError = $false
+          foreach ($Log in @($StdOut, $StdErr)) {
+            if ((Test-Path -LiteralPath $Log) -and
+                (Select-String -LiteralPath $Log `
+                  -Pattern '^error building weasel\.\.\.$' -Quiet)) {
+              $BuildReportedError = $true
+            }
+          }
+
+          if ($Process.ExitCode -ne 0 -or $BuildReportedError -or
+              $Missing.Count -gt 0 -or $BoostLibraries.Count -eq 0) {
+            Write-Host "cmd.exe exit code: $($Process.ExitCode)"
+            Write-Host "Weasel batch reported error: $BuildReportedError"
+            Write-Host "Missing required outputs: $($Missing -join ', ')"
+            Write-Host "Boost staged libraries: $($BoostLibraries.Count)"
+            Write-Host '--- Weasel output tree ---'
+            Get-ChildItem -LiteralPath $WeaselRoot -Recurse -File `
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.FullName -match '(lib64|output|include|dist_x64)' -or
+                $_.Extension -in @('.log', '.err')
+              } |
+              Select-Object -First 500 FullName, Length |
+              Format-Table -AutoSize
+            Write-Host '--- native build log tails ---'
+            Get-ChildItem -LiteralPath $WeaselRoot -Recurse -File `
+              -Include '*.log','*.err' -ErrorAction SilentlyContinue |
+              Select-Object -First 20 |
+              ForEach-Object {
+                Write-Host "### $($_.FullName)"
+                Get-Content -LiteralPath $_.FullName -Tail 120 `
+                  -ErrorAction SilentlyContinue
+              }
+            throw 'Pinned Boost/Weasel native dependency build did not produce verified x64 outputs.'
+          }
 
       - name: Verify pinned native dependency outputs
         shell: pwsh
@@ -207,7 +275,7 @@ jobs:
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows-msvc14.2-boost1.78.0-weasel9cc96e2-v3
+          key: neural-weasel-native-deps-windows2022-msvc14.3-v143-boost1.78.0-weasel9cc96e2-v4
 
       - name: Apply isolated experimental Weasel overlay
         shell: pwsh
