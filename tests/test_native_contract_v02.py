@@ -40,9 +40,7 @@ def test_processor_has_no_model_or_pipe_dependency() -> None:
 def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     """Release evidence requires a real MSVC compile, not source inspection."""
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    bundle_script = (ROOT / "scripts/build-windows-bundle.ps1").read_text(
-        encoding="utf-8"
-    )
+    bundle_script = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
 
     assert "windows-vertical-slice" in workflow
     assert "runs-on: windows-2022" in workflow
