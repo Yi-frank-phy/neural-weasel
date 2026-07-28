@@ -33,6 +33,54 @@ function Copy-RequiredFile {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Resolve-RequiredBuildArtifact {
+    param(
+        [Parameter(Mandatory)][string]$FileName,
+        [Parameter(Mandatory)][string[]]$Candidates,
+        [Parameter(Mandatory)][string[]]$SearchRoots
+    )
+
+    foreach ($Candidate in $Candidates) {
+        if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $Candidate).Path
+        }
+    }
+
+    $Matches = @()
+    foreach ($SearchRoot in $SearchRoots) {
+        if (-not (Test-Path -LiteralPath $SearchRoot -PathType Container)) {
+            continue
+        }
+        $Matches += Get-ChildItem -LiteralPath $SearchRoot -Filter $FileName `
+            -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+    }
+    $Matches = @($Matches | Sort-Object -Unique)
+
+    if ($Matches.Count -eq 1) {
+        return $Matches[0]
+    }
+    if ($Matches.Count -gt 1) {
+        throw "Ambiguous build artifact $FileName: $($Matches -join ', ')"
+    }
+
+    $Diagnostics = @()
+    foreach ($SearchRoot in $SearchRoots) {
+        if (Test-Path -LiteralPath $SearchRoot -PathType Container) {
+            $Diagnostics += Get-ChildItem -LiteralPath $SearchRoot -File -Recurse `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.Extension -in @('.dll', '.exe', '.lib', '.pdb')
+                } |
+                Select-Object -First 200 -ExpandProperty FullName
+        }
+    }
+    throw (
+        "Required build artifact $FileName was not found. " +
+        "Binary outputs seen: $($Diagnostics -join ', ')"
+    )
+}
+
 $RepositoryRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $WeaselRoot = (Resolve-Path -LiteralPath $WeaselRoot).Path
 $NativeBuildRoot = (Resolve-Path -LiteralPath $NativeBuildRoot).Path
@@ -43,16 +91,36 @@ if (Test-Path -LiteralPath $OutputRoot) {
 }
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 
-Copy-RequiredFile `
-    -Source (Join-Path $WeaselRoot 'output/NeuralWeaselExperimentalTSF.dll') `
-    -Destination (Join-Path $OutputRoot 'NeuralWeaselExperimentalTSF.dll')
-Copy-RequiredFile `
-    -Source (Join-Path $WeaselRoot 'output/NeuralWeaselServer.exe') `
-    -Destination (Join-Path $OutputRoot 'NeuralWeaselServer.exe')
-Copy-RequiredFile `
-    -Source (
-        Join-Path $NativeBuildRoot 'Release/NeuralWeaselProfileTool.exe'
+$TsfArtifact = Resolve-RequiredBuildArtifact `
+    -FileName 'NeuralWeaselExperimentalTSF.dll' `
+    -Candidates @(
+        (Join-Path $WeaselRoot 'output/NeuralWeaselExperimentalTSF.dll')
     ) `
+    -SearchRoots @(
+        (Join-Path $WeaselRoot 'output'),
+        (Join-Path $WeaselRoot 'build')
+    )
+$ServerArtifact = Resolve-RequiredBuildArtifact `
+    -FileName 'NeuralWeaselServer.exe' `
+    -Candidates @(
+        (Join-Path $WeaselRoot 'output/NeuralWeaselServer.exe')
+    ) `
+    -SearchRoots @(
+        (Join-Path $WeaselRoot 'output'),
+        (Join-Path $WeaselRoot 'build')
+    )
+$ProfileToolArtifact = Resolve-RequiredBuildArtifact `
+    -FileName 'NeuralWeaselProfileTool.exe' `
+    -Candidates @(
+        (Join-Path $NativeBuildRoot 'Release/NeuralWeaselProfileTool.exe')
+    ) `
+    -SearchRoots @($NativeBuildRoot)
+
+Copy-RequiredFile -Source $TsfArtifact `
+    -Destination (Join-Path $OutputRoot 'NeuralWeaselExperimentalTSF.dll')
+Copy-RequiredFile -Source $ServerArtifact `
+    -Destination (Join-Path $OutputRoot 'NeuralWeaselServer.exe')
+Copy-RequiredFile -Source $ProfileToolArtifact `
     -Destination (Join-Path $OutputRoot 'NeuralWeaselProfileTool.exe')
 
 $RimeLibraryCandidates = @(
