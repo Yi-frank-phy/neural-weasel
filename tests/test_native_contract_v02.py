@@ -40,6 +40,9 @@ def test_processor_has_no_model_or_pipe_dependency() -> None:
 def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     """Release evidence requires a real MSVC compile, not source inspection."""
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    bundle_script = (ROOT / "scripts/build-windows-bundle.ps1").read_text(
+        encoding="utf-8"
+    )
 
     assert "windows-vertical-slice" in workflow
     assert "runs-on: windows-2022" in workflow
@@ -53,9 +56,9 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     assert "boost-signals2:x64-windows" in workflow
     assert "boost-unordered:x64-windows" in workflow
     assert "ctest" in workflow
-    assert "NeuralWeaselExperimentalTSF.dll" in (
-        ROOT / "scripts/build-windows-bundle.ps1"
-    ).read_text(encoding="utf-8")
+    assert "NeuralWeaselExperimentalTSF.dll" in bundle_script
+    assert "Resolve-RequiredBuildArtifact" in bundle_script
+    assert "Ambiguous build artifact" in bundle_script
     assert 'xmake-version: "3.0.9"' in workflow
     assert "build.bat msvc" in workflow
     assert "Boost.Build bootstrap did not produce b2.exe" in workflow
