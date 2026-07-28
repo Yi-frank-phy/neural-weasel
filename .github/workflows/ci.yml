@@ -76,12 +76,10 @@ jobs:
           ref: 1.15.0
           path: external/librime-boundary
 
-      - name: Configure VS 2022 MSVC v143
+      - name: Configure VS 2022 MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-          toolset: "14.3"
-          vsversion: "2022"
 
       - name: Install xmake 3.0.9
         uses: xmake-io/github-action-setup-xmake@v1
@@ -148,7 +146,7 @@ jobs:
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows2022-msvc14.3-v143-boost1.78.0-weasel9cc96e2-v4
+          key: neural-weasel-native-deps-windows2022-default-msvc-v143-boost1.78.0-weasel9cc96e2-v5
 
       - name: Bootstrap pinned Boost.Build for VS 2022
         shell: pwsh
@@ -275,7 +273,7 @@ jobs:
             external/weasel/include
             external/weasel/output/rime.dll
             external/weasel/output/Win32/rime.dll
-          key: neural-weasel-native-deps-windows2022-msvc14.3-v143-boost1.78.0-weasel9cc96e2-v4
+          key: neural-weasel-native-deps-windows2022-default-msvc-v143-boost1.78.0-weasel9cc96e2-v5
 
       - name: Apply isolated experimental Weasel overlay
         shell: pwsh
