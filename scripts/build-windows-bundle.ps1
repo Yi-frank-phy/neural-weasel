@@ -61,7 +61,7 @@ function Resolve-RequiredBuildArtifact {
         return $Matches[0]
     }
     if ($Matches.Count -gt 1) {
-        throw "Ambiguous build artifact $FileName: $($Matches -join ', ')"
+        throw "Ambiguous build artifact ${FileName}: $($Matches -join ', ')"
     }
 
     $Diagnostics = @()
