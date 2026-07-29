@@ -2,22 +2,14 @@
 
 ## Status and scope
 
-This document records the integration seam verified against the source layout
-of Weasel `0.17.4` and librime `1.15.0`. It does not install, register, or
-replace any input method.
+This document records the integration against pinned Weasel `0.17.4` revision
+`9cc96e20dc71b80876b12f689bb5863c76c2a7ed` and librime. CI mutates only its
+checked-out upstream tree, builds an independent experimental bundle, and never
+registers a global profile.
 
-The current native files are a compile-oriented skeleton. They deliberately
-exclude:
-
-- executable TSF registration and unregistration code;
-- mutation of an installed Weasel tree;
-- Weasel IPC message-number changes;
-- the model-service Named Pipe server and its ACL implementation;
-- wiring automatic activation of Microsoft Pinyin into installed Weasel;
-- production sensitive-field classification.
-
-Those exclusions prevent an incomplete experiment from changing the user's
-primary input path.
+The repository includes the identity-locked profile tool and build overlay.
+Automatic Microsoft Pinyin activation remains excluded. Sensitive capture is
+fail closed and intentionally conservative.
 
 ## Verified upstream seams
 
@@ -41,26 +33,26 @@ external shared-library loading. Therefore a standalone translator DLL is not
 a valid deployment route for stock Weasel `0.17.4`. The CMake skeleton builds a
 static library instead.
 
-The skeleton avoids copying upstream classes. `SurroundingTextEditSession`
-implements `ITfEditSession` independently so it can first be tested as a
-probe, then adapted to inherit Weasel's `CEditSession` during the actual fork.
+`SurroundingTextEditSession` implements `ITfEditSession` independently. The
+pinned overlay calls the repository adapter from Weasel's `TextEditSink`; it
+does not copy upstream composition classes.
 
-## Proposed context path
+## Context path
 
 ```text
 TextEditSink / focus change
   -> fail-closed capture policy
   -> RequestSurroundingText(TF_ES_READ)
   -> bounded before/after snapshot
-  -> new Weasel IPC context-update message
-  -> WeaselServer forwards context_update to the model service
-  -> after acknowledgement, publish EditorContextEpoch
+  -> repository context bridge worker
+  -> per-user model-service Named Pipe context_update
+  -> service publishes a new immutable snapshot
   -> ai_translator query carries that epoch
 ```
 
 The TSF edit session must never perform model or pipe I/O. Its callback should
 enqueue a snapshot onto a WeaselTSF-owned worker queue and return immediately.
-Only the worker extends Weasel IPC.
+Only the worker performs model-service pipe I/O.
 
 The standalone implementation of this post-callback boundary is
 `neural_weasel_context_bridge`. It coalesces snapshots on an owned worker,
@@ -75,38 +67,12 @@ movement; moving fewer units than requested marks that side as reaching the
 current TSF region boundary. This is a region-completeness signal, not proof
 that the entire editor document was exposed.
 
-### Weasel IPC extension
+### Context transport
 
-Weasel `0.17.4`'s `PipeChannel` already supports a request body, but its default
-buffer is 64 KiB. The fast snapshot fits after UTF-16 serialization; a full
-`32768 + 32768` snapshot does not. Increasing the shared buffer globally would
-change every existing command and is not the low-risk option.
-
-Add context transfer as three explicit commands after
-`WEASEL_IPC_CHANGE_PAGE`:
-
-```text
-WEASEL_IPC_CONTEXT_BEGIN
-WEASEL_IPC_CONTEXT_CHUNK
-WEASEL_IPC_CONTEXT_END
-```
-
-Each chunk must stay below 24,000 UTF-16 code units and carry a small header:
-
-```text
-session_id, context_epoch, chunk_index, chunk_count,
-before_length, after_length, flags, payload
-```
-
-WeaselServer assembles chunks in a bounded per-session buffer, rejects missing,
-duplicate, stale or over-limit chunks, and discards incomplete assemblies after
-200 ms. `CONTEXT_END` only publishes the epoch after the complete snapshot has
-been forwarded successfully to the model service. Focus-out, session removal,
-deny-policy transition and service restart clear all partial assemblies.
-
-The exact wire encoding should reuse Weasel's existing wide-body stream for
-this internal hop. It must not reuse the Python service's UTF-8 JSON framing:
-these are separate protocols with different lifecycle and buffer constraints.
+The TSF DLL connects directly to the separate per-user model-service pipe from
+the bridge worker. This avoids changing upstream Weasel IPC buffers or message
+numbers. The TSF edit-session callback never connects, waits, retries, or runs a
+model forward.
 
 ## Sensitive-text gate
 
@@ -170,7 +136,9 @@ Since v1 raw keys are ASCII full pinyin, byte count and key count are equal.
 Every response is rejected unless:
 
 - type is `candidates`;
-- `session_id`, `revision` and `context_epoch` exactly match;
+- `session_id` and `revision` exactly match;
+- a nonzero requested `context_epoch` exactly matches; zero accepts the
+  service's resolved latest epoch;
 - `0 < consumed_keys <= raw_keys.size()`;
 - candidate text is a JSON string.
 
@@ -178,18 +146,15 @@ Candidate order is preserved from the service. The plugin does not add Rime
 Ice frequency, an artificial long-token bonus, or a traditional fallback.
 Coverage candidates are merely labelled for UI diagnostics.
 
-`EditorContextEpoch` is now published by the standalone context bridge only
-after the service's health response confirms the exact assigned epoch is
-ready. Local bridge sequences reject stale responses; service epochs
-themselves are not compared across service-process restarts. Secure/failed
-capture resets the local epoch and sends `focus{secure:true}` instead of an
-empty context forward. The actual WeaselServer IPC adapter still needs to
-supply reconstructed snapshots and metadata to that bridge.
+The context bridge publishes its local epoch only after the service confirms
+readiness. TSF and WeaselServer are separate processes, so the server-side
+translator intentionally sends epoch zero to request the latest service
+snapshot. Secure/failed capture sends `focus{secure:true}` without source text.
 
 ### Loading the translator on Windows
 
-The static target `neural_weasel_rime_plugin` must be linked into the
-experimental `RimeWithWeasel`/WeaselServer build. Because static-library dead
+The static target is linked into the experimental
+`RimeWithWeasel`/WeaselServer build. Because static-library dead
 stripping can omit the registration object, the integration must reference:
 
 ```cpp
@@ -206,16 +171,14 @@ const char* modules[] = {"ai_translator", nullptr};
 rime::LoadModules(modules);
 ```
 
-This requires librime private headers (`rime/setup.h`) already available to the
-Weasel source build. The exact call placement must be integration-tested
-against Weasel startup and deployer paths; it is not applied to the installed
-0.17.4 binaries by this skeleton.
+The pinned overlay sets `RimeTraits.modules` before
+`rime_api->initialize()`, so the registration object is retained and loaded.
 
 ## Experimental profile and CLSID
 
-`experimental_profile_ids.h` reserves a distinct text-service CLSID and
-zh-CN language-profile GUID. Production registration must clone the minimum
-Weasel registration flow but use:
+`experimental_profile_ids.h` reserves a distinct text-service CLSID and zh-CN
+language-profile GUID. `NeuralWeaselProfileTool.exe` implements the minimum
+per-user registration flow using:
 
 - a distinct DLL name and installation directory;
 - the experimental CLSID/profile GUIDs, never Weasel's official identifiers;
@@ -241,27 +204,21 @@ enumerate installed TSF profiles and store the user-approved target, then call
 experimental composition.
 
 The read-only registration planner, profile enumerator and hard-failure state
-machine now live in `native/tsf/`. Their exact safety and lifecycle contract is
-documented in [profile-fallback.md](profile-fallback.md). No caller is wired
-into the installed input method, and the registration planner intentionally has
-no mutating executor.
+machine live in `native/tsf/`. The separate profile tool is the identity-locked
+mutation boundary. Automatic fallback activation is not wired.
 
 ## Build and verification status
 
-The machine used to create this skeleton did not expose `cmake`, `cl`, or
-`ninja` on `PATH`, so no native target was compiled. Static review was performed
-against the upstream source interfaces noted above. Required follow-up checks:
+Windows CI compiles repository native targets and the pinned upstream overlay,
+runs CTest, assembles a hashed bundle, scans identities, and executes only
+dry-run install safety cases. Required manual follow-up checks:
 
-- compile with the Visual Studio toolset and Windows SDK used by Weasel
-  `0.17.4`;
 - verify `RequestEditSession` callback and COM lifetime behavior in all target
   editors;
 - test whether selected text and reversed selections yield the intended active
   caret;
 - test 6 ms cancellation under partial header/body reads and server restart;
-- compile the module against the exact librime binary bundled with the chosen
-  Weasel package;
-- verify the static registration object is retained and `ai_translator` is
-  loaded before any schema instantiates it;
+- verify at runtime that `ai_translator` is loaded before the schema
+  instantiates it;
 - confirm the experimental schema does not include translators that reorder AI
   candidates.

@@ -135,6 +135,8 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
         )
 
     if action in _NUMBER_ACTIONS:
+        if state.mode == CompositionMode.ENGLISH:
+            return KeyTransition(state)
         candidate = _selected_candidate(state, _NUMBER_ACTIONS[action])
         return _commit(state, candidate) if candidate is not None else KeyTransition(state)
 

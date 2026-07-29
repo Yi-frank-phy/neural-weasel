@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 import numpy as np
+import pytest
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
@@ -25,6 +27,21 @@ class FakeRuntime:
 
     def invalidate_private_state(self) -> None:
         pass
+
+
+class BlockingRuntime(FakeRuntime):
+    def __init__(self, logits: np.ndarray) -> None:
+        super().__init__(logits)
+        self.calls = 0
+        self.refresh_started = threading.Event()
+        self.release_refresh = threading.Event()
+
+    def full_logits(self, before: str, after: str) -> RuntimeSnapshot:
+        self.calls += 1
+        if self.calls == 2:
+            self.refresh_started.set()
+            assert self.release_refresh.wait(2.0)
+        return super().full_logits(before, after)
 
 
 class FakeTokenizer:
@@ -65,6 +82,34 @@ def make_engine(make_index) -> BilingualImeEngine:
         pinyin_constraint=PinyinConstraint(index),
         latin_prefix_constraint=LatinPrefixConstraint.from_tokenizer(FakeTokenizer()),
     )
+
+
+def make_blocking_engine(make_index) -> tuple[BilingualImeEngine, BlockingRuntime]:
+    logits = np.full(16, -10.0, dtype=np.float32)
+    logits[1:5] = [9.0, 8.0, 7.0, 6.0]
+    logits[6] = 10.0
+    runtime = BlockingRuntime(logits)
+    backend = FullLogitsSnapshotBackend(runtime)
+    index = make_index([(6, "纠缠", "jiuchan", "jiu'chan", 2, 0)])
+    return (
+        BilingualImeEngine(
+            backend=backend,
+            pinyin_constraint=PinyinConstraint(index),
+            latin_prefix_constraint=LatinPrefixConstraint.from_tokenizer(FakeTokenizer()),
+        ),
+        runtime,
+    )
+
+
+def query_message(message_type: str, raw_keys: str, context_epoch: int) -> dict[str, object]:
+    return {
+        "type": message_type,
+        "session_id": "session",
+        "revision": 1,
+        "context_epoch": context_epoch,
+        "raw_keys": raw_keys,
+        "candidate_count": 5,
+    }
 
 
 def test_tokenizer_catalog_exposes_model_tokens_without_name_whitelist(make_index) -> None:
@@ -118,23 +163,76 @@ def test_query_candidates_protocol_uses_unified_engine(make_index) -> None:
     assert all(not contains_han(item["text"]) for item in response["candidates"])
 
 
-def test_query_candidates_without_snapshot_returns_literal_not_error(make_index) -> None:
-    """AT-EN-03/RT-05: cold service preserves literal typing."""
+@pytest.mark.parametrize("message_type", ["query_candidates", "query_pinyin"])
+def test_epoch_zero_without_snapshot_returns_literal_not_error(
+    make_index,
+    message_type: str,
+) -> None:
+    """AT-EN-03/RT-05: epoch zero preserves literal typing on a cold service."""
     engine = make_engine(make_index)
     server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\NeuralWeasel-test")
 
-    response = server.handle_message(
-        {
-            "type": "query_candidates",
-            "session_id": "session",
-            "revision": 1,
-            "context_epoch": 0,
-            "raw_keys": "non",
-            "candidate_count": 5,
-        }
-    )
+    response = server.handle_message(query_message(message_type, "non", 0))
 
     assert response["ok"] is True
     assert response["context_epoch"] == 0
     assert response["candidates"][0]["text"] == "non"
     assert response["candidates"][0]["constraint_kind"] == "literal"
+
+
+@pytest.mark.parametrize("message_type", ["query_candidates", "query_pinyin"])
+def test_epoch_zero_uses_the_latest_available_snapshot(
+    make_index,
+    message_type: str,
+) -> None:
+    engine = make_engine(make_index)
+    state = engine.update_context("The receiver-centred placement is operationally")
+    server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\NeuralWeasel-test")
+
+    response = server.handle_message(query_message(message_type, "asy", 0))
+
+    assert response["ok"] is True
+    assert response["context_epoch"] == state.epoch
+    assert response["stale"] is False
+    assert response["candidates"][0]["context_epoch"] == state.epoch
+    assert response["candidates"][0]["constraint_kind"] != "literal"
+
+
+@pytest.mark.parametrize("message_type", ["query_candidates", "query_pinyin"])
+def test_epoch_zero_keeps_latest_snapshot_while_newer_refresh_is_in_flight(
+    make_index,
+    message_type: str,
+) -> None:
+    engine, runtime = make_blocking_engine(make_index)
+    first = engine.update_context("The receiver-centred placement is operationally")
+    requested = engine.request_context_update("该协议所消耗的")
+    assert runtime.refresh_started.wait(1.0)
+    server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\NeuralWeasel-test")
+
+    response = server.handle_message(query_message(message_type, "asy", 0))
+
+    assert response["ok"] is True
+    assert response["context_epoch"] == first.epoch
+    assert response["candidates"][0]["context_epoch"] == first.epoch
+    assert requested > first.epoch
+    runtime.release_refresh.set()
+    assert engine.wait_for_epoch(requested, 1.0)
+
+
+@pytest.mark.parametrize("message_type", ["query_candidates", "query_pinyin"])
+def test_epoch_zero_prefers_latest_when_retained_snapshot_also_exists(
+    make_index,
+    message_type: str,
+) -> None:
+    engine = make_engine(make_index)
+    first = engine.update_context("The receiver-centred placement is operationally")
+    latest = engine.update_context("该协议所消耗的")
+    server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\NeuralWeasel-test")
+
+    response = server.handle_message(query_message(message_type, "jiuchan", 0))
+    retained = server.handle_message(query_message(message_type, "asy", first.epoch))
+
+    assert response["context_epoch"] == latest.epoch
+    assert response["candidates"][0]["context_epoch"] == latest.epoch
+    assert retained["context_epoch"] == first.epoch
+    assert retained["candidates"][0]["context_epoch"] == first.epoch

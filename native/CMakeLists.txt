@@ -14,6 +14,8 @@ option(NEURAL_WEASEL_BUILD_RIME_PLUGIN
        "Build the static ai_translator integration library" OFF)
 option(NEURAL_WEASEL_BUILD_NATIVE_TESTS
        "Build standalone native boundary tests" OFF)
+option(NEURAL_WEASEL_BUILD_PROFILE_TOOL
+       "Build the experimental TSF profile registration tool" ON)
 
 add_library(neural_weasel_pipe STATIC
   pipe/named_pipe_client.cc
@@ -46,6 +48,32 @@ target_compile_definitions(neural_weasel_tsf_context PRIVATE
 )
 target_link_libraries(neural_weasel_tsf_context PRIVATE ole32 oleaut32 uuid)
 
+if(NEURAL_WEASEL_BUILD_PROFILE_TOOL)
+  add_executable(NeuralWeaselProfileTool
+    profile_tool/profile_tool.cpp
+  )
+  set_target_properties(NeuralWeaselProfileTool PROPERTIES
+    OUTPUT_NAME "NeuralWeaselProfileTool"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+  target_include_directories(NeuralWeaselProfileTool PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_compile_definitions(NeuralWeaselProfileTool PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+  )
+  target_link_libraries(NeuralWeaselProfileTool PRIVATE
+    advapi32
+    ole32
+    uuid
+  )
+endif()
+
 add_library(neural_weasel_context_bridge STATIC
   context/context_update_bridge.cc
   rime/editor_context_epoch.cc
@@ -61,6 +89,26 @@ target_compile_definitions(neural_weasel_context_bridge PRIVATE
 )
 target_link_libraries(neural_weasel_context_bridge PUBLIC
   neural_weasel_pipe
+)
+
+add_library(neural_weasel_weasel_context_adapter STATIC
+  tsf/weasel_context_adapter.cc
+)
+target_include_directories(neural_weasel_weasel_context_adapter
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(neural_weasel_weasel_context_adapter PRIVATE
+  UNICODE
+  _UNICODE
+  WINVER=0x0A00
+  _WIN32_WINNT=0x0A00
+  WIN32_LEAN_AND_MEAN
+  NOMINMAX
+)
+target_link_libraries(neural_weasel_weasel_context_adapter PUBLIC
+  neural_weasel_context_bridge
+  neural_weasel_tsf_context
+  ole32
 )
 
 add_library(neural_weasel_bilingual_key_semantics STATIC
@@ -105,11 +153,23 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   add_executable(neural_weasel_bilingual_key_semantics_test
     rime/bilingual_key_semantics_test.cc
   )
+  target_compile_definitions(neural_weasel_bilingual_key_semantics_test PRIVATE
+    NEURAL_WEASEL_KEY_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/key_state_vectors.tsv"
+  )
   target_link_libraries(neural_weasel_bilingual_key_semantics_test PRIVATE
     neural_weasel_bilingual_key_semantics
   )
   add_test(NAME neural_weasel_bilingual_key_semantics_test
            COMMAND neural_weasel_bilingual_key_semantics_test)
+
+  add_executable(neural_weasel_epoch_semantics_test
+    rime/epoch_semantics_test.cc
+  )
+  target_include_directories(neural_weasel_epoch_semantics_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME neural_weasel_epoch_semantics_test
+           COMMAND neural_weasel_epoch_semantics_test)
 endif()
 
 if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)

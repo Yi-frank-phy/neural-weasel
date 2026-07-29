@@ -15,7 +15,7 @@ jobs:
   python:
     name: Python 3.12 checks
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       HF_HUB_OFFLINE: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
@@ -49,24 +49,42 @@ jobs:
       - name: Check formatting
         run: uv run --no-sync ruff format --check .
 
-      - name: Test
+      - name: Run Python and install-safety tests
         run: uv run --no-sync pytest
 
-  native-windows:
-    name: Native Windows boundaries
-    runs-on: windows-latest
-    timeout-minutes: 20
+  windows-vertical-slice:
+    name: Windows experimental artifact bundle
+    runs-on: windows-2022
+    timeout-minutes: 90
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check out fixed librime source
+      - name: Check out pinned Weasel 0.17.4 tree
+        uses: actions/checkout@v4
+        with:
+          repository: rime/weasel
+          ref: 9cc96e20dc71b80876b12f689bb5863c76c2a7ed
+          path: external/weasel
+          submodules: recursive
+
+      - name: Check out fixed librime headers for boundary targets
         uses: actions/checkout@v4
         with:
           repository: rime/librime
           ref: 1.15.0
-          path: external/librime
+          path: external/librime-boundary
+
+      - name: Configure VS 2022 MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install xmake 3.0.9
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: "3.0.9"
 
       - name: Install native header dependencies
         shell: pwsh
@@ -76,17 +94,309 @@ jobs:
           boost-signals2:x64-windows
           boost-unordered:x64-windows
 
-      - name: Configure native targets
+      - name: Acquire pinned Boost 1.78.0 source
+        shell: pwsh
+        run: |
+          $Archive = Join-Path $env:RUNNER_TEMP 'boost_1_78_0.7z'
+          $Boost = Join-Path $env:RUNNER_TEMP 'boost_1_78_0'
+          Invoke-WebRequest `
+            -Uri 'https://archives.boost.io/release/1.78.0/source/boost_1_78_0.7z' `
+            -OutFile $Archive
+          $Expected = '090cefea470bca990fa3f3ed793d865389426915b37a2a3258524a7258f0790c'
+          $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($Actual -ne $Expected) {
+            throw "Boost archive hash mismatch: $Actual"
+          }
+          7z x $Archive "-o$env:RUNNER_TEMP" -y
+          if (-not (Test-Path -LiteralPath (Join-Path $Boost 'boost')) -or
+              -not (Test-Path -LiteralPath (Join-Path $Boost 'bootstrap.bat'))) {
+            throw 'Pinned Boost archive did not produce a complete source tree.'
+          }
+          $YamlCMake = Join-Path $env:GITHUB_WORKSPACE `
+            'external/weasel/librime/deps/yaml-cpp/CMakeLists.txt'
+          $YamlContent = Get-Content -LiteralPath $YamlCMake -Raw
+          $YamlOld = 'cmake_minimum_required(VERSION 3.4)'
+          if (-not $YamlContent.Contains($YamlOld)) {
+            throw 'Pinned yaml-cpp compatibility seam changed.'
+          }
+          Set-Content -LiteralPath $YamlCMake -NoNewline `
+            -Value $YamlContent.Replace(
+              $YamlOld,
+              'cmake_minimum_required(VERSION 3.5)'
+            )
+          Set-Content `
+            -LiteralPath "$env:GITHUB_WORKSPACE/external/weasel/env.bat" `
+            -Value @(
+              "set BOOST_ROOT=$Boost",
+              'set BJAM_TOOLSET=msvc-14.3',
+              'set PLATFORM_TOOLSET=v143'
+            )
+          "BOOST_ROOT=$Boost" >> $env:GITHUB_ENV
+
+      - name: Restore pinned native dependency outputs
+        id: native_deps_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ runner.temp }}/boost_1_78_0/b2.exe
+            ${{ runner.temp }}/boost_1_78_0/bjam.exe
+            ${{ runner.temp }}/boost_1_78_0/stage/lib
+            external/weasel/lib
+            external/weasel/lib64
+            external/weasel/include
+            external/weasel/output/rime.dll
+            external/weasel/output/Win32/rime.dll
+          key: neural-weasel-native-deps-windows2022-default-msvc-v143-boost1.78.0-weasel9cc96e2-v5
+
+      - name: Bootstrap pinned Boost.Build for VS 2022
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "$env:BOOST_ROOT/b2.exe")) {
+            $Engine = Join-Path $env:BOOST_ROOT 'tools/build/src/engine'
+            Push-Location $Engine
+            try {
+              cmd.exe /d /c 'build.bat msvc'
+              if ($LASTEXITCODE -ne 0) {
+                throw "Boost.Build bootstrap failed with exit code $LASTEXITCODE."
+              }
+            } finally {
+              Pop-Location
+            }
+            $BuiltB2 = Join-Path $Engine 'b2.exe'
+            if (-not (Test-Path -LiteralPath $BuiltB2 -PathType Leaf)) {
+              throw 'Boost.Build bootstrap did not produce b2.exe.'
+            }
+            Copy-Item -LiteralPath $BuiltB2 `
+              -Destination "$env:BOOST_ROOT/b2.exe" -Force
+          }
+
+      - name: Build pinned Boost and Weasel librime dependencies
+        if: steps.native_deps_cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $WeaselRoot = Join-Path $env:GITHUB_WORKSPACE 'external/weasel'
+          $StdOut = Join-Path $env:RUNNER_TEMP 'weasel-native-deps.stdout.log'
+          $StdErr = Join-Path $env:RUNNER_TEMP 'weasel-native-deps.stderr.log'
+          $Process = Start-Process `
+            -FilePath 'cmd.exe' `
+            -ArgumentList @('/d', '/c', 'build.bat boost librime') `
+            -WorkingDirectory $WeaselRoot `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $StdOut `
+            -RedirectStandardError $StdErr
+
+          Write-Host '--- dependency build stdout tail ---'
+          Get-Content -LiteralPath $StdOut -Tail 400 -ErrorAction SilentlyContinue
+          Write-Host '--- dependency build stderr tail ---'
+          Get-Content -LiteralPath $StdErr -Tail 400 -ErrorAction SilentlyContinue
+
+          $Required = @(
+            "$env:BOOST_ROOT/b2.exe",
+            "$WeaselRoot/lib64/rime.lib",
+            "$WeaselRoot/output/rime.dll",
+            "$WeaselRoot/include/rime_api.h"
+          )
+          $Missing = @($Required | Where-Object {
+            -not (Test-Path -LiteralPath $_ -PathType Leaf)
+          })
+          $BoostLibraries = @(
+            Get-ChildItem -LiteralPath "$env:BOOST_ROOT/stage/lib" `
+              -Filter '*.lib' -File -ErrorAction SilentlyContinue
+          )
+          $BuildReportedError = $false
+          foreach ($Log in @($StdOut, $StdErr)) {
+            if ((Test-Path -LiteralPath $Log) -and
+                (Select-String -LiteralPath $Log `
+                  -Pattern '^error building weasel\.\.\.$' -Quiet)) {
+              $BuildReportedError = $true
+            }
+          }
+
+          if ($Process.ExitCode -ne 0 -or $BuildReportedError -or
+              $Missing.Count -gt 0 -or $BoostLibraries.Count -eq 0) {
+            Write-Host "cmd.exe exit code: $($Process.ExitCode)"
+            Write-Host "Weasel batch reported error: $BuildReportedError"
+            Write-Host "Missing required outputs: $($Missing -join ', ')"
+            Write-Host "Boost staged libraries: $($BoostLibraries.Count)"
+            Write-Host '--- Weasel output tree ---'
+            Get-ChildItem -LiteralPath $WeaselRoot -Recurse -File `
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.FullName -match '(lib64|output|include|dist_x64)' -or
+                $_.Extension -in @('.log', '.err')
+              } |
+              Select-Object -First 500 FullName, Length |
+              Format-Table -AutoSize
+            Write-Host '--- native build log tails ---'
+            Get-ChildItem -LiteralPath $WeaselRoot -Recurse -File `
+              -Include '*.log','*.err' -ErrorAction SilentlyContinue |
+              Select-Object -First 20 |
+              ForEach-Object {
+                Write-Host "### $($_.FullName)"
+                Get-Content -LiteralPath $_.FullName -Tail 120 `
+                  -ErrorAction SilentlyContinue
+              }
+            throw 'Pinned Boost/Weasel native dependency build did not produce verified x64 outputs.'
+          }
+
+      - name: Verify pinned native dependency outputs
+        shell: pwsh
+        run: |
+          $Required = @(
+            "$env:BOOST_ROOT/b2.exe",
+            "$env:GITHUB_WORKSPACE/external/weasel/lib64/rime.lib",
+            "$env:GITHUB_WORKSPACE/external/weasel/output/rime.dll",
+            "$env:GITHUB_WORKSPACE/external/weasel/include/rime_api.h"
+          )
+          foreach ($Path in $Required) {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              throw "Pinned native dependency output is missing: $Path"
+            }
+          }
+          if (-not (Get-ChildItem -LiteralPath "$env:BOOST_ROOT/stage/lib" `
+              -Filter '*.lib' -File -ErrorAction SilentlyContinue)) {
+            throw 'Pinned Boost library output is missing.'
+          }
+
+      - name: Save pinned native dependency outputs
+        if: steps.native_deps_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/boost_1_78_0/b2.exe
+            ${{ runner.temp }}/boost_1_78_0/bjam.exe
+            ${{ runner.temp }}/boost_1_78_0/stage/lib
+            external/weasel/lib
+            external/weasel/lib64
+            external/weasel/include
+            external/weasel/output/rime.dll
+            external/weasel/output/Win32/rime.dll
+          key: neural-weasel-native-deps-windows2022-default-msvc-v143-boost1.78.0-weasel9cc96e2-v5
+
+      - name: Apply isolated experimental Weasel overlay
+        shell: pwsh
+        run: |
+          ./scripts/prepare-weasel-overlay.ps1 `
+            -WeaselRoot "$env:GITHUB_WORKSPACE/external/weasel"
+
+      - name: Configure repository native targets
         shell: pwsh
         run: |
           cmake -S native -B build/native -A x64 `
             -DNEURAL_WEASEL_BUILD_NATIVE_TESTS=ON `
             -DNEURAL_WEASEL_BUILD_RIME_PLUGIN=ON `
-            -DRIME_ROOT="$env:GITHUB_WORKSPACE/external/librime" `
+            -DNEURAL_WEASEL_BUILD_PROFILE_TOOL=ON `
+            -DRIME_ROOT="$env:GITHUB_WORKSPACE/external/librime-boundary" `
             -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
-      - name: Build native targets
-        run: cmake --build build/native --config Release
+      - name: Build repository native targets
+        run: cmake --build build/native --config Release --parallel
 
-      - name: Run native tests
+      - name: Run native CTest suite
         run: ctest --test-dir build/native -C Release --output-on-failure
+
+      - name: Build experimental TSF, server, and static neural module
+        shell: pwsh
+        working-directory: external/weasel
+        env:
+          VERSION_MAJOR: "0"
+          VERSION_MINOR: "17"
+          VERSION_PATCH: "4"
+          FILE_VERSION: "0.17.4.0"
+          PRODUCT_VERSION: "0.17.4-neural-experimental"
+          NEURAL_WEASEL_ROOT: ${{ github.workspace }}
+          VCPKG_ROOT: C:/vcpkg
+        run: |
+          xmake f -p windows -a x64 -m release -y
+          xmake build -y WeaselTSF
+          xmake build -y WeaselServer
+
+      - name: Assemble hashed installable bundle
+        id: assemble_bundle
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $Diagnostics = Join-Path $env:RUNNER_TEMP 'bundle-diagnostics'
+          New-Item -ItemType Directory -Path $Diagnostics -Force | Out-Null
+          try {
+            ./scripts/build-windows-bundle.ps1 `
+              -WeaselRoot "$env:GITHUB_WORKSPACE/external/weasel" `
+              -NativeBuildRoot "$env:GITHUB_WORKSPACE/build/native" `
+              -RepositoryCommit "$env:GITHUB_SHA"
+          } catch {
+            $_ | Format-List * -Force | Out-String | Set-Content `
+              -LiteralPath (Join-Path $Diagnostics 'bundle-exception.txt')
+            $_.ScriptStackTrace | Set-Content `
+              -LiteralPath (Join-Path $Diagnostics 'bundle-stack.txt')
+            throw
+          }
+
+      - name: Capture bundle output diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          $Diagnostics = Join-Path $env:RUNNER_TEMP 'bundle-diagnostics'
+          New-Item -ItemType Directory -Path $Diagnostics -Force | Out-Null
+          $Roots = @(
+            "$env:GITHUB_WORKSPACE/external/weasel/output",
+            "$env:GITHUB_WORKSPACE/external/weasel/build",
+            "$env:GITHUB_WORKSPACE/build/native",
+            "$env:GITHUB_WORKSPACE/dist/neural-weasel-experimental"
+          )
+          foreach ($Root in $Roots) {
+            "=== $Root ===" | Add-Content `
+              -LiteralPath (Join-Path $Diagnostics 'binary-tree.txt')
+            if (Test-Path -LiteralPath $Root) {
+              Get-ChildItem -LiteralPath $Root -Recurse -File `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Extension -in @('.dll', '.exe', '.lib', '.pdb', '.json')
+                } |
+                Select-Object -First 1000 FullName, Length |
+                Format-Table -AutoSize | Out-String | Add-Content `
+                  -LiteralPath (Join-Path $Diagnostics 'binary-tree.txt')
+            } else {
+              '<missing>' | Add-Content `
+                -LiteralPath (Join-Path $Diagnostics 'binary-tree.txt')
+            }
+          }
+
+      - name: Upload bundle failure diagnostics
+        if: always() && steps.assemble_bundle.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: neural-weasel-bundle-diagnostics
+          path: |
+            ${{ runner.temp }}/bundle-diagnostics
+            dist/neural-weasel-experimental
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop after bundle assembly failure
+        if: steps.assemble_bundle.outcome == 'failure'
+        shell: pwsh
+        run: throw 'Bundle assembly failed; see neural-weasel-bundle-diagnostics.'
+
+      - name: Verify binary and resource isolation
+        shell: pwsh
+        run: |
+          python scripts/verify-windows-bundle.py `
+            dist/neural-weasel-experimental
+
+      - name: Exercise fail-closed install and uninstall dry runs
+        shell: pwsh
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}/NeuralWeaselLocalAppData
+        run: |
+          ./scripts/test-install-safety.ps1 `
+            -BundleRoot ./dist/neural-weasel-experimental
+
+      - name: Upload complete Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: neural-weasel-experimental-x64
+          path: dist/neural-weasel-experimental
+          if-no-files-found: error
+          retention-days: 14

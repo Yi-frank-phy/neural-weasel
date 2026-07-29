@@ -57,12 +57,12 @@ class BilingualImeEngine:
         limit: int = 5,
         context_epoch: int | None = None,
     ) -> list[Candidate]:
-        if context_epoch is None:
+        if context_epoch is None or context_epoch == 0:
             state = self.coordinator.latest_state
-        elif context_epoch == 0:
-            state = None
         else:
             state = self.coordinator.state_for_epoch(context_epoch)
+            if state is None:
+                return []
         if state is None:
             return self.constraint_engine.query("", raw_keys, state=None, limit=limit)
         with self._contexts_lock:

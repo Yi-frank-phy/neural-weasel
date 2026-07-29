@@ -159,15 +159,19 @@ ContextDecision(
     kind=chinese | english | ambiguous,
     stable_prior=chinese | english | none,
     hard_forbidden_scripts,
-    prior_for(script, raw_keys, model_margin),
+    prior_for(script, raw_keys),
 )
 ```
 
 Hard rejection is deliberately asymmetric:
 
 - English context rejects Han leakage.
-- Chinese context permits Latin with a modest penalty.
+- Chinese context permits Latin with a fixed configurable penalty, waived only
+  by explicit Latin shape.
 - Ambiguous context permits both.
+
+The policy does not perform a second ranking pass or compare the best Han and
+Latin scores to derive a dynamic margin.
 
 The stable state changes only after a commit or a decisive context update. A
 candidate list alone cannot flip it repeatedly from key to key.

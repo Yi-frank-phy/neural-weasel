@@ -15,6 +15,28 @@ void SafeRelease(T*& value) {
   }
 }
 
+HRESULT ReadRange(ITfRange* range,
+                  TfEditCookie edit_cookie,
+                  LONG maximum_code_units,
+                  std::wstring* output) {
+  output->clear();
+  if (maximum_code_units == 0) {
+    return S_OK;
+  }
+  if (range == nullptr || maximum_code_units < 0) {
+    return E_INVALIDARG;
+  }
+
+  std::vector<WCHAR> buffer(static_cast<std::size_t>(maximum_code_units));
+  ULONG fetched = 0;
+  const HRESULT result =
+      range->GetText(edit_cookie, 0, buffer.data(), maximum_code_units, &fetched);
+  if (SUCCEEDED(result)) {
+    output->assign(buffer.data(), fetched);
+  }
+  return result;
+}
+
 }  // namespace
 
 SurroundingTextEditSession::SurroundingTextEditSession(
@@ -58,28 +80,36 @@ ULONG SurroundingTextEditSession::Release() {
 }
 
 HRESULT SurroundingTextEditSession::DoEditSession(TfEditCookie edit_cookie) {
+  auto snapshot = CaptureSurroundingText(
+      context_, edit_cookie, limits_, policy_);
+  Deliver(snapshot);
+  return snapshot.result;
+}
+
+SurroundingTextSnapshot CaptureSurroundingText(
+    ITfContext* context,
+    TfEditCookie edit_cookie,
+    SurroundingTextLimits limits,
+    CapturePolicyDecision policy) {
   SurroundingTextSnapshot snapshot;
-  if (!policy_.allowed) {
+  if (!policy.allowed) {
     snapshot.result = E_ACCESSDENIED;
-    Deliver(std::move(snapshot));
-    return E_ACCESSDENIED;
+    return snapshot;
   }
-  if (context_ == nullptr || limits_.before_code_units < 0 ||
-      limits_.after_code_units < 0) {
+  if (context == nullptr || limits.before_code_units < 0 ||
+      limits.after_code_units < 0) {
     snapshot.result = E_INVALIDARG;
-    Deliver(std::move(snapshot));
-    return E_INVALIDARG;
+    return snapshot;
   }
 
   TF_SELECTION selection{};
   ULONG fetched = 0;
-  HRESULT result = context_->GetSelection(
+  HRESULT result = context->GetSelection(
       edit_cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
   if (FAILED(result) || fetched != 1 || selection.range == nullptr) {
     const HRESULT failure = FAILED(result) ? result : E_FAIL;
     snapshot.result = failure;
-    Deliver(std::move(snapshot));
-    return failure;
+    return snapshot;
   }
 
   ITfRange* caret = nullptr;
@@ -100,29 +130,29 @@ HRESULT SurroundingTextEditSession::DoEditSession(TfEditCookie edit_cookie) {
 
   LONG before_shift = 0;
   LONG after_shift = 0;
-  if (SUCCEEDED(result) && limits_.before_code_units > 0) {
-    result = before->ShiftStart(edit_cookie, -limits_.before_code_units,
+  if (SUCCEEDED(result) && limits.before_code_units > 0) {
+    result = before->ShiftStart(edit_cookie, -limits.before_code_units,
                                 &before_shift, nullptr);
   }
-  if (SUCCEEDED(result) && limits_.after_code_units > 0) {
-    result = after->ShiftEnd(edit_cookie, limits_.after_code_units,
+  if (SUCCEEDED(result) && limits.after_code_units > 0) {
+    result = after->ShiftEnd(edit_cookie, limits.after_code_units,
                              &after_shift, nullptr);
   }
   if (SUCCEEDED(result)) {
-    result = ReadRange(before, edit_cookie, limits_.before_code_units,
+    result = ReadRange(before, edit_cookie, limits.before_code_units,
                        &snapshot.before);
   }
   if (SUCCEEDED(result)) {
-    result = ReadRange(after, edit_cookie, limits_.after_code_units,
+    result = ReadRange(after, edit_cookie, limits.after_code_units,
                        &snapshot.after);
   }
 
   snapshot.before_reached_region_boundary =
-      limits_.before_code_units == 0 ||
-      -before_shift < limits_.before_code_units;
+      limits.before_code_units == 0 ||
+      -before_shift < limits.before_code_units;
   snapshot.after_reached_region_boundary =
-      limits_.after_code_units == 0 ||
-      after_shift < limits_.after_code_units;
+      limits.after_code_units == 0 ||
+      after_shift < limits.after_code_units;
   snapshot.partial = !(snapshot.before_reached_region_boundary &&
                        snapshot.after_reached_region_boundary);
   snapshot.result = result;
@@ -132,30 +162,7 @@ HRESULT SurroundingTextEditSession::DoEditSession(TfEditCookie edit_cookie) {
   SafeRelease(caret);
   SafeRelease(selection.range);
 
-  Deliver(std::move(snapshot));
-  return result;
-}
-
-HRESULT SurroundingTextEditSession::ReadRange(ITfRange* range,
-                                              TfEditCookie edit_cookie,
-                                              LONG maximum_code_units,
-                                              std::wstring* output) {
-  output->clear();
-  if (maximum_code_units == 0) {
-    return S_OK;
-  }
-  if (range == nullptr || maximum_code_units < 0) {
-    return E_INVALIDARG;
-  }
-
-  std::vector<WCHAR> buffer(static_cast<std::size_t>(maximum_code_units));
-  ULONG fetched = 0;
-  const HRESULT result =
-      range->GetText(edit_cookie, 0, buffer.data(), maximum_code_units, &fetched);
-  if (SUCCEEDED(result)) {
-    output->assign(buffer.data(), fetched);
-  }
-  return result;
+  return snapshot;
 }
 
 void SurroundingTextEditSession::Deliver(

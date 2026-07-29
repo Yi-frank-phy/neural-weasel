@@ -1,0 +1,56 @@
+schema:
+  schema_id: neural_weasel
+  name: 神经小狼毫（实验）
+  version: "0.1"
+  author:
+    - Neural Weasel contributors
+  description: >-
+    Experimental bilingual profile backed by the local Neural Weasel model
+    service. It remains isolated from existing Rime user data.
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [中文, 西文]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - bilingual_key_processor
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - ai_translator
+    - punct_translator
+
+speller:
+  alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.'-"
+  delimiter: " '"
+
+menu:
+  page_size: 9
+
+punctuator:
+  half_shape:
+    ".": "."
+    ",": ","
+    "?": "?"
+    "!": "!"
+
+key_binder:
+  bindings: []
+
+recognizer:
+  patterns:
+    punct: "^/([0-9]0?|[A-Za-z]+)$"

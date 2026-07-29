@@ -248,7 +248,17 @@ class NamedPipeServer:
                 try:
                     win32pipe.ConnectNamedPipe(handle, None)
                 except pywintypes.error as error:
-                    if error.winerror != 535:  # ERROR_PIPE_CONNECTED
+                    if error.winerror == 535:  # ERROR_PIPE_CONNECTED
+                        pass
+                    elif error.winerror == 232:  # ERROR_NO_DATA
+                        # A client can connect and close between CreateNamedPipe
+                        # and ConnectNamedPipe. The instance is no longer
+                        # reusable, but the listener itself must stay alive.
+                        win32file.CloseHandle(handle)
+                        if self._stop_event.is_set():
+                            break
+                        continue
+                    else:
                         raise
                 if self._stop_event.is_set():
                     win32file.CloseHandle(handle)
@@ -395,13 +405,6 @@ class NamedPipeServer:
             raise ProtocolError(f"candidate_count must not exceed {MAX_CANDIDATES}")
 
         latest_epoch = int(self.engine.context_epoch)
-        if latest_epoch == 0:
-            return _error(
-                "context_not_ready",
-                "no model context snapshot is ready",
-                request_id=message.get("request_id"),
-                retryable=True,
-            )
         if requested_epoch == 0:
             requested_epoch = latest_epoch
         elif requested_epoch > latest_epoch:
@@ -455,14 +458,16 @@ class NamedPipeServer:
             raise ProtocolError(f"candidate_count must not exceed {MAX_CANDIDATES}")
 
         latest_epoch = int(self.engine.context_epoch)
-        if requested_epoch > latest_epoch:
+        if requested_epoch == 0:
+            requested_epoch = latest_epoch
+        elif requested_epoch > latest_epoch:
             return _error(
                 "context_not_ready",
                 "requested model context snapshot is not ready",
                 request_id=message.get("request_id"),
                 retryable=True,
             )
-        if requested_epoch < latest_epoch:
+        elif requested_epoch < latest_epoch:
             has_snapshot = getattr(self.engine, "has_snapshot", None)
             if callable(has_snapshot) and not has_snapshot(requested_epoch):
                 return _error(

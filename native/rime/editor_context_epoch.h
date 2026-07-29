@@ -5,9 +5,9 @@
 
 namespace neural_weasel::rime_plugin {
 
-// WeaselServer's extended IPC handler publishes the epoch only after the
-// context_update has been accepted by the model service. The translator reads
-// an immutable scalar and never touches editor text.
+// A nonzero value may be published after a context update is accepted. Zero
+// deliberately means "query the latest service snapshot"; the translator
+// reads only this scalar and never touches editor text.
 class EditorContextEpoch final {
  public:
   static EditorContextEpoch& Instance();

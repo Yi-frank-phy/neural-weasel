@@ -71,8 +71,8 @@ The sparse backend avoids the full-vocabulary projection and CPU logits copy:
 .\scripts\start-model-service.ps1 -Backend sparse
 ```
 
-These commands start the Named Pipe model service. They do not install a Windows input
-method profile.
+These commands start the separate Named Pipe model service. Installation is
+performed only from a verified CI bundle with `install-dev-profile.ps1`.
 
 ## Measure on the target GPU
 
@@ -98,23 +98,17 @@ percentiles, refresh percentiles, and stale-snapshot errors. Snapshot refresh ab
 
 ## Windows profile status
 
-There is currently no safe end-user installation sequence. In particular:
+Windows CI applies the repository isolation overlay to pinned Weasel `0.17.4`
+and uploads `neural-weasel-experimental-x64`. The bundle contains the real
+experimental TSF DLL, independent server, profile tool, static neural module
+evidence, runtime data, hash manifest, and safety scripts. Installation accepts
+only the reserved experimental identities and never sets the default input
+method.
 
-- `scripts/install-dev-profile.ps1` requires
-  `NeuralWeaselExperimentalTSF.dll` and `NeuralWeaselProfileTool.exe`;
-- this branch does not build either artifact;
-- registering the official Weasel DLL under the experimental GUID would still connect
-  to the official WeaselServer and could affect the existing installation;
-- a safe deliverable requires a consistently renamed/forked TSF DLL, server, IPC
-  endpoint, RimeWithWeasel build, and static neural module.
-
-The install/uninstall scripts and GUID manifest are safety-tested preparation, not an
-installable release.
-
-The branch CI does compile the repository-owned static librime translator/key
-processor and native state-machine tests with MSVC against librime `1.15.0`. This is
-build evidence for the integration boundary, not evidence that an independent TSF
-profile can be installed.
+This is an experimental test bundle, not a production release. Global TSF
+registration, `Win+Space` visibility, real editor typing, secure-field
+behavior, server restart, and complete removal still require the
+[manual Windows smoke test](docs/manual/windows-install-smoke-test.md).
 
 ## Scope of the tested core
 
@@ -137,5 +131,5 @@ Not yet supported:
 - double pinyin, abbreviation, fuzzy pinyin, tones, or typo correction;
 - real conditional Base-model scoring for cross-token English completions in the live
   service (the current live tokenizer catalog is one-token);
-- a compiled, registered, and smoke-tested independent Weasel TSF profile;
+- a manually registered and smoke-tested independent Weasel TSF profile;
 - an activated automatic Microsoft Pinyin fallback.

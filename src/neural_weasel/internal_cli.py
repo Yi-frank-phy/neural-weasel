@@ -303,6 +303,11 @@ def main() -> int:
                 index=PinyinIndex(index_path),
                 backend_kind=args.backend,
             )
+            # Publish a context-free startup snapshot before accepting pipe
+            # clients. Later context updates replace it asynchronously; a
+            # backend initialization failure remains explicit and terminates
+            # startup instead of silently changing backend.
+            engine.update_context("", "")
             NamedPipeServer(engine).serve_forever()
             return 0
 

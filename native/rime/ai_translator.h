@@ -9,6 +9,7 @@
 #include <rime/translator.h>
 
 #include "pipe/named_pipe_client.h"
+#include "rime/epoch_semantics.h"
 
 namespace neural_weasel::rime_plugin {
 
