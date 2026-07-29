@@ -30,9 +30,7 @@ def test_native_build_includes_bilingual_processor_and_test() -> None:
 
 def test_processor_has_no_model_or_pipe_dependency() -> None:
     """AT-RT-01: acceptance keys are pure local state transitions."""
-    source = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
 
     assert "NamedPipeClient" not in source
     assert "TryQuery" not in source
@@ -42,9 +40,7 @@ def test_processor_has_no_model_or_pipe_dependency() -> None:
 def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     """Release evidence requires a real MSVC compile, not source inspection."""
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    bundle_script = (ROOT / "scripts/build-windows-bundle.ps1").read_text(
-        encoding="utf-8"
-    )
+    bundle_script = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
 
     assert "windows-vertical-slice" in workflow
     assert "runs-on: windows-2022" in workflow
@@ -65,8 +61,7 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     assert "build.bat msvc" in workflow
     assert "Boost.Build bootstrap did not produce b2.exe" in workflow
     expected_failure = (
-        "Pinned Boost/Weasel native dependency build did not produce "
-        "verified x64 outputs"
+        "Pinned Boost/Weasel native dependency build did not produce verified x64 outputs"
     )
     assert expected_failure in workflow
     assert "Verify pinned native dependency outputs" in workflow
@@ -87,17 +82,10 @@ def test_plugin_build_generates_librime_build_config_header() -> None:
     assert "${RIME_ROOT}/include" in cmake
 
 
-def test_context_capture_is_hooked_into_pinned_tsf_without_model_on_edit_thread(
-) -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(
-        encoding="utf-8"
-    )
-    adapter = (ROOT / "native/tsf/weasel_context_adapter.cc").read_text(
-        encoding="utf-8"
-    )
-    bridge = (ROOT / "native/context/context_update_bridge.h").read_text(
-        encoding="utf-8"
-    )
+def test_context_capture_is_hooked_into_pinned_tsf_without_model_on_edit_thread() -> None:
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    adapter = (ROOT / "native/tsf/weasel_context_adapter.cc").read_text(encoding="utf-8")
+    bridge = (ROOT / "native/context/context_update_bridge.h").read_text(encoding="utf-8")
 
     assert "CaptureWeaselContext(pContext, _tfClientId)" in overlay
     assert "ClearWeaselContext" in overlay
