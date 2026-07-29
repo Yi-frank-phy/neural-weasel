@@ -136,6 +136,9 @@ local pdb = path.join(target:targetdir(), "NeuralWeaselExperimentalTSF.pdb")
       os.cp(pdb, "$(projectdir)/output/NeuralWeaselExperimentalTSF.pdb")
     end
 '@
+Replace-Literal -Path $TsfXmake `
+    -Old '  add_shflags("/DEBUG /OPT:REF /OPT:ICF")' `
+    -New '  add_shflags("/DEBUG /OPT:REF /OPT:ICF /LTCG")'
 
 $TextEditSink = Join-Path $ResolvedWeaselRoot 'WeaselTSF/TextEditSink.cpp'
 Replace-Literal -Path $TextEditSink -Old '#include "WeaselTSF.h"' -New @'
