@@ -77,6 +77,7 @@ try {
     if ($LASTEXITCODE -eq 0) {
         throw 'Profile tool accepted a non-experimental profile GUID.'
     }
+    Write-Host 'Expected failure verified: non-experimental profile GUID'
 } finally {
     $env:LOCALAPPDATA = $OriginalLocalAppData
     if (Test-Path -LiteralPath $TestRoot) {
@@ -84,4 +85,8 @@ try {
     }
 }
 
+# The final profile-tool invocation is intentionally expected to return
+# nonzero. Clear that native exit code only after every assertion and cleanup
+# above has completed; thrown failures still terminate the script normally.
+$global:LASTEXITCODE = 0
 Write-Host 'Disposable install-safety tests passed without global registration.'
