@@ -18,6 +18,15 @@
 namespace neural_weasel::tsf {
 namespace {
 
+// InputScope.idl defines GUID_PROP_INPUTSCOPE with this value. Some Windows
+// SDK/linker combinations expose only the declaration, so keep the property
+// key local instead of depending on a global GUID definition in uuid.lib.
+constexpr GUID kInputScopePropertyGuid = {
+    0x1713dd5a,
+    0x68e7,
+    0x4a5b,
+    {0x9a, 0xf6, 0x59, 0x2a, 0x59, 0x5c, 0x77, 0x8d}};
+
 template <typename T>
 void SafeRelease(T*& value) {
   if (value != nullptr) {
@@ -88,7 +97,7 @@ CapturePolicyDecision ClassifyInputScope(ITfContext* context,
   VARIANT value;
   VariantInit(&value);
   const HRESULT property_result =
-      context->GetProperty(GUID_PROP_INPUTSCOPE, &property);
+      context->GetProperty(kInputScopePropertyGuid, &property);
   HRESULT value_result = E_FAIL;
   if (SUCCEEDED(property_result) && property != nullptr) {
     value_result = property->GetValue(edit_cookie, selection.range, &value);
