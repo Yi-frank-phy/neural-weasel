@@ -23,6 +23,7 @@ def test_parse_known_request_and_preserve_unknown_fields() -> None:
             "session_id": "session-1",
             "key": "n",
             "candidate_count": 7,
+            "secure": False,
             "vendor_field": {"opaque": True},
         }
     )
@@ -31,6 +32,7 @@ def test_parse_known_request_and_preserve_unknown_fields() -> None:
     assert request.session_id == "session-1"
     assert request.key == "n"
     assert request.candidate_count == 7
+    assert not request.secure
     assert request.extras == {"vendor_field": {"opaque": True}}
 
 
@@ -73,6 +75,17 @@ def test_candidate_index_rejects_boolean() -> None:
                 "function": "candidate_action",
                 "session_id": "session-1",
                 "candidate_index": True,
+            }
+        )
+
+
+def test_secure_flag_rejects_non_boolean_values() -> None:
+    with pytest.raises(QwenImeProtocolError, match="secure"):
+        parse_normalized_request(
+            {
+                "function": "focus_in",
+                "session_id": "session-1",
+                "secure": "yes",
             }
         )
 
