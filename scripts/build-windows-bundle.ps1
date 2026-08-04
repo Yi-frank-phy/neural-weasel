@@ -136,10 +136,11 @@ $UvCommand = Get-Command uv.exe -ErrorAction SilentlyContinue
 if (-not $UvCommand) {
     throw 'Pinned uv.exe is unavailable while assembling the Windows bundle.'
 }
-$UvVersion = (& $UvCommand.Source --version).Trim()
-if ($LASTEXITCODE -ne 0 -or $UvVersion -ne $ExpectedUvVersion) {
-    throw "Unexpected uv runtime version: $UvVersion"
+$UvVersionOutput = (& $UvCommand.Source --version).Trim()
+if ($LASTEXITCODE -ne 0 -or $UvVersionOutput -notmatch '^uv 0\.8\.22(?:\s|$)') {
+    throw "Unexpected uv runtime version: $UvVersionOutput"
 }
+$UvVersion = 'uv 0.8.22'
 Copy-RequiredFile -Source $UvCommand.Source `
     -Destination (Join-Path $OutputRoot 'tools/uv.exe')
 
