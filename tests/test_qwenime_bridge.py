@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from neural_weasel.qwenime_compat.bridge import QwenImeBridge
-from neural_weasel.qwenime_compat.protocol import parse_normalized_request
+from neural_weasel.qwenime_compat.protocol import MAX_RAW_INPUT, parse_normalized_request
 
 
 @dataclass
@@ -64,6 +64,17 @@ def test_full_pinyin_minimal_loop_commits_selected_candidate() -> None:
     assert engine.contexts == [("量子", "")]
 
 
+def test_empty_start_session_explicitly_clears_previous_context() -> None:
+    engine = _FakeEngine()
+    engine.contexts.append(("stale private context", ""))
+    bridge = QwenImeBridge(engine, session_id_factory=lambda: "session-1")
+
+    response = bridge.handle(_request("start_session"))
+
+    assert response.ok
+    assert engine.contexts[-1] == ("", "")
+
+
 def test_query_failure_preserves_literal_and_returns_no_candidates() -> None:
     engine = _FakeEngine()
     engine.fail_query = True
@@ -79,6 +90,25 @@ def test_query_failure_preserves_literal_and_returns_no_candidates() -> None:
     assert response.commit == ""
 
 
+def test_raw_input_limit_commits_literal_without_dropping_the_new_key() -> None:
+    engine = _FakeEngine()
+    bridge = QwenImeBridge(engine, session_id_factory=lambda: "session-1")
+    bridge.handle(_request("start_session"))
+
+    for _ in range(MAX_RAW_INPUT):
+        response = bridge.handle(_request("process_key", session_id="session-1", key="a"))
+        assert response.commit == ""
+
+    overflow = bridge.handle(_request("process_key", session_id="session-1", key="a"))
+
+    expected_literal = "a" * (MAX_RAW_INPUT + 1)
+    assert overflow.ok
+    assert overflow.handled
+    assert overflow.commit == expected_literal
+    assert overflow.composition.raw_input == ""
+    assert engine.commits == [expected_literal]
+
+
 def test_missing_session_never_creates_state_implicitly() -> None:
     engine = _FakeEngine()
     bridge = QwenImeBridge(engine)
@@ -89,6 +119,20 @@ def test_missing_session_never_creates_state_implicitly() -> None:
     assert not response.handled
     assert response.error_code == "missing_session"
     assert engine.queries == []
+
+
+def test_ended_session_rejects_later_keys() -> None:
+    engine = _FakeEngine()
+    bridge = QwenImeBridge(engine, session_id_factory=lambda: "session-1")
+    bridge.handle(_request("start_session"))
+
+    ended = bridge.handle(_request("end_session", session_id="session-1"))
+    later = bridge.handle(_request("process_key", session_id="session-1", key="n"))
+
+    assert ended.ok
+    assert ended.handled
+    assert not later.ok
+    assert later.error_code == "missing_session"
 
 
 def test_escape_clears_composition_without_committing() -> None:
