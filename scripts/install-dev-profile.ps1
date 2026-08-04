@@ -16,6 +16,7 @@ $ExperimentalClsid = '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}'
 $ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
 $ExpectedWeaselRevision = '9cc96e20dc71b80876b12f689bb5863c76c2a7ed'
 $ProfileToolName = 'NeuralWeaselProfileTool.exe'
+$ActivatorName = 'NeuralWeaselSessionActivator.exe'
 $TsfDllName = 'NeuralWeaselExperimentalTSF.dll'
 $ServerName = 'NeuralWeaselServer.exe'
 
@@ -24,6 +25,35 @@ function Assert-LastExitCode {
     if ($LASTEXITCODE -ne 0) {
         throw "$Operation failed with exit code $LASTEXITCODE."
     }
+}
+
+function Get-ProfileStatus {
+    param(
+        [Parameter(Mandatory)][string]$Tool,
+        [Parameter(Mandatory)][string]$ExpectedDll
+    )
+    $StatusJson = & $Tool status `
+        --clsid $ExperimentalClsid `
+        --profile-guid $ExperimentalProfileGuid `
+        --json
+    Assert-LastExitCode -Operation 'Experimental profile status check'
+    $ProfileStatus = $StatusJson | ConvertFrom-Json
+    if ($ProfileStatus.identity_conflict) {
+        throw 'The reserved experimental profile identity is in conflict.'
+    }
+    if ($ProfileStatus.registered) {
+        if (-not $ProfileStatus.com_path) {
+            throw 'The registered experimental profile has no COM path.'
+        }
+        $ActualDll = [IO.Path]::GetFullPath([string]$ProfileStatus.com_path)
+        if (-not $ActualDll.Equals(
+            [IO.Path]::GetFullPath($ExpectedDll),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw 'The registered experimental COM path does not match this installation.'
+        }
+    }
+    return $ProfileStatus
 }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
@@ -41,7 +71,7 @@ $ExpectedInstallRoot = [IO.Path]::GetFullPath(
 )
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 if ($InstallRoot -ne $ExpectedInstallRoot) {
-    throw "Refusing install directory outside the reserved experimental boundary."
+    throw 'Refusing install directory outside the reserved experimental boundary.'
 }
 
 $ManifestPath = Join-Path $BuildDirectory 'build-manifest.json'
@@ -61,6 +91,7 @@ if (
 $Required = @(
     $TsfDllName,
     $ProfileToolName,
+    $ActivatorName,
     $ServerName,
     'NeuralWeaselRimeModule.lib',
     'build-manifest.json',
@@ -68,6 +99,10 @@ $Required = @(
     'uninstall-dev-profile.ps1',
     'diagnose.ps1',
     'start-model-service.ps1',
+    'launch-neural-weasel.ps1',
+    'Start-Neural-Weasel.cmd',
+    '启动神经小狼毫.cmd',
+    'tools\uv.exe',
     'README-INSTALL-TEST.md',
     'data\neural_weasel.schema.yaml',
     'rime-user\default.custom.yaml',
@@ -156,12 +191,21 @@ if (Test-Path -LiteralPath $ExistingManifestPath -PathType Leaf) {
         }
     }
     if ($ExistingMatches) {
-        & (Join-Path $InstallRoot $ProfileToolName) register `
-            --clsid $ExperimentalClsid `
-            --profile-guid $ExperimentalProfileGuid `
-            --dll (Join-Path $InstallRoot $TsfDllName)
-        Assert-LastExitCode -Operation 'Idempotent experimental profile registration'
-        Write-Host 'The identical experimental bundle is already installed and registered.'
+        $InstalledTool = Join-Path $InstallRoot $ProfileToolName
+        $InstalledDll = Join-Path $InstallRoot $TsfDllName
+        $ProfileStatus = Get-ProfileStatus `
+            -Tool $InstalledTool `
+            -ExpectedDll $InstalledDll
+        if (-not $ProfileStatus.registered) {
+            & $InstalledTool register `
+                --clsid $ExperimentalClsid `
+                --profile-guid $ExperimentalProfileGuid `
+                --dll $InstalledDll
+            Assert-LastExitCode -Operation 'Missing experimental profile registration repair'
+            Write-Host 'The identical bundle was already installed; its missing registration was repaired.'
+        } else {
+            Write-Host 'The identical bundle is already installed and registered; registration was not repeated.'
+        }
         exit 0
     }
 }
@@ -241,7 +285,7 @@ try {
             --profile-guid $ExperimentalProfileGuid `
             --dll $RollbackDll
         if ($LASTEXITCODE -ne 0) {
-            throw "Install failed and previous profile registration could not be restored."
+            throw 'Install failed and previous profile registration could not be restored.'
         }
     }
     if (Test-Path -LiteralPath $StagingRoot -PathType Container) {
@@ -251,5 +295,4 @@ try {
 }
 
 Write-Host 'Installed 神经小狼毫（实验） without changing the default input method.'
-Write-Host 'Open Windows input settings or Win+Space and select 神经小狼毫（实验） manually.'
-Write-Host "Start the model service with: $InstallRoot\start-model-service.ps1 -Backend full"
+Write-Host 'Run 启动神经小狼毫.cmd to start the model service and activate it for this desktop session.'
