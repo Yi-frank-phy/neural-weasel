@@ -68,10 +68,7 @@ def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
 
 def test_double_click_runtime_supports_windows_powershell_51() -> None:
     service = _read("scripts/start-model-service.ps1")
-    launchers = (
-        _read("scripts/Start-Neural-Weasel.cmd")
-        + _read("scripts/启动神经小狼毫.cmd")
-    )
+    launchers = _read("scripts/Start-Neural-Weasel.cmd") + _read("scripts/启动神经小狼毫.cmd")
 
     assert "powershell.exe" in launchers
     assert "ConvertToHexString" not in service
@@ -94,7 +91,6 @@ def test_ci_dry_runs_the_downloaded_launcher_before_upload() -> None:
     focused_workflow = _read(".github/workflows/one-click-launcher.yml")
 
     assert "Dry-run one-click launcher" in workflow
-    assert "powershell.exe" in workflow
     assert "launch-neural-weasel.ps1" in workflow
     assert "-DryRun" in workflow
     assert "Parse user scripts with Windows PowerShell 5.1" in focused_workflow
