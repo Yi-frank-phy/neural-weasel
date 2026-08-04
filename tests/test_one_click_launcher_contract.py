@@ -66,6 +66,17 @@ def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
     assert "& $UvCommand run" in service
 
 
+def test_uv_pin_accepts_official_build_metadata_but_not_other_versions() -> None:
+    service = _read("scripts/start-model-service.ps1")
+    bundle = _read("scripts/build-windows-bundle.ps1")
+
+    for script in (service, bundle):
+        assert "$UvVersionOutput" in script
+        assert "^uv 0\\.8\\.22(?:\\s|$)" in script
+        assert "$UvVersion = 'uv 0.8.22'" in script
+        assert "-ne 'uv 0.8.22'" not in script
+
+
 def test_double_click_runtime_supports_windows_powershell_51() -> None:
     service = _read("scripts/start-model-service.ps1")
     launchers = _read("scripts/Start-Neural-Weasel.cmd") + _read("scripts/启动神经小狼毫.cmd")
