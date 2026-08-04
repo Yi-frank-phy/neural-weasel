@@ -16,8 +16,20 @@ $AllowedModels = @(
 if ($Model -notin $AllowedModels) {
     throw "Checkpoint is not in the Base-only allowlist: $($AllowedModels -join ', ')"
 }
-if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-    throw 'uv is required to start the development model service.'
+
+$BundledUv = Join-Path $PSScriptRoot 'tools\uv.exe'
+if (Test-Path -LiteralPath $BundledUv -PathType Leaf) {
+    $UvCommand = $BundledUv
+    $UvVersion = (& $UvCommand --version).Trim()
+    if ($LASTEXITCODE -ne 0 -or $UvVersion -ne 'uv 0.8.22') {
+        throw "The bundled uv runtime is not the pinned version: $UvVersion"
+    }
+} else {
+    $PathUv = Get-Command uv -ErrorAction SilentlyContinue
+    if (-not $PathUv) {
+        throw 'The bundle is missing tools\uv.exe and uv was not found on PATH.'
+    }
+    $UvCommand = $PathUv.Source
 }
 
 $ArtifactProject = Join-Path $PSScriptRoot 'python-service'
@@ -50,6 +62,7 @@ function Write-ServiceState {
         [Parameter(Mandatory)][string]$State,
         [int]$ExitCode = 0
     )
+    $TemporaryState = "$StatePath.tmp-$PID"
     [ordered]@{
         state = $State
         backend = $Backend
@@ -58,12 +71,13 @@ function Write-ServiceState {
         exit_code = $ExitCode
         updated_utc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json |
-        Set-Content -LiteralPath $StatePath -Encoding utf8NoBOM
+        Set-Content -LiteralPath $TemporaryState -Encoding utf8NoBOM
+    Move-Item -LiteralPath $TemporaryState -Destination $StatePath -Force
 }
 
 if (-not (Test-Path -LiteralPath $Index -PathType Leaf)) {
     Write-ServiceState -State 'building-index'
-    & uv run --project $ProjectRoot --frozen neural-weasel build-index `
+    & $UvCommand run --project $ProjectRoot --frozen neural-weasel build-index `
         --model $Model `
         --output $Index
     if ($LASTEXITCODE -ne 0) {
@@ -74,7 +88,7 @@ if (-not (Test-Path -LiteralPath $Index -PathType Leaf)) {
 
 Write-ServiceState -State 'running'
 try {
-    & uv run --project $ProjectRoot --frozen neural-weasel serve `
+    & $UvCommand run --project $ProjectRoot --frozen neural-weasel serve `
         --model $Model `
         --backend $Backend `
         --index $Index
