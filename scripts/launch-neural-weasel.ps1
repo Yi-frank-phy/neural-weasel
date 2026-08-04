@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('Qwen/Qwen3.5-0.8B-Base')]
     [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
     [ValidateSet('full', 'sparse')]
     [string]$Backend = 'full',
@@ -174,7 +175,7 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
             '-Backend',
             $Backend
         ) -join ' '
-        Write-Host 'Starting the local model service. The first launch may download the model.'
+        Write-Host 'Starting the isolated 0.8B model service. The first launch may download the model.'
         $ServiceProcess = Start-Process `
             -FilePath $PowerShellExe `
             -ArgumentList $Arguments `
@@ -203,5 +204,5 @@ if (-not $NoActivate) {
     Assert-LastExitCode -Operation 'Current-session 神经小狼毫 activation'
 }
 
-Write-Host '神经小狼毫（实验） is running and activated for the current Windows desktop session.'
-Write-Host 'The Windows default input method was not changed.'
+Write-Host '神经小狼毫（安全版） is running and activated for the current Windows desktop session.'
+Write-Host 'Neural code runs outside application processes; the Windows default input method was not changed.'
