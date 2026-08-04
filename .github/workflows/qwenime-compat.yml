@@ -54,6 +54,7 @@ jobs:
           tests/test_qwenime_compat_protocol.py
           tests/test_qwenime_bridge.py
           tests/test_qwenime_delivery_contract.py
+          tests/test_qwenime_zero_registration_swap.py
 
       - name: Check compatibility-slice formatting
         run: >-
@@ -62,14 +63,16 @@ jobs:
           tests/test_qwenime_compat_protocol.py
           tests/test_qwenime_bridge.py
           tests/test_qwenime_delivery_contract.py
+          tests/test_qwenime_zero_registration_swap.py
 
-      - name: Run normalized protocol and bridge tests
+      - name: Run protocol, bridge, and zero-registration tests
         run: >-
           uv run --no-project --python 3.12 --with pytest==9.1.1
           python -m pytest --noconftest
           tests/test_qwenime_compat_protocol.py
           tests/test_qwenime_bridge.py
           tests/test_qwenime_delivery_contract.py
+          tests/test_qwenime_zero_registration_swap.py
 
   delivery:
     name: Build clean compatibility artifact
