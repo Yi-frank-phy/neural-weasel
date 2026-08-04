@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('Qwen/Qwen3.5-0.8B-Base')]
     [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
     [ValidateSet('full', 'sparse')]
     [string]$Backend = 'full',
@@ -8,14 +9,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-
-$AllowedModels = @(
-    'Qwen/Qwen3.5-0.8B-Base',
-    'Qwen/Qwen3.5-4B-Base'
-)
-if ($Model -notin $AllowedModels) {
-    throw "Checkpoint is not in the Base-only allowlist: $($AllowedModels -join ', ')"
-}
 
 $BundledUv = Join-Path $PSScriptRoot 'tools\uv.exe'
 if (Test-Path -LiteralPath $BundledUv -PathType Leaf) {
@@ -79,6 +72,7 @@ function Write-ServiceState {
         model = $Model
         pid = $PID
         exit_code = $ExitCode
+        safety_profile = 'crash-contained-0.8b'
         updated_utc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json
     Write-Utf8NoBom -Path $TemporaryState -Content $Json
@@ -105,7 +99,7 @@ try {
     $ServiceExit = $LASTEXITCODE
     if ($ServiceExit -ne 0) {
         Write-ServiceState -State 'failed' -ExitCode $ServiceExit
-        throw "Model service stopped with exit code $ServiceExit. No backend fallback was attempted."
+        throw "Model service stopped with exit code $ServiceExit. No automatic restart was attempted."
     }
     Write-ServiceState -State 'stopped'
 } catch {
