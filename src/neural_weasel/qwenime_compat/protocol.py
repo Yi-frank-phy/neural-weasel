@@ -140,9 +140,7 @@ def parse_normalized_request(message: Mapping[str, Any]) -> NormalizedRequest:
         or not isinstance(candidate_count_value, int)
         or not 1 <= candidate_count_value <= MAX_CANDIDATES
     ):
-        raise QwenImeProtocolError(
-            f"candidate_count must be an integer from 1 to {MAX_CANDIDATES}"
-        )
+        raise QwenImeProtocolError(f"candidate_count must be an integer from 1 to {MAX_CANDIDATES}")
 
     known = {
         "function",
