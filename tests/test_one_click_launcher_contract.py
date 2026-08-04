@@ -57,6 +57,43 @@ def test_session_activator_is_current_session_only_and_never_enables_profile() -
     assert "IsExpectedIdentity" in activator
 
 
+def test_safe_tsf_shell_contains_no_neural_runtime_or_context_capture() -> None:
+    overlay = _read("scripts/prepare-weasel-overlay.ps1")
+    tsf_start = overlay.index("$TsfXmake")
+    server_start = overlay.index("$ServerXmake")
+    tsf_block = overlay[tsf_start:server_start]
+
+    forbidden = (
+        "native/pipe/named_pipe_client.cc",
+        "native/context/context_update_bridge.cc",
+        "native/rime/editor_context_epoch.cc",
+        "native/tsf/surrounding_text_edit_session.cc",
+        "native/tsf/weasel_context_adapter.cc",
+        "CaptureWeaselContext",
+        "ClearWeaselContext",
+        "StartWeaselContext",
+        "StopWeaselContext",
+        "$TextEditSink",
+        "$WeaselTsfSource",
+    )
+    for marker in forbidden:
+        assert marker not in tsf_block
+
+    rime_start = overlay.index("$RimeXmake")
+    rime_block = overlay[rime_start:]
+    assert "native/pipe/named_pipe_client.cc" in rime_block
+    assert "native/rime/ai_translator.cc" in rime_block
+
+
+def test_safe_release_locks_the_runtime_to_the_08b_model() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    service = _read("scripts/start-model-service.ps1")
+
+    for script in (launcher, service):
+        assert "[ValidateSet('Qwen/Qwen3.5-0.8B-Base')]" in script
+        assert "Qwen/Qwen3.5-4B-Base" not in script
+
+
 def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
     service = _read("scripts/start-model-service.ps1")
 
