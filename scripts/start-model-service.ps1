@@ -46,9 +46,9 @@ if (-not $Index) {
     $Hasher = [Security.Cryptography.SHA256]::Create()
     try {
         $Bytes = [Text.Encoding]::UTF8.GetBytes($Model)
-        $ModelHash = [Convert]::ToHexString(
-            $Hasher.ComputeHash($Bytes)
-        ).Substring(0, 16).ToLowerInvariant()
+        $Digest = $Hasher.ComputeHash($Bytes)
+        $ModelHash = ([BitConverter]::ToString($Digest)).Replace('-', '') `
+            .Substring(0, 16).ToLowerInvariant()
     } finally {
         $Hasher.Dispose()
     }
@@ -57,21 +57,30 @@ if (-not $Index) {
     $Index = Join-Path $IndexRoot "$ModelHash.sqlite3"
 }
 
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Content
+    )
+    $Encoding = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($Path, $Content, $Encoding)
+}
+
 function Write-ServiceState {
     param(
         [Parameter(Mandatory)][string]$State,
         [int]$ExitCode = 0
     )
     $TemporaryState = "$StatePath.tmp-$PID"
-    [ordered]@{
+    $Json = [ordered]@{
         state = $State
         backend = $Backend
         model = $Model
         pid = $PID
         exit_code = $ExitCode
         updated_utc = [DateTime]::UtcNow.ToString('o')
-    } | ConvertTo-Json |
-        Set-Content -LiteralPath $TemporaryState -Encoding utf8NoBOM
+    } | ConvertTo-Json
+    Write-Utf8NoBom -Path $TemporaryState -Content $Json
     Move-Item -LiteralPath $TemporaryState -Destination $StatePath -Force
 }
 
