@@ -77,6 +77,28 @@ jobs:
           python -m pytest --noconftest
           tests/test_one_click_launcher_contract.py
 
+      - name: Parse user scripts with Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $Paths = @(
+            'scripts/install-dev-profile.ps1',
+            'scripts/start-model-service.ps1',
+            'scripts/launch-neural-weasel.ps1'
+          )
+          $QuotedPaths = ($Paths | ForEach-Object {
+            "'" + (Resolve-Path -LiteralPath $_).Path.Replace("'", "''") + "'"
+          }) -join ','
+          $Command = @"
+          `$ErrorActionPreference = 'Stop'
+          foreach (`$Path in @($QuotedPaths)) {
+            [void][ScriptBlock]::Create([IO.File]::ReadAllText(`$Path))
+          }
+          "@
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -Command $Command
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows PowerShell 5.1 parsing failed with exit code $LASTEXITCODE."
+          }
+
       - name: Configure isolated native helpers
         run: >-
           cmake -S native -B build/launcher -A x64
