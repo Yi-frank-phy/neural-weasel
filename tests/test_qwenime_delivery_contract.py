@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 _VENDOR_SUFFIXES = {".dll", ".exe", ".pdb", ".msi"}
+_IGNORED_DIRECTORY_NAMES = {".git", ".venv", "build", "dist", "external"}
 
 
 def test_repository_never_embeds_qwenime_vendor_binaries() -> None:
@@ -13,8 +14,7 @@ def test_repository_never_embeds_qwenime_vendor_binaries() -> None:
         for path in root.rglob("*")
         if path.is_file()
         and path.suffix.lower() in _VENDOR_SUFFIXES
-        and "build" not in path.parts
-        and "dist" not in path.parts
+        and not _IGNORED_DIRECTORY_NAMES.intersection(path.parts)
     ]
 
     assert forbidden == []
