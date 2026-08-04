@@ -91,7 +91,11 @@ def test_identical_install_skips_registration_when_identity_is_healthy() -> None
 
 def test_ci_dry_runs_the_downloaded_launcher_before_upload() -> None:
     workflow = _read(".github/workflows/ci.yml")
+    focused_workflow = _read(".github/workflows/one-click-launcher.yml")
 
     assert "Dry-run one-click launcher" in workflow
+    assert "powershell.exe" in workflow
     assert "launch-neural-weasel.ps1" in workflow
     assert "-DryRun" in workflow
+    assert "Parse user scripts with Windows PowerShell 5.1" in focused_workflow
+    assert "powershell.exe" in focused_workflow
