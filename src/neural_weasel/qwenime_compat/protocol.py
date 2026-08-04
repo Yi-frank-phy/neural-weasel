@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any
 
 MAX_JSON_BYTES = 1_048_576
 MAX_SESSION_ID = 128
