@@ -141,7 +141,8 @@ def test_pinned_overlay_rewrites_all_official_runtime_identities() -> None:
     assert "NeuralWeaselServer.exe" in overlay
     assert "Software\\\\NeuralWeasel\\\\Experimental" in overlay
     assert "NeuralWeaselExperimentalTSF.dll" in overlay
-    assert "CaptureWeaselContext" in overlay
+    assert "CaptureWeaselContext" not in overlay
+    assert "crash-contained" in overlay
     assert "rime_require_module_ai_translator" in overlay
 
 
