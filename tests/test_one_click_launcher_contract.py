@@ -22,6 +22,7 @@ def test_bundle_exposes_double_click_launchers_and_pinned_uv() -> None:
     assert "启动神经小狼毫.cmd" in bundle
     assert "tools/uv.exe" in bundle
     assert "uv 0.8.22" in bundle
+    assert "NeuralWeaselSessionActivator.exe" in bundle
 
 
 def test_launcher_installs_idempotently_starts_services_and_activates_session() -> None:
@@ -30,7 +31,7 @@ def test_launcher_installs_idempotently_starts_services_and_activates_session() 
     assert "install-dev-profile.ps1" in launcher
     assert "start-model-service.ps1" in launcher
     assert "NeuralWeaselServer.exe" in launcher
-    assert "NeuralWeaselProfileTool.exe" in launcher
+    assert "NeuralWeaselSessionActivator.exe" in launcher
     assert "Wait-ModelPipe" in launcher
     assert "Start-Process" in launcher
     assert " activate " in launcher
@@ -43,15 +44,17 @@ def test_launcher_installs_idempotently_starts_services_and_activates_session() 
     assert "regsvr32" not in launcher.lower()
 
 
-def test_profile_tool_supports_current_session_activation_only() -> None:
-    profile_tool = _read("native/profile_tool/profile_tool.cpp")
+def test_session_activator_is_current_session_only_and_never_enables_profile() -> None:
+    activator = _read("native/session_activator/session_activator.cpp")
 
-    assert 'options.command == L"activate"' in profile_tool
-    assert "ActivateProfile(" in profile_tool
-    assert "TF_IPPMF_FORSESSION" in profile_tool
-    assert "TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE" in profile_tool
-    assert "TF_IPPMF_ENABLEPROFILE" not in profile_tool
-    assert "SetDefault" not in profile_tool
+    assert "ActivateProfile(" in activator
+    assert "TF_IPPMF_FORSESSION" in activator
+    assert "TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE" in activator
+    assert "TF_IPPMF_ENABLEPROFILE" not in activator
+    assert "RegisterProfile" not in activator
+    assert "RegSetValue" not in activator
+    assert "SetDefault" not in activator
+    assert "IsExpectedIdentity" in activator
 
 
 def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
