@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .protocol import (
+    MAX_RAW_INPUT,
     CandidateView,
     CompositionView,
     NormalizedRequest,
@@ -93,7 +94,7 @@ class QwenImeBridge:
             )
         session = _Session()
         self._sessions[session_id] = session
-        self._refresh_context(session, request)
+        self._refresh_context(session, request, force=True)
         return NormalizedResponse(
             function=request.kind.value,
             ok=True,
@@ -115,7 +116,10 @@ class QwenImeBridge:
         self._refresh_context(session, request)
         normalized = key.lower()
         if len(key) == 1 and ("a" <= normalized <= "z" or key == "'"):
-            session.raw_input += normalized
+            next_raw_input = session.raw_input + normalized
+            if len(next_raw_input) > MAX_RAW_INPUT:
+                return self._commit(request, session, next_raw_input)
+            session.raw_input = next_raw_input
             self._refresh_candidates(session, request.candidate_count)
             return self._response(request, session, handled=True)
         if normalized == "backspace":
@@ -188,8 +192,14 @@ class QwenImeBridge:
         session.selected_index = (session.selected_index + step) % len(session.candidates)
         return self._response(request, session, handled=True)
 
-    def _refresh_context(self, session: _Session, request: NormalizedRequest) -> None:
-        if not request.before and not request.after:
+    def _refresh_context(
+        self,
+        session: _Session,
+        request: NormalizedRequest,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not force and not request.before and not request.after:
             return
         update = getattr(self.engine, "request_context_update", None)
         if not callable(update):
