@@ -132,3 +132,4 @@ jobs:
             throw 'Activator accepted a non-experimental CLSID.'
           }
           Write-Host 'Wrong-identity activation was rejected as required.'
+          exit 0
