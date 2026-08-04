@@ -31,6 +31,7 @@ class _Session:
     candidates: list[CandidateView] = field(default_factory=list)
     selected_index: int = 0
     context_epoch: int = 0
+    secure: bool = False
 
 
 class QwenImeBridge:
@@ -67,9 +68,14 @@ class QwenImeBridge:
         if request.kind == RequestKind.END_SESSION:
             del self._sessions[request.session_id or ""]
             return self._response(request, session, handled=True)
-        if request.kind in {RequestKind.FOCUS_IN, RequestKind.FOCUS_OUT}:
+        if request.kind == RequestKind.FOCUS_IN:
+            return self._focus_in(request, session)
+        if request.kind == RequestKind.FOCUS_OUT:
+            self._clear(session)
             return self._response(request, session, handled=False)
         if request.kind == RequestKind.UPDATE_INPUT_POSITION:
+            return self._response(request, session, handled=False)
+        if session.secure:
             return self._response(request, session, handled=False)
         if request.kind == RequestKind.CANCEL_COMPOSITION:
             self._clear(session)
@@ -92,8 +98,17 @@ class QwenImeBridge:
                 session_id=None,
                 error_code="invalid_session_id",
             )
-        session = _Session()
+        session = _Session(secure=request.secure)
         self._sessions[session_id] = session
+        if session.secure:
+            cleanup_ok = self._enter_secure_mode(session)
+            return NormalizedResponse(
+                function=request.kind.value,
+                ok=cleanup_ok,
+                handled=False,
+                session_id=session_id,
+                error_code=None if cleanup_ok else "secure_cleanup_failed",
+            )
         self._refresh_context(session, request, force=True)
         return NormalizedResponse(
             function=request.kind.value,
@@ -101,6 +116,21 @@ class QwenImeBridge:
             handled=True,
             session_id=session_id,
         )
+
+    def _focus_in(self, request: NormalizedRequest, session: _Session) -> NormalizedResponse:
+        if request.secure:
+            session.secure = True
+            cleanup_ok = self._enter_secure_mode(session)
+            return self._response(
+                request,
+                session,
+                ok=cleanup_ok,
+                handled=False,
+                error_code=None if cleanup_ok else "secure_cleanup_failed",
+            )
+        session.secure = False
+        self._refresh_context(session, request, force=True)
+        return self._response(request, session, handled=False)
 
     def _process_key(self, request: NormalizedRequest, session: _Session) -> NormalizedResponse:
         key = request.key
@@ -191,6 +221,20 @@ class QwenImeBridge:
             return self._response(request, session, handled=False)
         session.selected_index = (session.selected_index + step) % len(session.candidates)
         return self._response(request, session, handled=True)
+
+    def _enter_secure_mode(self, session: _Session) -> bool:
+        self._clear(session)
+        session.context_epoch = 0
+        cleanup_ok = True
+        for method_name in ("reset_private_context", "clear_history"):
+            method = getattr(self.engine, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                method()
+            except Exception:
+                cleanup_ok = False
+        return cleanup_ok
 
     def _refresh_context(
         self,
