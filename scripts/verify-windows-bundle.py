@@ -16,12 +16,17 @@ OFFICIAL_PROFILE = "{3D02CAB6-2B8E-4781-BA20-1C9267529467}"
 REQUIRED = (
     "NeuralWeaselExperimentalTSF.dll",
     "NeuralWeaselProfileTool.exe",
+    "NeuralWeaselSessionActivator.exe",
     "NeuralWeaselServer.exe",
     "NeuralWeaselRimeModule.lib",
     "install-dev-profile.ps1",
     "uninstall-dev-profile.ps1",
     "diagnose.ps1",
     "start-model-service.ps1",
+    "launch-neural-weasel.ps1",
+    "Start-Neural-Weasel.cmd",
+    "启动神经小狼毫.cmd",
+    "tools/uv.exe",
     "build-manifest.json",
     "README-INSTALL-TEST.md",
     "data/neural_weasel.schema.yaml",
@@ -54,6 +59,7 @@ def verify(root: Path) -> list[str]:
         "experimental_clsid": EXPERIMENTAL_CLSID,
         "experimental_profile_guid": EXPERIMENTAL_PROFILE,
         "architecture": "x64",
+        "uv_version": "uv 0.8.22",
     }
     for field, expected in expected_manifest.items():
         if manifest.get(field) != expected:
@@ -77,7 +83,8 @@ def verify(root: Path) -> list[str]:
     scan_paths = [
         path
         for path in root.rglob("*")
-        if path.is_file() and path.suffix.casefold() in {".dll", ".exe", ".lib", ".yaml", ".json"}
+        if path.is_file()
+        and path.suffix.casefold() in {".dll", ".exe", ".lib", ".yaml", ".json"}
     ]
     forbidden_literals = (
         OFFICIAL_CLSID,
@@ -109,6 +116,7 @@ def verify(root: Path) -> list[str]:
     identity_targets = (
         root / "NeuralWeaselExperimentalTSF.dll",
         root / "NeuralWeaselProfileTool.exe",
+        root / "NeuralWeaselSessionActivator.exe",
     )
     for target in identity_targets:
         if not target.is_file():
