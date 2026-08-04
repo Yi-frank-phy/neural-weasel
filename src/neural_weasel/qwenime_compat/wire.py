@@ -44,9 +44,7 @@ def sanitize_windows_username(username: str) -> str:
     encoded = username.encode("utf-16le", errors="surrogatepass")
     units = struct.unpack(f"<{len(encoded) // 2}H", encoded) if encoded else ()
     sanitized = "".join(
-        chr(unit)
-        if 0x30 <= unit <= 0x39 or 0x41 <= unit <= 0x5A or 0x61 <= unit <= 0x7A
-        else "_"
+        chr(unit) if 0x30 <= unit <= 0x39 or 0x41 <= unit <= 0x5A or 0x61 <= unit <= 0x7A else "_"
         for unit in units
     )
     return sanitized or "default"
