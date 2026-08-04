@@ -20,10 +20,11 @@ if ($Model -notin $AllowedModels) {
 $BundledUv = Join-Path $PSScriptRoot 'tools\uv.exe'
 if (Test-Path -LiteralPath $BundledUv -PathType Leaf) {
     $UvCommand = $BundledUv
-    $UvVersion = (& $UvCommand --version).Trim()
-    if ($LASTEXITCODE -ne 0 -or $UvVersion -ne 'uv 0.8.22') {
-        throw "The bundled uv runtime is not the pinned version: $UvVersion"
+    $UvVersionOutput = (& $UvCommand --version).Trim()
+    if ($LASTEXITCODE -ne 0 -or $UvVersionOutput -notmatch '^uv 0\.8\.22(?:\s|$)') {
+        throw "The bundled uv runtime is not the pinned version: $UvVersionOutput"
     }
+    $UvVersion = 'uv 0.8.22'
 } else {
     $PathUv = Get-Command uv -ErrorAction SilentlyContinue
     if (-not $PathUv) {
