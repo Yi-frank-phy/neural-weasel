@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 _VENDOR_SUFFIXES = {".dll", ".exe", ".pdb", ".msi"}
 _IGNORED_DIRECTORY_NAMES = {".git", ".venv", "build", "dist", "external"}
 
