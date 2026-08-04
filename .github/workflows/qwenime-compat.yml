@@ -55,6 +55,7 @@ jobs:
           tests/test_qwenime_bridge.py
           tests/test_qwenime_delivery_contract.py
           tests/test_qwenime_zero_registration_swap.py
+          tests/test_qwenime_wire_packet.py
 
       - name: Check compatibility-slice formatting
         run: >-
@@ -64,8 +65,9 @@ jobs:
           tests/test_qwenime_bridge.py
           tests/test_qwenime_delivery_contract.py
           tests/test_qwenime_zero_registration_swap.py
+          tests/test_qwenime_wire_packet.py
 
-      - name: Run protocol, bridge, and zero-registration tests
+      - name: Run protocol, bridge, wire, and zero-registration tests
         run: >-
           uv run --no-project --python 3.12 --with pytest==9.1.1
           python -m pytest --noconftest
@@ -73,6 +75,7 @@ jobs:
           tests/test_qwenime_bridge.py
           tests/test_qwenime_delivery_contract.py
           tests/test_qwenime_zero_registration_swap.py
+          tests/test_qwenime_wire_packet.py
 
   delivery:
     name: Build clean compatibility artifact
