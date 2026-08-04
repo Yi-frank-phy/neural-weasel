@@ -16,6 +16,8 @@ option(NEURAL_WEASEL_BUILD_NATIVE_TESTS
        "Build standalone native boundary tests" OFF)
 option(NEURAL_WEASEL_BUILD_PROFILE_TOOL
        "Build the experimental TSF profile registration tool" ON)
+option(NEURAL_WEASEL_BUILD_SESSION_ACTIVATOR
+       "Build the current-session experimental profile activator" ON)
 
 add_library(neural_weasel_pipe STATIC
   pipe/named_pipe_client.cc
@@ -69,6 +71,31 @@ if(NEURAL_WEASEL_BUILD_PROFILE_TOOL)
   )
   target_link_libraries(NeuralWeaselProfileTool PRIVATE
     advapi32
+    ole32
+    uuid
+  )
+endif()
+
+if(NEURAL_WEASEL_BUILD_SESSION_ACTIVATOR)
+  add_executable(NeuralWeaselSessionActivator
+    session_activator/session_activator.cpp
+  )
+  set_target_properties(NeuralWeaselSessionActivator PROPERTIES
+    OUTPUT_NAME "NeuralWeaselSessionActivator"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+  target_include_directories(NeuralWeaselSessionActivator PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_compile_definitions(NeuralWeaselSessionActivator PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+  )
+  target_link_libraries(NeuralWeaselSessionActivator PRIVATE
     ole32
     uuid
   )
