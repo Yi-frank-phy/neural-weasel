@@ -17,7 +17,10 @@ class _FakeEngine:
         self.queries: list[tuple[str, int, int | None]] = []
         self.commits: list[str] = []
         self.contexts: list[tuple[str, str]] = []
+        self.private_resets = 0
+        self.history_clears = 0
         self.fail_query = False
+        self.fail_secure_cleanup = False
 
     def request_context_update(self, before: str, after: str) -> int:
         self.contexts.append((before, after))
@@ -40,6 +43,16 @@ class _FakeEngine:
 
     def commit(self, text: str) -> None:
         self.commits.append(text)
+
+    def reset_private_context(self) -> None:
+        self.private_resets += 1
+        if self.fail_secure_cleanup:
+            raise RuntimeError("private cleanup failure")
+
+    def clear_history(self) -> None:
+        self.history_clears += 1
+        if self.fail_secure_cleanup:
+            raise RuntimeError("history cleanup failure")
 
 
 def _request(function: str, **fields: object):
@@ -73,6 +86,66 @@ def test_empty_start_session_explicitly_clears_previous_context() -> None:
 
     assert response.ok
     assert engine.contexts[-1] == ("", "")
+
+
+def test_secure_start_never_forwards_surrounding_context_to_model() -> None:
+    engine = _FakeEngine()
+    bridge = QwenImeBridge(engine, session_id_factory=lambda: "session-1")
+
+    started = bridge.handle(
+        _request(
+            "start_session",
+            secure=True,
+            before="secret before",
+            after="secret after",
+        )
+    )
+    typed = bridge.handle(_request("process_key", session_id="session-1", key="n"))
+
+    assert started.ok
+    assert engine.contexts == []
+    assert engine.private_resets == 1
+    assert engine.history_clears == 1
+    assert typed.ok
+    assert not typed.handled
+    assert typed.composition.raw_input == ""
+    assert engine.queries == []
+
+
+def test_secure_focus_clears_composition_and_disables_model_queries() -> None:
+    engine = _FakeEngine()
+    bridge = QwenImeBridge(engine, session_id_factory=lambda: "session-1")
+    bridge.handle(_request("start_session"))
+    bridge.handle(_request("process_key", session_id="session-1", key="n"))
+    query_count = len(engine.queries)
+
+    focused = bridge.handle(_request("focus_in", session_id="session-1", secure=True))
+    typed = bridge.handle(_request("process_key", session_id="session-1", key="i"))
+
+    assert focused.ok
+    assert not focused.handled
+    assert focused.composition.raw_input == ""
+    assert engine.private_resets == 1
+    assert engine.history_clears == 1
+    assert typed.ok
+    assert not typed.handled
+    assert typed.composition.raw_input == ""
+    assert len(engine.queries) == query_count
+
+
+def test_secure_cleanup_failure_remains_fail_closed() -> None:
+    engine = _FakeEngine()
+    engine.fail_secure_cleanup = True
+    bridge = QwenImeBridge(engine, session_id_factory=lambda: "session-1")
+
+    started = bridge.handle(_request("start_session", secure=True))
+    typed = bridge.handle(_request("process_key", session_id="session-1", key="n"))
+
+    assert not started.ok
+    assert started.error_code == "secure_cleanup_failed"
+    assert typed.ok
+    assert not typed.handled
+    assert engine.queries == []
 
 
 def test_query_failure_preserves_literal_and_returns_no_candidates() -> None:
