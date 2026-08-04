@@ -39,6 +39,7 @@ class NormalizedRequest:
     before: str = ""
     after: str = ""
     candidate_count: int = 9
+    secure: bool = False
     extras: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -110,6 +111,13 @@ def _optional_index(message: Mapping[str, Any], key: str) -> int | None:
     return value
 
 
+def _optional_bool(message: Mapping[str, Any], key: str, default: bool = False) -> bool:
+    value = message.get(key, default)
+    if not isinstance(value, bool):
+        raise QwenImeProtocolError(f"{key} must be a boolean")
+    return value
+
+
 def parse_normalized_request(message: Mapping[str, Any]) -> NormalizedRequest:
     """Parse the version-pinned normalized request model.
 
@@ -133,6 +141,7 @@ def parse_normalized_request(message: Mapping[str, Any]) -> NormalizedRequest:
     after = _optional_text(message, "after", MAX_COMMIT_TEXT) or ""
     candidate_index = _optional_index(message, "candidate_index")
     candidate_action = _optional_text(message, "candidate_action", 64)
+    secure = _optional_bool(message, "secure")
 
     candidate_count_value = message.get("candidate_count", 9)
     if (
@@ -152,6 +161,7 @@ def parse_normalized_request(message: Mapping[str, Any]) -> NormalizedRequest:
         "before",
         "after",
         "candidate_count",
+        "secure",
     }
     extras = {str(key): value for key, value in message.items() if key not in known}
     return NormalizedRequest(
@@ -163,6 +173,7 @@ def parse_normalized_request(message: Mapping[str, Any]) -> NormalizedRequest:
         before=before,
         after=after,
         candidate_count=candidate_count_value,
+        secure=secure,
         extras=extras,
     )
 
