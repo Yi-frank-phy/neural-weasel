@@ -111,7 +111,12 @@ def test_decoder_accepts_forward_compatible_extended_header() -> None:
     ],
 )
 def test_decoder_rejects_corrupt_packets(mutator, message: str) -> None:
-    valid = encode_wire_packet(wire_command=1, command_id=1, payload=b"{}")
+    valid = encode_wire_packet(
+        wire_command=1,
+        command_id=1,
+        payload=b"{}",
+        is_request=True,
+    )
 
     with pytest.raises(QwenImeWireError, match=message):
         decode_wire_packet(mutator(valid))
