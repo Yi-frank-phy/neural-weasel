@@ -1,0 +1,122 @@
+name: QwenIME compatibility CI and delivery
+
+"on":
+  push:
+    paths:
+      - "src/neural_weasel/qwenime_compat/**"
+      - "tests/test_qwenime_*.py"
+      - "docs/specs/qwenime-0.5.0.7-compat.md"
+      - ".github/workflows/qwenime-compat.yml"
+  pull_request:
+    paths:
+      - "src/neural_weasel/qwenime_compat/**"
+      - "tests/test_qwenime_*.py"
+      - "docs/specs/qwenime-0.5.0.7-compat.md"
+      - ".github/workflows/qwenime-compat.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qwenime-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Contract tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync test dependencies without Torch
+        run: uv sync --extra dev --no-install-package torch
+
+      - name: Lint compatibility slice
+        run: >-
+          uv run --no-sync ruff check
+          src/neural_weasel/qwenime_compat
+          tests/test_qwenime_compat_protocol.py
+          tests/test_qwenime_bridge.py
+          tests/test_qwenime_delivery_contract.py
+
+      - name: Check compatibility-slice formatting
+        run: >-
+          uv run --no-sync ruff format --check
+          src/neural_weasel/qwenime_compat
+          tests/test_qwenime_compat_protocol.py
+          tests/test_qwenime_bridge.py
+          tests/test_qwenime_delivery_contract.py
+
+      - name: Run normalized protocol and bridge tests
+        run: >-
+          uv run --no-sync pytest
+          tests/test_qwenime_compat_protocol.py
+          tests/test_qwenime_bridge.py
+          tests/test_qwenime_delivery_contract.py
+
+  delivery:
+    name: Build clean compatibility artifact
+    needs: contract
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Build wheel and source distribution
+        run: uv build
+
+      - name: Assemble vendor-free compatibility bundle
+        shell: pwsh
+        run: |
+          $Root = Join-Path $env:RUNNER_TEMP 'qwenime-compat-0.5.0.7'
+          New-Item -ItemType Directory -Path $Root -Force | Out-Null
+          Copy-Item dist/* $Root
+          Copy-Item docs/specs/qwenime-0.5.0.7-compat.md $Root
+          Copy-Item -Recurse src/neural_weasel/qwenime_compat `
+            (Join-Path $Root 'qwenime_compat')
+
+          $Forbidden = Get-ChildItem -LiteralPath $Root -Recurse -File |
+            Where-Object { $_.Extension -in @('.dll', '.exe', '.pdb', '.msi') }
+          if ($Forbidden) {
+            throw "Vendor/native binaries entered compatibility artifact: $($Forbidden.FullName -join ', ')"
+          }
+
+          Compress-Archive -Path "$Root/*" `
+            -DestinationPath "$env:RUNNER_TEMP/qwenime-compat-0.5.0.7.zip" -Force
+
+      - name: Upload compatibility artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwenime-compat-0.5.0.7-${{ github.sha }}
+          path: ${{ runner.temp }}/qwenime-compat-0.5.0.7.zip
+          if-no-files-found: error
+          retention-days: 14
