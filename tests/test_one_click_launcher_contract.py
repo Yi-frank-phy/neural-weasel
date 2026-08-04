@@ -85,6 +85,15 @@ def test_safe_tsf_shell_contains_no_neural_runtime_or_context_capture() -> None:
     assert "native/rime/ai_translator.cc" in rime_block
 
 
+def test_bundle_verifier_rejects_neural_runtime_inside_tsf() -> None:
+    verifier = _read("scripts/verify-windows-bundle.py")
+
+    assert "TSF_FORBIDDEN_RUNTIME_LITERALS" in verifier
+    assert "NeuralWeasel-v1-" in verifier
+    assert '"context_update"' in verifier
+    assert "in-process TSF contains neural runtime" in verifier
+
+
 def test_safe_release_locks_the_runtime_to_the_08b_model() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
     service = _read("scripts/start-model-service.ps1")
