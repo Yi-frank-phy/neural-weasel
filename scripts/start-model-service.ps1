@@ -47,8 +47,8 @@ if (-not $Index) {
     try {
         $Bytes = [Text.Encoding]::UTF8.GetBytes($Model)
         $Digest = $Hasher.ComputeHash($Bytes)
-        $ModelHash = ([BitConverter]::ToString($Digest)).Replace('-', '') `
-            .Substring(0, 16).ToLowerInvariant()
+        $ModelHash = ([BitConverter]::ToString($Digest)).Replace('-', '')
+        $ModelHash = $ModelHash.Substring(0, 16).ToLowerInvariant()
     } finally {
         $Hasher.Dispose()
     }
