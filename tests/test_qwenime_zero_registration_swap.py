@@ -33,8 +33,7 @@ def _vendor_tree(tmp_path: Path) -> tuple[Path, tuple[ExpectedBinary, ...]]:
     for relative_path, payload in payloads.items():
         (install_root / relative_path).write_bytes(payload)
     expected = tuple(
-        _expected_binary(install_root / relative_path, relative_path)
-        for relative_path in payloads
+        _expected_binary(install_root / relative_path, relative_path) for relative_path in payloads
     )
     return install_root, expected
 
