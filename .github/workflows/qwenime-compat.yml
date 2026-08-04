@@ -74,7 +74,6 @@ jobs:
   delivery:
     name: Build clean compatibility artifact
     needs: contract
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 20
 
