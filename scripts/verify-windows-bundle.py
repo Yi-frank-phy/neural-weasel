@@ -83,8 +83,7 @@ def verify(root: Path) -> list[str]:
     scan_paths = [
         path
         for path in root.rglob("*")
-        if path.is_file()
-        and path.suffix.casefold() in {".dll", ".exe", ".lib", ".yaml", ".json"}
+        if path.is_file() and path.suffix.casefold() in {".dll", ".exe", ".lib", ".yaml", ".json"}
     ]
     forbidden_literals = (
         OFFICIAL_CLSID,
