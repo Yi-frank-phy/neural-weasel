@@ -106,21 +106,10 @@ Copy-Item -LiteralPath (
     Join-Path $ResolvedWeaselRoot 'WeaselTSF/NeuralWeaselIdentity.cpp'
 ) -Force
 
+# Crash-containment boundary: keep the in-process TSF shell as close to pinned
+# upstream Weasel as possible. Neural candidate generation, model IPC, and
+# surrounding-context code must never be linked into this DLL.
 $TsfXmake = Join-Path $ResolvedWeaselRoot 'WeaselTSF/xmake.lua'
-Replace-Literal -Path $TsfXmake -Old '  set_kind("shared")' -New @'
-  set_kind("shared")
-  local neural_root = os.getenv("NEURAL_WEASEL_ROOT")
-  add_files(
-    neural_root .. "/native/pipe/named_pipe_client.cc",
-    neural_root .. "/native/context/context_update_bridge.cc",
-    neural_root .. "/native/rime/editor_context_epoch.cc",
-    neural_root .. "/native/tsf/surrounding_text_edit_session.cc",
-    neural_root .. "/native/tsf/weasel_context_adapter.cc"
-  )
-  add_includedirs(neural_root .. "/native")
-  add_defines("WINVER=0x0A00", "_WIN32_WINNT=0x0A00",
-              "WIN32_LEAN_AND_MEAN", "NOMINMAX")
-'@
 Replace-Literal -Path $TsfXmake -Old 'set_filename(fname)' `
     -New 'set_basename("NeuralWeaselExperimentalTSF")'
 Replace-Literal -Path $TsfXmake -Old (
@@ -139,50 +128,6 @@ local pdb = path.join(target:targetdir(), "NeuralWeaselExperimentalTSF.pdb")
 Replace-Literal -Path $TsfXmake `
     -Old '  add_shflags("/DEBUG /OPT:REF /OPT:ICF")' `
     -New '  add_shflags("/DEBUG /OPT:REF /OPT:ICF /LTCG")'
-
-$TextEditSink = Join-Path $ResolvedWeaselRoot 'WeaselTSF/TextEditSink.cpp'
-Replace-Literal -Path $TextEditSink -Old '#include "WeaselTSF.h"' -New @'
-#include "WeaselTSF.h"
-#include "tsf/weasel_context_adapter.h"
-'@
-Replace-RegexOnce -Path $TextEditSink `
-    -Pattern '(\s*)return S_OK;\s*}\s*STDAPI WeaselTSF::OnLayoutChange' `
-    -Replacement @'
-  neural_weasel::tsf::CaptureWeaselContext(pContext, _tfClientId);
-  return S_OK;
-}
-
-STDAPI WeaselTSF::OnLayoutChange
-'@
-
-$WeaselTsfSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.cpp'
-Replace-Literal -Path $WeaselTsfSource -Old '#include "ResponseParser.h"' -New @'
-#include "ResponseParser.h"
-#include "tsf/weasel_context_adapter.h"
-'@
-Replace-RegexOnce -Path $WeaselTsfSource `
-    -Pattern 'STDMETHODIMP WeaselTSF::OnKillThreadFocus\(\) \{\s+_AbortComposition\(\);' `
-    -Replacement @'
-STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
-  neural_weasel::tsf::ClearWeaselContext();
-  _AbortComposition();
-'@
-Replace-RegexOnce -Path $WeaselTsfSource `
-    -Pattern 'STDAPI WeaselTSF::Deactivate\(\) \{\s+m_client\.EndSession\(\);' `
-    -Replacement @'
-STDAPI WeaselTSF::Deactivate() {
-  neural_weasel::tsf::StopWeaselContext();
-  m_client.EndSession();
-'@
-Replace-RegexOnce -Path $WeaselTsfSource `
-    -Pattern 'STDAPI WeaselTSF::ActivateEx\(ITfThreadMgr\* pThreadMgr,\s+TfClientId tfClientId,\s+DWORD dwFlags\) \{\s+com_ptr<ITfDocumentMgr> pDocMgrFocus;' `
-    -Replacement @'
-STDAPI WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
-                             TfClientId tfClientId,
-                             DWORD dwFlags) {
-  neural_weasel::tsf::StartWeaselContext();
-  com_ptr<ITfDocumentMgr> pDocMgrFocus;
-'@
 
 $LanguageBarSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/LanguageBar.cpp'
 Replace-RegexOnce -Path $LanguageBarSource `
@@ -263,7 +208,7 @@ $Replacements = @(
     [pscustomobject]@{ Old = 'WeaselServer.exe'; New = '__NEURAL_WEASEL_SERVER_EXE__' }
     [pscustomobject]@{ Old = 'WeaselServer.pdb'; New = '__NEURAL_WEASEL_SERVER_PDB__' }
     [pscustomobject]@{ Old = 'WeaselDeployer.exe'; New = 'NeuralWeaselProfileTool.exe' }
-    [pscustomobject]@{ Old = 'WeaselTSF Button'; New = 'Neural Weasel Experimental TSF' }
+    [pscustomobject]@{ Old = 'WeaselTSF Button'; New = 'Neural Weasel Safe TSF' }
     [pscustomobject]@{ Old = 'start_service.bat'; New = 'NeuralWeaselServer.exe' }
     [pscustomobject]@{ Old = 'Software\\Rime\\Weasel'; New = 'Software\\NeuralWeasel\\Experimental' }
     [pscustomobject]@{ Old = 'Software\\Rime\\weasel'; New = 'Software\\NeuralWeasel\\Experimental' }
@@ -306,8 +251,8 @@ Replace-Literal -Path $Constants -Old '#define RIME_REG_KEY L"Software\\Rime"' `
 
 $UtilityHeader = Join-Path $ResolvedWeaselRoot 'include/WeaselUtility.h'
 $UtilityContent = Read-SourceFile -Path $UtilityHeader
-$UtilityContent = $UtilityContent.Replace('L"小狼毫"', 'L"神经小狼毫（实验）"')
-$UtilityContent = $UtilityContent.Replace('L"Weasel"', 'L"Neural Weasel Experimental"')
+$UtilityContent = $UtilityContent.Replace('L"小狼毫"', 'L"神经小狼毫（安全版）"')
+$UtilityContent = $UtilityContent.Replace('L"Weasel"', 'L"Neural Weasel Safe"')
 Write-SourceFile -Path $UtilityHeader -Content $UtilityContent
 
 foreach ($ResourcePath in @(
@@ -320,11 +265,11 @@ foreach ($ResourcePath in @(
     $Resource = $Resource.Replace('weaselARM.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weasel.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('"WeaselServer"', '"NeuralWeaselServer"')
-    $Resource = $Resource.Replace('"Weasel TSF"', '"Neural Weasel Experimental TSF"')
-    $Resource = $Resource.Replace('"Weasel"', '"Neural Weasel Experimental"')
-    $Resource = $Resource.Replace('"小狼毫TSF"', '"神经小狼毫（实验）TSF"')
-    $Resource = $Resource.Replace('"小狼毫"', '"神经小狼毫（实验）"')
+    $Resource = $Resource.Replace('"Weasel TSF"', '"Neural Weasel Safe TSF"')
+    $Resource = $Resource.Replace('"Weasel"', '"Neural Weasel Safe"')
+    $Resource = $Resource.Replace('"小狼毫TSF"', '"神经小狼毫（安全版）TSF"')
+    $Resource = $Resource.Replace('"小狼毫"', '"神经小狼毫（安全版）"')
     Write-SourceFile -Path $ResourcePath -Content $Resource
 }
 
-Write-Host "Prepared isolated Neural Weasel overlay on Weasel $ActualRevision"
+Write-Host "Prepared crash-contained Neural Weasel overlay on Weasel $ActualRevision"

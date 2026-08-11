@@ -13,15 +13,26 @@ EXPERIMENTAL_PROFILE = "{C9B3984E-A16C-4779-80E8-ACD988C57B0D}"
 OFFICIAL_CLSID = "{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}"
 OFFICIAL_PROFILE = "{3D02CAB6-2B8E-4781-BA20-1C9267529467}"
 
+TSF_FORBIDDEN_RUNTIME_LITERALS = (
+    "NeuralWeasel-v1-",
+    '"context_update"',
+    "query_candidates",
+)
+
 REQUIRED = (
     "NeuralWeaselExperimentalTSF.dll",
     "NeuralWeaselProfileTool.exe",
+    "NeuralWeaselSessionActivator.exe",
     "NeuralWeaselServer.exe",
     "NeuralWeaselRimeModule.lib",
     "install-dev-profile.ps1",
     "uninstall-dev-profile.ps1",
     "diagnose.ps1",
     "start-model-service.ps1",
+    "launch-neural-weasel.ps1",
+    "Start-Neural-Weasel.cmd",
+    "启动神经小狼毫.cmd",
+    "tools/uv.exe",
     "build-manifest.json",
     "README-INSTALL-TEST.md",
     "data/neural_weasel.schema.yaml",
@@ -54,6 +65,7 @@ def verify(root: Path) -> list[str]:
         "experimental_clsid": EXPERIMENTAL_CLSID,
         "experimental_profile_guid": EXPERIMENTAL_PROFILE,
         "architecture": "x64",
+        "uv_version": "uv 0.8.22",
     }
     for field, expected in expected_manifest.items():
         if manifest.get(field) != expected:
@@ -106,9 +118,20 @@ def verify(root: Path) -> list[str]:
                         f"official binary GUID {identity} remains in {path.relative_to(root)}"
                     )
 
+    tsf_path = root / "NeuralWeaselExperimentalTSF.dll"
+    if tsf_path.is_file():
+        tsf_data = tsf_path.read_bytes()
+        for literal in TSF_FORBIDDEN_RUNTIME_LITERALS:
+            if any(encoded in tsf_data for encoded in _encodings(literal)):
+                errors.append(
+                    "in-process TSF contains neural runtime "
+                    f"marker {literal!r}; crash containment is broken"
+                )
+
     identity_targets = (
         root / "NeuralWeaselExperimentalTSF.dll",
         root / "NeuralWeaselProfileTool.exe",
+        root / "NeuralWeaselSessionActivator.exe",
     )
     for target in identity_targets:
         if not target.is_file():

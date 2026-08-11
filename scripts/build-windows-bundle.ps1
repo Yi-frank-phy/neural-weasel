@@ -19,6 +19,7 @@ $ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
 $WeaselRevision = '9cc96e20dc71b80876b12f689bb5863c76c2a7ed'
 $PipeEndpoint = '\\.\pipe\NeuralWeasel-v1-<current-user-SID>'
 $WeaselIpcEndpoint = '\\.\pipe\<current-user-name>\NeuralWeaselExperimentalIPC'
+$ExpectedUvVersion = 'uv 0.8.22'
 
 function Copy-RequiredFile {
     param(
@@ -115,6 +116,12 @@ $ProfileToolArtifact = Resolve-RequiredBuildArtifact `
         (Join-Path $NativeBuildRoot 'Release/NeuralWeaselProfileTool.exe')
     ) `
     -SearchRoots @($NativeBuildRoot)
+$ActivatorArtifact = Resolve-RequiredBuildArtifact `
+    -FileName 'NeuralWeaselSessionActivator.exe' `
+    -Candidates @(
+        (Join-Path $NativeBuildRoot 'Release/NeuralWeaselSessionActivator.exe')
+    ) `
+    -SearchRoots @($NativeBuildRoot)
 
 Copy-RequiredFile -Source $TsfArtifact `
     -Destination (Join-Path $OutputRoot 'NeuralWeaselExperimentalTSF.dll')
@@ -122,6 +129,20 @@ Copy-RequiredFile -Source $ServerArtifact `
     -Destination (Join-Path $OutputRoot 'NeuralWeaselServer.exe')
 Copy-RequiredFile -Source $ProfileToolArtifact `
     -Destination (Join-Path $OutputRoot 'NeuralWeaselProfileTool.exe')
+Copy-RequiredFile -Source $ActivatorArtifact `
+    -Destination (Join-Path $OutputRoot 'NeuralWeaselSessionActivator.exe')
+
+$UvCommand = Get-Command uv.exe -ErrorAction SilentlyContinue
+if (-not $UvCommand) {
+    throw 'Pinned uv.exe is unavailable while assembling the Windows bundle.'
+}
+$UvVersionOutput = (& $UvCommand.Source --version).Trim()
+if ($LASTEXITCODE -ne 0 -or $UvVersionOutput -notmatch '^uv 0\.8\.22(?:\s|$)') {
+    throw "Unexpected uv runtime version: $UvVersionOutput"
+}
+$UvVersion = 'uv 0.8.22'
+Copy-RequiredFile -Source $UvCommand.Source `
+    -Destination (Join-Path $OutputRoot 'tools/uv.exe')
 
 $RimeLibraryCandidates = @(
     (Join-Path $WeaselRoot 'build/windows/x64/release/RimeWithWeasel/RimeWithWeasel.lib'),
@@ -176,7 +197,10 @@ foreach ($Script in @(
     'install-dev-profile.ps1',
     'uninstall-dev-profile.ps1',
     'diagnose.ps1',
-    'start-model-service.ps1'
+    'start-model-service.ps1',
+    'launch-neural-weasel.ps1',
+    'Start-Neural-Weasel.cmd',
+    '启动神经小狼毫.cmd'
 )) {
     Copy-RequiredFile -Source (Join-Path $RepositoryRoot "scripts/$Script") `
         -Destination (Join-Path $OutputRoot $Script)
@@ -225,6 +249,7 @@ $Manifest = [ordered]@{
     librime_revision = $LibrimeRevision
     compiler = "MSVC $env:VSCMD_VER"
     architecture = 'x64'
+    uv_version = $UvVersion
     experimental_clsid = $ExperimentalClsid
     experimental_profile_guid = $ExperimentalProfileGuid
     pipe_endpoint = $PipeEndpoint

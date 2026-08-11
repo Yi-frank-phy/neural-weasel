@@ -86,6 +86,12 @@ jobs:
         with:
           xmake-version: "3.0.9"
 
+      - name: Install pinned uv for bundle
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+          enable-cache: false
+
       - name: Install native header dependencies
         shell: pwsh
         run: >-
@@ -288,6 +294,7 @@ jobs:
             -DNEURAL_WEASEL_BUILD_NATIVE_TESTS=ON `
             -DNEURAL_WEASEL_BUILD_RIME_PLUGIN=ON `
             -DNEURAL_WEASEL_BUILD_PROFILE_TOOL=ON `
+            -DNEURAL_WEASEL_BUILD_SESSION_ACTIVATOR=ON `
             -DRIME_ROOT="$env:GITHUB_WORKSPACE/external/librime-boundary" `
             -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
@@ -392,6 +399,13 @@ jobs:
         run: |
           ./scripts/test-install-safety.ps1 `
             -BundleRoot ./dist/neural-weasel-experimental
+
+      - name: Dry-run one-click launcher
+        shell: pwsh
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}/NeuralWeaselLauncherLocalAppData
+        run: |
+          ./dist/neural-weasel-experimental/launch-neural-weasel.ps1 -DryRun
 
       - name: Upload complete Windows bundle
         uses: actions/upload-artifact@v4

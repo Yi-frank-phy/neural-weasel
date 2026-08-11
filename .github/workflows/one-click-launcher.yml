@@ -1,0 +1,135 @@
+name: One-click launcher CI
+
+"on":
+  push:
+    paths:
+      - "native/CMakeLists.txt"
+      - "native/profile_tool/**"
+      - "native/session_activator/**"
+      - "native/tsf/experimental_profile_ids.h"
+      - "scripts/build-windows-bundle.ps1"
+      - "scripts/install-dev-profile.ps1"
+      - "scripts/start-model-service.ps1"
+      - "scripts/launch-neural-weasel.ps1"
+      - "scripts/*Neural-Weasel.cmd"
+      - "scripts/启动神经小狼毫.cmd"
+      - "tests/test_one_click_launcher_contract.py"
+      - ".github/workflows/one-click-launcher.yml"
+  pull_request:
+    paths:
+      - "native/CMakeLists.txt"
+      - "native/profile_tool/**"
+      - "native/session_activator/**"
+      - "native/tsf/experimental_profile_ids.h"
+      - "scripts/build-windows-bundle.ps1"
+      - "scripts/install-dev-profile.ps1"
+      - "scripts/start-model-service.ps1"
+      - "scripts/launch-neural-weasel.ps1"
+      - "scripts/*Neural-Weasel.cmd"
+      - "scripts/启动神经小狼毫.cmd"
+      - "tests/test_one_click_launcher_contract.py"
+      - ".github/workflows/one-click-launcher.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-click-launcher-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launcher-contract:
+    name: Launcher contract and native helper
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Lint launcher contract
+        run: >-
+          uvx --from ruff==0.16.0 ruff check
+          tests/test_one_click_launcher_contract.py
+          scripts/verify-windows-bundle.py
+
+      - name: Check launcher-contract formatting
+        run: >-
+          uvx --from ruff==0.16.0 ruff format --check
+          tests/test_one_click_launcher_contract.py
+          scripts/verify-windows-bundle.py
+
+      - name: Run launcher contract tests
+        run: >-
+          uv run --no-project --python 3.12 --with pytest==9.1.1
+          python -m pytest --noconftest
+          tests/test_one_click_launcher_contract.py
+
+      - name: Parse user scripts with Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $Paths = @(
+            'scripts/install-dev-profile.ps1',
+            'scripts/start-model-service.ps1',
+            'scripts/launch-neural-weasel.ps1'
+          )
+          $QuotedPaths = ($Paths | ForEach-Object {
+            "'" + (Resolve-Path -LiteralPath $_).Path.Replace("'", "''") + "'"
+          }) -join ','
+          $Command = @"
+          `$ErrorActionPreference = 'Stop'
+          foreach (`$Path in @($QuotedPaths)) {
+            [void][ScriptBlock]::Create([IO.File]::ReadAllText(`$Path))
+          }
+          "@
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -Command $Command
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows PowerShell 5.1 parsing failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Configure isolated native helpers
+        run: >-
+          cmake -S native -B build/launcher -A x64
+          -DNEURAL_WEASEL_BUILD_NATIVE_TESTS=OFF
+          -DNEURAL_WEASEL_BUILD_RIME_PLUGIN=OFF
+          -DNEURAL_WEASEL_BUILD_PROFILE_TOOL=ON
+          -DNEURAL_WEASEL_BUILD_SESSION_ACTIVATOR=ON
+
+      - name: Build isolated native helpers
+        run: >-
+          cmake --build build/launcher --config Release --parallel
+          --target NeuralWeaselProfileTool NeuralWeaselSessionActivator
+
+      - name: Verify current-session activation dry-run
+        shell: pwsh
+        run: |
+          $Activator = './build/launcher/Release/NeuralWeaselSessionActivator.exe'
+          & $Activator activate `
+            --clsid '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}' `
+            --profile-guid '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}' `
+            --dry-run
+          if ($LASTEXITCODE -ne 0) {
+            throw "Valid dry-run activation failed with exit code $LASTEXITCODE."
+          }
+
+          & $Activator activate `
+            --clsid '{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' `
+            --profile-guid '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}' `
+            --dry-run
+          if ($LASTEXITCODE -eq 0) {
+            throw 'Activator accepted a non-experimental CLSID.'
+          }
+          Write-Host 'Wrong-identity activation was rejected as required.'
+          exit 0

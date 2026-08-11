@@ -82,19 +82,26 @@ def test_plugin_build_generates_librime_build_config_header() -> None:
     assert "${RIME_ROOT}/include" in cmake
 
 
-def test_context_capture_is_hooked_into_pinned_tsf_without_model_on_edit_thread() -> None:
+def test_safe_tsf_shell_contains_no_neural_context_or_model_runtime() -> None:
+    """The in-process TSF shell must not carry our model or context bridge."""
     overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
-    adapter = (ROOT / "native/tsf/weasel_context_adapter.cc").read_text(encoding="utf-8")
-    bridge = (ROOT / "native/context/context_update_bridge.h").read_text(encoding="utf-8")
+    tsf_start = overlay.index("$TsfXmake")
+    server_start = overlay.index("$ServerXmake")
+    tsf_block = overlay[tsf_start:server_start]
 
-    assert "CaptureWeaselContext(pContext, _tfClientId)" in overlay
-    assert "ClearWeaselContext" in overlay
+    for marker in (
+        "CaptureWeaselContext",
+        "ClearWeaselContext",
+        "StartWeaselContext",
+        "StopWeaselContext",
+        "native/pipe/named_pipe_client.cc",
+        "native/context/context_update_bridge.cc",
+        "native/tsf/weasel_context_adapter.cc",
+        "native/tsf/surrounding_text_edit_session.cc",
+    ):
+        assert marker not in tsf_block
+
     assert 'add_includedirs("$(projectdir)/librime/src")' in overlay
-    assert "TF_ES_ASYNCDONTCARE | TF_ES_READ" in adapter
-    assert "IS_PASSWORD" in adapter
-    assert "IS_PRIVATE" in adapter
-    assert "IS_NUMERIC_PASSWORD" in adapter
-    assert "IS_NUMERIC_PIN" in adapter
-    assert "IS_ALPHANUMERIC_PIN" in adapter
-    assert "ContextUpdateBridge" in adapter
-    assert "all pipe I/O" in bridge
+    rime_block = overlay[overlay.index("$RimeXmake") :]
+    assert "native/pipe/named_pipe_client.cc" in rime_block
+    assert "native/rime/ai_translator.cc" in rime_block
