@@ -507,4 +507,3 @@ class PinyinIndex:
             )
         finally:
             connection.close()
-
