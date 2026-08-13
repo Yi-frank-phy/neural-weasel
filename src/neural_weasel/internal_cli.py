@@ -29,6 +29,7 @@ def _parser() -> argparse.ArgumentParser:
 
     predict = subparsers.add_parser("predict", help="run one constrained Base-model query")
     predict.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    predict.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
     predict.add_argument("--index", type=Path)
     predict.add_argument("--before", required=True)
     predict.add_argument("--after", default="")
@@ -37,14 +38,27 @@ def _parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser("serve", help="start the per-user Windows named-pipe server")
     serve.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    serve.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
     serve.add_argument("--index", type=Path)
     serve.add_argument("--backend", choices=("full", "sparse"), default="full")
+
+    serve_http = subparsers.add_parser(
+        "serve-http",
+        help="start the loopback Wisdom Weasel HTTP compatibility server",
+    )
+    serve_http.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    serve_http.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    serve_http.add_argument("--index", type=Path)
+    serve_http.add_argument("--backend", choices=("full", "sparse"), default="full")
+    serve_http.add_argument("--host", default="127.0.0.1")
+    serve_http.add_argument("--port", type=int, default=8000)
 
     simulate = subparsers.add_parser(
         "simulate",
         help="interactive candidate simulator; forward once, then query every edited pinyin",
     )
     simulate.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    simulate.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
     simulate.add_argument("--index", type=Path)
     simulate.add_argument("--before", required=True)
     simulate.add_argument("--after", default="")
@@ -54,6 +68,7 @@ def _parser() -> argparse.ArgumentParser:
         help="measure cached pinyin-query latency after one model forward",
     )
     benchmark.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    benchmark.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
     benchmark.add_argument("--index", type=Path)
     benchmark.add_argument("--before", required=True)
     benchmark.add_argument("--after", default="")
@@ -72,6 +87,7 @@ def _parser() -> argparse.ArgumentParser:
         help="compare full-logits and sparse projection on identical legal tokens",
     )
     compare.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    compare.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
     compare.add_argument("--before", required=True)
     compare.add_argument("--after", default="")
     compare.add_argument("--allowed-counts", type=int, nargs="+", default=[32, 128, 512])
@@ -82,6 +98,7 @@ def _parser() -> argparse.ArgumentParser:
         help="run the minimal bilingual replay fixture on the local Base model",
     )
     replay.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
+    replay.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
     replay.add_argument("--index", type=Path)
     replay.add_argument("--fixture", type=Path, required=True)
     replay.add_argument("--backend", choices=("full", "sparse"), default="full")
@@ -165,7 +182,7 @@ def main() -> int:
         from .model import QwenBaseBackend
         from .unified import LatinPrefixConstraint
 
-        runtime = QwenBaseBackend(args.model)
+        runtime = QwenBaseBackend(args.model, precision=args.precision)
         latin = LatinPrefixConstraint.from_tokenizer(runtime.tokenizer)
         legal_token_ids = tuple(
             dict.fromkeys(
@@ -223,7 +240,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        runtime = QwenBaseBackend(args.model)
+        runtime = QwenBaseBackend(args.model, precision=args.precision)
         engine = build_bilingual_engine(
             runtime=runtime,
             index=PinyinIndex(index_path),
@@ -280,7 +297,7 @@ def main() -> int:
         )
         return 0
 
-    if args.command in {"predict", "serve", "simulate", "benchmark"}:
+    if args.command in {"predict", "serve", "serve-http", "simulate", "benchmark"}:
         from .engine import NeuralPinyinEngine
         from .model import QwenBaseBackend
 
@@ -292,10 +309,9 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        runtime = QwenBaseBackend(args.model)
+        runtime = QwenBaseBackend(args.model, precision=args.precision)
 
-        if args.command == "serve":
-            from .pipe_server import NamedPipeServer
+        if args.command in {"serve", "serve-http"}:
             from .service_factory import build_bilingual_engine
 
             engine = build_bilingual_engine(
@@ -308,7 +324,17 @@ def main() -> int:
             # backend initialization failure remains explicit and terminates
             # startup instead of silently changing backend.
             engine.update_context("", "")
-            NamedPipeServer(engine).serve_forever()
+            if args.command == "serve":
+                from .pipe_server import NamedPipeServer
+
+                NamedPipeServer(engine).serve_forever()
+            else:
+                from .http_server import serve_wisdom_http
+
+                if not 1 <= args.port <= 65535:
+                    print("--port must be between 1 and 65535", file=sys.stderr)
+                    return 2
+                serve_wisdom_http(engine, host=args.host, port=args.port)
             return 0
 
         backend = runtime

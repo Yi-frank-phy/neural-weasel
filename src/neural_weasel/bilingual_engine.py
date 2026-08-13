@@ -75,6 +75,32 @@ class BilingualImeEngine:
             limit=limit,
         )
 
+    def query_pinyin(
+        self,
+        raw_keys: str,
+        limit: int = 5,
+        context_epoch: int | None = None,
+    ) -> list[Candidate]:
+        """Rank Han-only pinyin candidates from one retained logits snapshot."""
+
+        if context_epoch is None or context_epoch == 0:
+            state = self.coordinator.latest_state
+        else:
+            state = self.coordinator.state_for_epoch(context_epoch)
+            if state is None:
+                return []
+        if state is None:
+            return []
+        with self._contexts_lock:
+            before, after = self._contexts.get(state.epoch, ("", ""))
+        return self.constraint_engine.query_pinyin(
+            before,
+            raw_keys,
+            state=state,
+            after_text=after,
+            limit=limit,
+        )
+
     def has_snapshot(self, epoch: int) -> bool:
         return self.coordinator.state_for_epoch(epoch) is not None
 

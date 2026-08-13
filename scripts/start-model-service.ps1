@@ -4,6 +4,10 @@ param(
     [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
     [ValidateSet('full', 'sparse')]
     [string]$Backend = 'full',
+    [ValidateSet('pipe', 'http')]
+    [string]$Transport = 'pipe',
+    [ValidateRange(1, 65535)]
+    [int]$Port = 8000,
     [string]$Index
 )
 
@@ -69,6 +73,7 @@ function Write-ServiceState {
     $Json = [ordered]@{
         state = $State
         backend = $Backend
+        transport = $Transport
         model = $Model
         pid = $PID
         exit_code = $ExitCode
@@ -92,10 +97,15 @@ if (-not (Test-Path -LiteralPath $Index -PathType Leaf)) {
 
 Write-ServiceState -State 'running'
 try {
-    & $UvCommand run --project $ProjectRoot --frozen neural-weasel serve `
-        --model $Model `
-        --backend $Backend `
-        --index $Index
+    $ServeCommand = if ($Transport -eq 'http') { 'serve-http' } else { 'serve' }
+    $Arguments = @(
+        'run', '--project', $ProjectRoot, '--frozen', 'neural-weasel',
+        $ServeCommand, '--model', $Model, '--backend', $Backend, '--index', $Index
+    )
+    if ($Transport -eq 'http') {
+        $Arguments += @('--host', '127.0.0.1', '--port', [string]$Port)
+    }
+    & $UvCommand @Arguments
     $ServiceExit = $LASTEXITCODE
     if ($ServiceExit -ne 0) {
         Write-ServiceState -State 'failed' -ExitCode $ServiceExit

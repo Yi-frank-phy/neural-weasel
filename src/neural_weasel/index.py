@@ -248,6 +248,7 @@ class PinyinIndex:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.root = _TrieNode()
+        self.syllables: set[str] = set()
         self.metadata: dict[str, object] = {}
         self._query_plans: dict[tuple[str, tuple[int, ...]], PinyinQueryPlan] = {}
         self._load()
@@ -284,6 +285,7 @@ class PinyinIndex:
                     syllables=syllables,
                     coverage=bool(coverage),
                 )
+                self.syllables.update(entry.syllable_path)
                 node = self.root
                 for character in pinyin_value:
                     node = node.children.setdefault(character, _TrieNode())

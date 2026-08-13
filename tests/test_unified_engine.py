@@ -81,8 +81,8 @@ def test_chinese_pinyin_and_latin_share_candidate_pipeline(make_index) -> None:
         assert isinstance(candidate.token_path, tuple)
 
 
-def test_english_context_hard_rejects_han_and_completes_prefix(make_index) -> None:
-    """AT-EN-01/02 and AT-SP-01."""
+def test_english_context_penalizes_han_without_blocking_bilingual_input(make_index) -> None:
+    """English context prefers Latin but keeps Neural Han candidates available."""
     index = make_index([(10, "阿西", "asy", "a'sy", 2, 0)])
     backend, state = make_backend({10: 100.0, 20: 8.0, 21: 7.0, 22: 6.0})
     engine = UnifiedConstraintEngine(
@@ -104,7 +104,9 @@ def test_english_context_hard_rejects_han_and_completes_prefix(make_index) -> No
     )
 
     assert "asymmetric" in {candidate.text for candidate in candidates}
-    assert not any(contains_han(candidate.text) for candidate in candidates)
+    han = next(candidate for candidate in candidates if contains_han(candidate.text))
+    latin = next(candidate for candidate in candidates if candidate.text == "asymmetric")
+    assert han.language_prior < latin.language_prior
 
 
 def test_literal_latin_prefix_is_always_commit_able() -> None:
@@ -156,7 +158,7 @@ def test_context_policy_is_asymmetric_and_no_context_is_deterministic() -> None:
     assert policy.classify("这个模型使用") == "chinese"
     assert policy.classify("") == "ambiguous"
     assert policy.allows("english", Script.LATIN)
-    assert not policy.allows("english", Script.HAN)
+    assert policy.allows("english", Script.HAN)
     assert policy.allows("chinese", Script.HAN)
     assert policy.allows("chinese", Script.LATIN)
     assert policy.language_prior("ambiguous", Script.HAN, "abc") > policy.language_prior(
@@ -165,12 +167,13 @@ def test_context_policy_is_asymmetric_and_no_context_is_deterministic() -> None:
     assert policy.language_prior("chinese", Script.LATIN, "QWEN") == 0.0
 
 
-def test_chinese_latin_penalty_is_fixed_configurable_and_not_margin_driven() -> None:
+def test_cross_script_penalty_is_fixed_configurable_and_not_margin_driven() -> None:
     default_policy = ContextScriptPolicy()
-    configured_policy = ContextScriptPolicy(chinese_latin_penalty=-0.5)
+    configured_policy = ContextScriptPolicy(cross_script_penalty=-0.5)
 
-    assert default_policy.language_prior("chinese", Script.LATIN, "qwen") == -0.35
+    assert default_policy.language_prior("chinese", Script.LATIN, "qwen") == -0.15
     assert configured_policy.language_prior("chinese", Script.LATIN, "qwen") == -0.5
+    assert configured_policy.language_prior("english", Script.HAN, "shen") == -0.5
     assert configured_policy.language_prior("chinese", Script.LATIN, "Qwen3.5") == 0.0
 
 

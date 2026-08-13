@@ -46,6 +46,8 @@ class FakeRuntime:
 
 
 class EmptyPinyinIndex:
+    syllables: set[str] = set()
+
     def query_plan(self, parsed):
         return SimpleNamespace(groups=())
 

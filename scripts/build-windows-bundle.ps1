@@ -192,12 +192,20 @@ Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'assets/rime') `
     ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $RimeUser -Force
     }
+$RimeLuaSource = Join-Path $RepositoryRoot 'assets/rime/lua'
+if (Test-Path -LiteralPath $RimeLuaSource -PathType Container) {
+    Copy-Item -LiteralPath $RimeLuaSource `
+        -Destination (Join-Path $RimeUser 'lua') -Recurse -Force
+}
 
 foreach ($Script in @(
     'install-dev-profile.ps1',
     'uninstall-dev-profile.ps1',
     'diagnose.ps1',
     'start-model-service.ps1',
+    'install-wisdom-integration.ps1',
+    'start-neural-weasel-integration.ps1',
+    'start-wisdom-service.vbs',
     'launch-neural-weasel.ps1',
     'Start-Neural-Weasel.cmd',
     '启动神经小狼毫.cmd'

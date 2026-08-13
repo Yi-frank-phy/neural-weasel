@@ -15,10 +15,21 @@ from .gpu import (
     verify_torch_binding,
 )
 
-BASE_MODELS = {
-    "Qwen/Qwen3.5-0.8B-Base": "bf16",
-    "Qwen/Qwen3.5-4B-Base": "nf4",
+BASE_MODELS: dict[str, dict[str, str]] = {
+    "Qwen/Qwen3.5-0.8B-Base": {
+        "family": "qwen3_5",
+        "default_precision": "int8",
+    },
+    "Qwen/Qwen3.5-4B-Base": {
+        "family": "qwen3_5",
+        "default_precision": "nf4",
+    },
+    "Qwen/Qwen3-0.6B-Base": {
+        "family": "qwen3",
+        "default_precision": "bf16",
+    },
 }
+SUPPORTED_PRECISIONS = frozenset({"bf16", "int8", "nf4"})
 
 
 class ModelPolicyError(RuntimeError):
@@ -53,6 +64,7 @@ class QwenBaseBackend:
     def __init__(
         self,
         model_id: str,
+        precision: str | None = None,
         max_before_tokens: int = 3072,
         max_after_tokens: int = 512,
     ) -> None:
@@ -62,22 +74,39 @@ class QwenBaseBackend:
             )
 
         import torch
-        from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            Qwen3_5ForCausalLM,
+        )
 
         self.torch = torch
         self.target_gpu = verify_torch_binding(torch)
         self.model_id = model_id
+        policy = BASE_MODELS[model_id]
+        self.model_family = policy["family"]
+        self.precision = precision or policy["default_precision"]
+        if self.precision not in SUPPORTED_PRECISIONS:
+            raise ModelPolicyError(
+                f"unsupported precision {self.precision!r}; expected one of "
+                f"{sorted(SUPPORTED_PRECISIONS)}"
+            )
         self.max_before_tokens = max_before_tokens
         self.max_after_tokens = max_after_tokens
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=True)
 
-        mode = BASE_MODELS[model_id]
         kwargs: dict[str, Any] = {
             "torch_dtype": torch.bfloat16,
             "device_map": {"": 0},
             "trust_remote_code": False,
         }
-        if mode == "nf4":
+        if self.precision == "int8":
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=False,
+            )
+        elif self.precision == "nf4":
             kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -86,7 +115,8 @@ class QwenBaseBackend:
             )
 
         torch.cuda.reset_peak_memory_stats(0)
-        self.model = Qwen3_5ForCausalLM.from_pretrained(model_id, **kwargs)
+        model_class = Qwen3_5ForCausalLM if self.model_family == "qwen3_5" else AutoModelForCausalLM
+        self.model = model_class.from_pretrained(model_id, **kwargs)
         self.model.eval()
         verify_model_device_map(self.model)
         require_runtime_headroom(torch)
@@ -317,6 +347,8 @@ class QwenBaseBackend:
     def diagnostics(self) -> dict[str, object]:
         return {
             "model": self.model_id,
+            "model_family": self.model_family,
+            "precision": self.precision,
             "gpu_name": self.target_gpu.name,
             "gpu_uuid": self.target_gpu.uuid,
             "memory": memory_snapshot(self.torch),
