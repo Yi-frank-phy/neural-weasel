@@ -30,6 +30,8 @@ class QwenContinuationSession:
                 cache = fork_transformers_cache(state.past_key_values)
             if cache is None or not runtime._cache_has_length(state.past_key_values, len(token_ids)):
                 return None
+            root = runtime.torch.as_tensor([0], dtype=runtime.torch.long, device="cuda:0")
+            cache.reorder_cache(root)
             return cls(runtime, cache, len(token_ids))
 
     def advance(self, parent_indices: Sequence[int], token_ids: Sequence[int]) -> float:
