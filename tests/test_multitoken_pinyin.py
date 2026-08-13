@@ -16,7 +16,10 @@ class FakeConditionalSession:
         parents = tuple(int(value) for value in parent_indices)
         tokens = tuple(int(value) for value in token_ids)
         self.advances.append((parents, tokens))
-        self.paths = [self.paths[parent] + (token,) for parent, token in zip(parents, tokens, strict=True)]
+        self.paths = [
+            self.paths[parent] + (token,)
+            for parent, token in zip(parents, tokens, strict=True)
+        ]
         return 0.0
 
     def score_allowed(self, allowed_token_ids_by_beam):
@@ -28,7 +31,10 @@ class FakeConditionalSession:
                 (10, 21): {30: 0.5},
             }.get(path, {})
             results.append(
-                np.asarray([table.get(int(token_id), -20.0) for token_id in allowed], dtype=np.float32)
+                np.asarray(
+                    [table.get(int(token_id), -20.0) for token_id in allowed],
+                    dtype=np.float32,
+                )
             )
         return tuple(results)
 
@@ -137,4 +143,26 @@ def test_normal_full_pinyin_never_starts_multitoken_fallback(make_index) -> None
     )
 
     assert candidates[0].text == "神经"
+    assert backend.started == 0
+
+
+def test_long_full_pinyin_does_not_start_expensive_mixed_fallback(make_index) -> None:
+    index = make_index(
+        [
+            (10, "真的", "zhende", "zhen'de", 2, 0),
+            (60, "世界", "shijie", "shi'jie", 2, 0),
+            (70, "这么好", "zhemehao", "zhe'me'hao", 3, 0),
+        ]
+    )
+    backend = FakeConditionalBackend({10: 10.0, 60: 9.0, 70: 8.0})
+    state = SimpleNamespace(epoch=9)
+    constraint = PinyinConstraint(index)
+
+    constraint.candidates(
+        "zhendeshijiezhemehao",
+        backend=backend,
+        state=state,
+        after_text="",
+    )
+
     assert backend.started == 0
