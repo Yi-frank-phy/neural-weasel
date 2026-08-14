@@ -34,9 +34,7 @@ class MixedPinyinConstraint(PinyinConstraint):
         state: BackendState,
         after_text: str,
     ) -> list[Candidate]:
-        ordinary = super().candidates(
-            raw_keys, backend=backend, state=state, after_text=after_text
-        )
+        ordinary = super().candidates(raw_keys, backend=backend, state=state, after_text=after_text)
         if ordinary:
             return ordinary
         try:
