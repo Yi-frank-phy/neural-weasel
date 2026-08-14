@@ -85,7 +85,10 @@ def test_partial_matches_accept_full_initial_and_incomplete_final(make_index) ->
     assert any(match.entry.text == "这么好" and match.next_position == 7 for match in single_token)
 
     incomplete_final = matcher.partial_matches("shenji", 0)
-    assert any(match.entry.text == "神经" and match.next_position == 6 for match in incomplete_final)
+    assert any(
+        match.entry.text == "神经" and match.next_position == 6
+        for match in incomplete_final
+    )
 
 
 def test_multitoken_fallback_uses_conditional_scores_for_zhendezmh(make_index) -> None:
