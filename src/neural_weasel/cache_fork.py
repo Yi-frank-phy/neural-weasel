@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-
 _LINEAR_DICTS = (
     "conv_states",
     "recurrent_states",
