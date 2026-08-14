@@ -18,8 +18,7 @@ class FakeConditionalSession:
         tokens = tuple(int(value) for value in token_ids)
         self.advances.append((parents, tokens))
         self.paths = [
-            self.paths[parent] + (token,)
-            for parent, token in zip(parents, tokens, strict=True)
+            self.paths[parent] + (token,) for parent, token in zip(parents, tokens, strict=True)
         ]
         return 0.0
 
@@ -86,8 +85,7 @@ def test_partial_matches_accept_full_initial_and_incomplete_final(make_index) ->
 
     incomplete_final = matcher.partial_matches("shenji", 0)
     assert any(
-        match.entry.text == "神经" and match.next_position == 6
-        for match in incomplete_final
+        match.entry.text == "神经" and match.next_position == 6 for match in incomplete_final
     )
 
 
