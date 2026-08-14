@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from neural_weasel.mixed_pinyin import MixedPinyinConstraint, PartialPinyinMatcher
+from neural_weasel.mixed_pinyin import MixedPinyinConstraint
+from neural_weasel.pinyin_partial import PartialPinyinMatcher
 
 
 class FakeConditionalSession:
@@ -26,9 +27,10 @@ class FakeConditionalSession:
         results = []
         for path, allowed in zip(self.paths, allowed_token_ids_by_beam, strict=True):
             table = {
-                (10,): {20: 9.0, 21: 1.0},
+                (10,): {20: 9.0, 21: 1.0, 60: 9.0},
                 (10, 20): {30: 8.0},
                 (10, 21): {30: 0.5},
+                (10, 60): {70: 8.0},
             }.get(path, {})
             results.append(
                 np.asarray(
@@ -58,7 +60,7 @@ class FakeConditionalBackend:
         return self.session
 
 
-def test_partial_matches_accept_full_syllables_initials_and_incomplete_final(make_index) -> None:
+def test_partial_matches_accept_full_initial_and_incomplete_final(make_index) -> None:
     index = make_index(
         [
             (10, "真的", "zhende", "zhen'de", 2, 0),
@@ -130,6 +132,28 @@ def test_single_token_partial_fallback_precedes_multitoken_search(make_index) ->
     assert backend.started == 0
 
 
+def test_single_token_partial_can_complete_one_untyped_suffix(make_index) -> None:
+    index = make_index(
+        [
+            (40, "这么好", "zhemehao", "zhe'me'hao", 3, 0),
+            (41, "这么好的", "zhemehaode", "zhe'me'hao'de", 4, 0),
+        ]
+    )
+    backend = FakeConditionalBackend({40: 10.0, 41: 9.8})
+    state = SimpleNamespace(epoch=4)
+    constraint = MixedPinyinConstraint(index)
+
+    candidates = constraint.candidates(
+        "zhemhao",
+        backend=backend,
+        state=state,
+        after_text="",
+    )
+
+    assert [candidate.text for candidate in candidates] == ["这么好", "这么好的"]
+    assert backend.started == 0
+
+
 def test_normal_full_pinyin_never_starts_multitoken_fallback(make_index) -> None:
     index = make_index([(5, "神经", "shenjing", "shen'jing", 2, 0)])
     backend = FakeConditionalBackend({5: 10.0})
@@ -147,7 +171,7 @@ def test_normal_full_pinyin_never_starts_multitoken_fallback(make_index) -> None
     assert backend.started == 0
 
 
-def test_long_full_pinyin_does_not_start_expensive_mixed_fallback(make_index) -> None:
+def test_long_full_pinyin_can_use_bounded_multitoken_fallback(make_index) -> None:
     index = make_index(
         [
             (10, "真的", "zhende", "zhen'de", 2, 0),
@@ -155,15 +179,18 @@ def test_long_full_pinyin_does_not_start_expensive_mixed_fallback(make_index) ->
             (70, "这么好", "zhemehao", "zhe'me'hao", 3, 0),
         ]
     )
-    backend = FakeConditionalBackend({10: 10.0, 60: 9.0, 70: 8.0})
+    backend = FakeConditionalBackend({10: 10.0})
     state = SimpleNamespace(epoch=9)
     constraint = MixedPinyinConstraint(index)
 
-    constraint.candidates(
+    candidates = constraint.candidates(
         "zhendeshijiezhemehao",
         backend=backend,
         state=state,
         after_text="",
     )
 
-    assert backend.started == 0
+    assert backend.started == 1
+    assert candidates[0].text == "真的世界这么好"
+    assert candidates[0].token_path == (10, 60, 70)
+    assert len(backend.session.advances) == 2
