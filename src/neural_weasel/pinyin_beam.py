@@ -80,9 +80,7 @@ def run_beam(
             break
         scored = session.score_allowed(allowed)
         pending = []
-        for parent, (beam, group, values) in enumerate(
-            zip(active, groups, scored, strict=True)
-        ):
+        for parent, (beam, group, values) in enumerate(zip(active, groups, scored, strict=True)):
             for match, value in zip(group, values, strict=True):
                 entry = match.entry
                 child = Beam(
