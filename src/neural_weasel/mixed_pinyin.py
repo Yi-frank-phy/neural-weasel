@@ -44,8 +44,6 @@ class MixedPinyinConstraint(PinyinConstraint):
         raw = parsed.compact
         if not raw or parsed.explicit_boundaries:
             return []
-        if self.matcher.is_complete_syllable_sequence(raw):
-            return []
         single = single_partial(raw_keys, raw, self.matcher, backend, state, after_text)
         if single:
             return single
