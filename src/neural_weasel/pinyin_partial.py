@@ -11,10 +11,15 @@ class PartialPinyinMatch:
     next_position: int
     shorthand: int = 0
     incomplete_final: bool = False
+    completion_syllables: int = 0
 
     @property
     def cost(self) -> float:
-        return -0.06 * self.shorthand - (0.03 if self.incomplete_final else 0.0)
+        return (
+            -0.06 * self.shorthand
+            - (0.03 if self.incomplete_final else 0.0)
+            - 0.04 * self.completion_syllables
+        )
 
 
 class _Node:
@@ -69,14 +74,32 @@ class PartialPinyinMatcher:
             return self._cache[key]
         found: dict[tuple[IndexedPronunciation, int], PartialPinyinMatch] = {}
 
+        def record(
+            node: _Node,
+            pos: int,
+            shorthand: int,
+            incomplete: bool,
+            completion_syllables: int = 0,
+        ) -> None:
+            for entry in node.terminals:
+                match = PartialPinyinMatch(
+                    entry,
+                    pos,
+                    shorthand,
+                    incomplete,
+                    completion_syllables,
+                )
+                old = found.get((entry, pos))
+                if old is None or match.cost > old.cost:
+                    found[(entry, pos)] = match
+
         def visit(node: _Node, pos: int, shorthand: int, incomplete: bool) -> None:
             if pos > start:
-                for entry in node.terminals:
-                    match = PartialPinyinMatch(entry, pos, shorthand, incomplete)
-                    old = found.get((entry, pos))
-                    if old is None or match.cost > old.cost:
-                        found[(entry, pos)] = match
+                record(node, pos, shorthand, incomplete)
             if pos >= len(raw):
+                if not incomplete:
+                    for child in node.children.values():
+                        record(child, pos, shorthand, incomplete, 1)
                 return
             full = [
                 (syllable, child)
