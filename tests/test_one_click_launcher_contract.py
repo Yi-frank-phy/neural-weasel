@@ -152,3 +152,24 @@ def test_ci_dry_runs_the_downloaded_launcher_before_upload() -> None:
     assert "-DryRun" in workflow
     assert "Parse user scripts with Windows PowerShell 5.1" in focused_workflow
     assert "powershell.exe" in focused_workflow
+
+
+def test_safe_launch_paths_pin_int8_instead_of_inheriting_cli_bf16_default() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    service = _read("scripts/start-model-service.ps1")
+    wisdom = _read("scripts/start-wisdom-service.vbs")
+
+    assert "[ValidateSet('int8')]" in service
+    assert "[string]$Precision = 'int8'" in service
+    assert "'--precision', $Precision" in service
+    assert "precision = $Precision" in service
+    assert "'-Precision'" in launcher
+    assert "'int8'" in launcher
+    assert "-Precision int8" in wisdom
+
+
+def test_model_service_does_not_use_model_name_only_index_cache_key() -> None:
+    service = _read("scripts/start-model-service.ps1")
+
+    assert "$ModelHash.sqlite3" not in service
+    assert "$ModelHash" not in service
