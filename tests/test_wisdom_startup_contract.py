@@ -24,15 +24,20 @@ def test_wisdom_startup_never_terminates_unmanaged_weasel_processes() -> None:
     assert "Get-CimInstance Win32_Process" not in script
 
 
-def test_wisdom_startup_accepts_only_the_expected_backend_health_identity() -> None:
+def test_wisdom_startup_accepts_only_expected_gguf_cuda_backend_identity() -> None:
     script = _script()
 
     for marker in (
-        "Qwen/Qwen3.5-0.8B-Base",
-        "int8",
-        "full_logits",
-        "tokenizer_fingerprint",
-        "index_tokenizer_fingerprint",
+        "Qwen/Qwen3.5-4B-Base",
+        "gguf",
+        "Q8_0",
+        "llama.cpp",
+        "CUDA",
+        "all",
+        "gguf_sha256",
+        "vocab_fingerprint",
+        "index_vocab_fingerprint",
     ):
         assert marker in script
-    assert "$Health.tokenizer_fingerprint -eq $Health.index_tokenizer_fingerprint" in script
+    assert "$Health.vocab_fingerprint -eq $Health.index_vocab_fingerprint" in script
+    assert "$Health.gguf_sha256 -eq $Health.index_gguf_sha256" in script
