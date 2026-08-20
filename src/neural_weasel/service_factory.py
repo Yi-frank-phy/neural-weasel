@@ -21,7 +21,9 @@ def build_bilingual_engine(
 
     if getattr(runtime, "format", None) == "gguf":
         if backend_kind != "full":
-            raise ValueError("GGUF production runtime supports only the snapshot full-logits backend")
+            raise ValueError(
+                "GGUF production runtime supports only the snapshot full-logits backend"
+            )
         # Do not attach the Qwen/Torch conditional-continuation seam here.
         # Keypress handling reads immutable logits snapshots only; llama.cpp
         # forwards remain owned by background context refresh.
