@@ -94,7 +94,7 @@ class LlamaCppBackend:
             )
 
         gpu_before_probe = gpu_before_probe or verify_expected_nvidia_binding
-        gpu_after_probe = gpu_after_probe or discover_target_gpu
+        self._gpu_probe = gpu_after_probe or discover_target_gpu
         before_gpu = gpu_before_probe()
 
         factory = llama_factory or _default_llama_factory
@@ -110,7 +110,7 @@ class LlamaCppBackend:
             verbose=False,
         )
 
-        after_gpu = gpu_after_probe()
+        after_gpu = self._gpu_probe()
         self.gpu_vram_load_delta_mib = require_full_gguf_offload(before_gpu, after_gpu)
         self.target_gpu = after_gpu
         self.tokenizer = LlamaVocabAdapter(self.llama)
@@ -222,7 +222,9 @@ class LlamaCppBackend:
             self._cached_logits = None
 
     def diagnostics(self) -> dict[str, object]:
-        current_gpu = discover_target_gpu() if self.target_gpu.uuid != "GPU-test" else self.target_gpu
+        current_gpu = self._gpu_probe()
+        if current_gpu.uuid != self.target_gpu.uuid or current_gpu.name != self.target_gpu.name:
+            raise GpuBindingError("target GPU identity changed after GGUF startup")
         return {
             "model": self.model_id,
             "format": self.format,
