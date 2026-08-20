@@ -29,19 +29,19 @@ foreach ($requiredFile in @($compatibilityShell, $backendLauncher)) {
 function Test-ExpectedBackendHealth {
     try {
         $Health = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2
+        return (
+            $Health.status -eq 'ok' -and
+            $Health.model -eq 'Qwen/Qwen3.5-0.8B-Base' -and
+            $Health.precision -eq 'int8' -and
+            $Health.backend_kind -eq 'full_logits' -and
+            -not [string]::IsNullOrWhiteSpace([string]$Health.tokenizer_fingerprint) -and
+            $Health.tokenizer_fingerprint -eq $Health.index_tokenizer_fingerprint -and
+            $Health.tokenizer_revision -eq $Health.index_revision -and
+            $Health.index_model_id -eq $Health.model
+        )
     } catch {
         return $false
     }
-    return (
-        $Health.status -eq 'ok' -and
-        $Health.model -eq 'Qwen/Qwen3.5-0.8B-Base' -and
-        $Health.precision -eq 'int8' -and
-        $Health.backend_kind -eq 'full_logits' -and
-        -not [string]::IsNullOrWhiteSpace([string]$Health.tokenizer_fingerprint) -and
-        $Health.tokenizer_fingerprint -eq $Health.index_tokenizer_fingerprint -and
-        $Health.tokenizer_revision -eq $Health.index_revision -and
-        $Health.index_model_id -eq $Health.model
-    )
 }
 
 if ($StartupDelaySeconds -gt 0) {
