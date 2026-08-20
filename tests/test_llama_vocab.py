@@ -5,7 +5,7 @@ from neural_weasel.llama_vocab import LlamaVocabAdapter
 
 class FakeLlama:
     def __init__(self) -> None:
-        self._pieces = [b"<bos>", "你".encode(), "hello".encode(), b"\xff", b"<eos>"]
+        self._pieces = [b"<bos>", "你".encode(), b"hello", b"\xff", b"<eos>"]
 
     def n_vocab(self) -> int:
         return len(self._pieces)
