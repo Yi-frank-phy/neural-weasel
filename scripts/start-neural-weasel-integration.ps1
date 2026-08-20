@@ -31,12 +31,18 @@ function Test-ExpectedBackendHealth {
         $Health = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2
         return (
             $Health.status -eq 'ok' -and
-            $Health.model -eq 'Qwen/Qwen3.5-0.8B-Base' -and
-            $Health.precision -eq 'int8' -and
+            $Health.model -eq 'Qwen/Qwen3.5-4B-Base' -and
+            $Health.format -eq 'gguf' -and
+            $Health.quantization -eq 'Q8_0' -and
+            $Health.runtime -eq 'llama.cpp' -and
+            $Health.backend -eq 'CUDA' -and
             $Health.backend_kind -eq 'full_logits' -and
-            -not [string]::IsNullOrWhiteSpace([string]$Health.tokenizer_fingerprint) -and
-            $Health.tokenizer_fingerprint -eq $Health.index_tokenizer_fingerprint -and
-            $Health.tokenizer_revision -eq $Health.index_revision -and
+            $Health.gpu_layers -eq 'all' -and
+            -not [string]::IsNullOrWhiteSpace([string]$Health.gguf_sha256) -and
+            -not [string]::IsNullOrWhiteSpace([string]$Health.vocab_fingerprint) -and
+            $Health.gguf_sha256 -eq $Health.index_gguf_sha256 -and
+            $Health.vocab_fingerprint -eq $Health.index_vocab_fingerprint -and
+            $Health.index_identity_kind -eq 'gguf-v1' -and
             $Health.index_model_id -eq $Health.model
         )
     } catch {
@@ -61,8 +67,8 @@ if (-not $backendReady) {
     }
     if (-not $backendReady) {
         throw (
-            'Neural backend did not become ready with the expected model/int8/full-logits ' +
-            "identity within $BackendReadyTimeoutSeconds seconds."
+            'Neural backend did not become ready with the expected 4B/Q8_0/GGUF/' +
+            "llama.cpp/CUDA/all-layers identity within $BackendReadyTimeoutSeconds seconds."
         )
     }
 }
