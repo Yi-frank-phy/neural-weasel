@@ -7,7 +7,11 @@ from .gguf_index import GGUF_IDENTITY_KIND
 from .index import SCHEMA_VERSION, resolved_tokenizer_revision, tokenizer_fingerprint
 
 
-def _validate(metadata: dict[str, object], expected: dict[str, object], labels: dict[str, str]) -> None:
+def _validate(
+    metadata: dict[str, object],
+    expected: dict[str, object],
+    labels: dict[str, str],
+) -> None:
     for key, expected_value in expected.items():
         actual_value = metadata.get(key)
         if actual_value != expected_value:
