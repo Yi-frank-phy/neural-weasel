@@ -9,7 +9,7 @@ from .index import SCHEMA_VERSION, resolved_tokenizer_revision, tokenizer_finger
 def validated_runtime_index_identity(runtime: Any, index: Any) -> dict[str, object]:
     """Validate that the loaded pinyin index belongs to the active tokenizer.
 
-    Token IDs are meaningful only relative to one tokenizer revision.  Service
+    Token IDs are meaningful only relative to one tokenizer revision. Service
     startup therefore fails closed before candidate scoring if an explicit or
     cached index was built for a different runtime identity.
     """
@@ -20,8 +20,7 @@ def validated_runtime_index_identity(runtime: Any, index: Any) -> dict[str, obje
         or resolved_tokenizer_revision(runtime.tokenizer)
     )
     fingerprint = str(
-        getattr(runtime, "tokenizer_fingerprint", None)
-        or tokenizer_fingerprint(runtime.tokenizer)
+        getattr(runtime, "tokenizer_fingerprint", None) or tokenizer_fingerprint(runtime.tokenizer)
     )
     metadata = dict(index.metadata)
     expected = {
