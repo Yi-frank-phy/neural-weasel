@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.metadata import version
 from types import SimpleNamespace
 
 import numpy as np
@@ -60,16 +61,8 @@ class EmptyPinyinIndex:
         "model_id": FakeRuntime.model_id,
         "revision": FakeRuntime.tokenizer_revision,
         "tokenizer_hash": FakeRuntime.tokenizer_fingerprint,
-        "pypinyin_version": "fixture",
+        "pypinyin_version": version("pypinyin"),
     }
-
-    def validate_runtime_identity(self, *, model_id: str, revision: str, tokenizer_hash: str) -> None:
-        if model_id != self.metadata["model_id"]:
-            raise RuntimeError("pinyin index model id does not match runtime")
-        if revision != self.metadata["revision"]:
-            raise RuntimeError("pinyin index tokenizer revision does not match runtime")
-        if tokenizer_hash != self.metadata["tokenizer_hash"]:
-            raise RuntimeError("pinyin index tokenizer fingerprint does not match runtime")
 
     def query_plan(self, parsed):
         return SimpleNamespace(groups=())
