@@ -101,11 +101,15 @@ class WisdomHttpServer(ThreadingHTTPServer):
         epoch = self.request_context(prompt)
         exact_snapshot = self.engine.has_snapshot(epoch)
         if not exact_snapshot:
+            # Candidate count must not turn a keypress into a slow paging wait.
             exact_snapshot = self.engine.wait_for_epoch(epoch, FIRST_PAGE_CONTEXT_WAIT_SECONDS)
         query_epoch = epoch
         if not exact_snapshot:
             with self.stats_lock:
                 self.snapshot_not_ready_count += 1
+            # Keep the key path responsive while the newest context is being
+            # prefetched. Epoch zero asks the engine for its latest completed
+            # immutable snapshot; it never exposes a half-written forward.
             query_epoch = 0
         with self.engine_lock:
             candidates = self.engine.query(
@@ -135,6 +139,8 @@ class WisdomRequestHandler(BaseHTTPRequestHandler):
     server: WisdomHttpServer
 
     def log_message(self, format: str, *args: object) -> None:
+        # Requests can be derived from private composition context. Do not log
+        # paths, payloads, candidates, or caller-controlled error details.
         return
 
     def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
@@ -160,9 +166,7 @@ class WisdomRequestHandler(BaseHTTPRequestHandler):
                     "tokenizer_fingerprint": diagnostics.get("tokenizer_fingerprint"),
                     "index_model_id": diagnostics.get("index_model_id"),
                     "index_revision": diagnostics.get("index_revision"),
-                    "index_tokenizer_fingerprint": diagnostics.get(
-                        "index_tokenizer_fingerprint"
-                    ),
+                    "index_tokenizer_fingerprint": diagnostics.get("index_tokenizer_fingerprint"),
                     "index_pypinyin_version": diagnostics.get("index_pypinyin_version"),
                     "index_schema_version": diagnostics.get("index_schema_version"),
                 },
@@ -214,6 +218,8 @@ class WisdomRequestHandler(BaseHTTPRequestHandler):
             record(False)
             self._write_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request"})
         except Exception:
+            # Never return exception text because model errors can contain prompt
+            # fragments. Wisdom Weasel safely degrades to ordinary Rime results.
             record(False)
             self._write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "inference_failed"})
 
