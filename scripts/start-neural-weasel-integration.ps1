@@ -3,12 +3,20 @@ param(
     [ValidateRange(0, 60)]
     [int]$StartupDelaySeconds = 5,
     [ValidateRange(10, 1800)]
-    [int]$BackendReadyTimeoutSeconds = 1800
+    [int]$BackendReadyTimeoutSeconds = 1800,
+    [string]$CompatibilityRoot = $env:NEURAL_WEASEL_WISDOM_ROOT
 )
 
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 
-$compatibilityRoot = 'C:\输入法\wisdom_weasel_installer\weasel-release'
+if (-not $CompatibilityRoot) {
+    throw (
+        'Wisdom Weasel root is not configured. Pass -CompatibilityRoot or set ' +
+        'NEURAL_WEASEL_WISDOM_ROOT to the directory containing WeaselServer.exe.'
+    )
+}
+$compatibilityRoot = [IO.Path]::GetFullPath($CompatibilityRoot)
 $compatibilityShell = Join-Path $compatibilityRoot 'WeaselServer.exe'
 $backendLauncher = Join-Path $PSScriptRoot 'start-wisdom-service.vbs'
 
@@ -18,48 +26,58 @@ foreach ($requiredFile in @($compatibilityShell, $backendLauncher)) {
     }
 }
 
+function Test-ExpectedBackendHealth {
+    try {
+        $Health = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2
+    } catch {
+        return $false
+    }
+    return (
+        $Health.status -eq 'ok' -and
+        $Health.model -eq 'Qwen/Qwen3.5-0.8B-Base' -and
+        $Health.precision -eq 'int8' -and
+        $Health.backend_kind -eq 'full_logits' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Health.tokenizer_fingerprint) -and
+        $Health.tokenizer_fingerprint -eq $Health.index_tokenizer_fingerprint -and
+        $Health.tokenizer_revision -eq $Health.index_revision -and
+        $Health.index_model_id -eq $Health.model
+    )
+}
+
 if ($StartupDelaySeconds -gt 0) {
     Start-Sleep -Seconds $StartupDelaySeconds
 }
 
-$backendReady = $false
-try {
-    $backendReady = (
-        Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2
-    ).status -eq 'ok'
-} catch {
-    $backendReady = $false
-}
+$backendReady = Test-ExpectedBackendHealth
 if (-not $backendReady) {
     & "$env:WINDIR\System32\wscript.exe" $backendLauncher
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.Elapsed.TotalSeconds -lt $BackendReadyTimeoutSeconds) {
         Start-Sleep -Milliseconds 500
-        try {
-            $backendReady = (
-                Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2
-            ).status -eq 'ok'
-        } catch {
-            $backendReady = $false
-        }
+        $backendReady = Test-ExpectedBackendHealth
         if ($backendReady) {
             break
         }
     }
     if (-not $backendReady) {
-        throw "Neural backend did not become ready within $BackendReadyTimeoutSeconds seconds."
+        throw (
+            'Neural backend did not become ready with the expected model/int8/full-logits ' +
+            "identity within $BackendReadyTimeoutSeconds seconds."
+        )
     }
 }
 
 $desiredPath = [IO.Path]::GetFullPath($compatibilityShell)
 $desiredShellRunning = $false
-foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='WeaselServer.exe'")) {
-    if ($process.ExecutablePath -and
-        [IO.Path]::GetFullPath($process.ExecutablePath) -eq $desiredPath) {
-        $desiredShellRunning = $true
-        continue
+foreach ($process in @(Get-Process -Name 'WeaselServer' -ErrorAction SilentlyContinue)) {
+    try {
+        if ($process.Path -and [IO.Path]::GetFullPath($process.Path) -eq $desiredPath) {
+            $desiredShellRunning = $true
+            break
+        }
+    } catch {
+        # Access to another process path can be denied. Never terminate or mutate it.
     }
-    Stop-Process -Id $process.ProcessId -ErrorAction Stop
 }
 
 if (-not $desiredShellRunning) {
