@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .backends import SparseProjectionBackend
+from .backends import FullLogitsSnapshotBackend, SparseProjectionBackend
 from .bilingual_engine import BilingualImeEngine
 from .conditional_backend import ConditionalFullLogitsBackend
 from .index import PinyinIndex
@@ -19,7 +19,14 @@ def build_bilingual_engine(
 ) -> BilingualImeEngine:
     identity = validated_runtime_index_identity(runtime, index)
 
-    if backend_kind == "full":
+    if getattr(runtime, "format", None) == "gguf":
+        if backend_kind != "full":
+            raise ValueError("GGUF production runtime supports only the snapshot full-logits backend")
+        # Do not attach the Qwen/Torch conditional-continuation seam here.
+        # Keypress handling reads immutable logits snapshots only; llama.cpp
+        # forwards remain owned by background context refresh.
+        backend = FullLogitsSnapshotBackend(runtime)
+    elif backend_kind == "full":
         backend = ConditionalFullLogitsBackend(runtime)
     elif backend_kind == "sparse":
         backend = SparseProjectionBackend(runtime)
