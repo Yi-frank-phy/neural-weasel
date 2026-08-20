@@ -94,13 +94,15 @@ def test_bundle_verifier_rejects_neural_runtime_inside_tsf() -> None:
     assert "in-process TSF contains neural runtime" in verifier
 
 
-def test_safe_release_locks_the_runtime_to_the_08b_model() -> None:
+def test_safe_release_locks_runtime_to_4b_base_q8_gguf() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
     service = _read("scripts/start-model-service.ps1")
 
     for script in (launcher, service):
-        assert "[ValidateSet('Qwen/Qwen3.5-0.8B-Base')]" in script
-        assert "Qwen/Qwen3.5-4B-Base" not in script
+        assert "Qwen/Qwen3.5-4B-Base" in script
+        assert "Qwen/Qwen3.5-0.8B-Base" not in script
+    assert "Q8_0" in service
+    assert "gguf" in service.lower()
 
 
 def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
@@ -109,7 +111,8 @@ def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
     assert "tools\\uv.exe" in service
     assert "$UvCommand" in service
     assert "Get-Command uv" in service
-    assert "& $UvCommand run" in service
+    assert "& $UvCommand sync" in service
+    assert "& $UvCommand @Arguments" in service
 
 
 def test_uv_pin_accepts_official_build_metadata_but_not_other_versions() -> None:
@@ -130,7 +133,6 @@ def test_double_click_runtime_supports_windows_powershell_51() -> None:
     assert "powershell.exe" in launchers
     assert "ConvertToHexString" not in service
     assert "utf8NoBOM" not in service
-    assert "BitConverter" in service
     assert "UTF8Encoding" in service
 
 
@@ -152,3 +154,24 @@ def test_ci_dry_runs_the_downloaded_launcher_before_upload() -> None:
     assert "-DryRun" in workflow
     assert "Parse user scripts with Windows PowerShell 5.1" in focused_workflow
     assert "powershell.exe" in focused_workflow
+
+
+def test_safe_launch_path_requires_q8_gguf_cuda_instead_of_bitsandbytes_precision() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    service = _read("scripts/start-model-service.ps1")
+    wisdom = _read("scripts/start-wisdom-service.vbs")
+
+    for text in (launcher, service, wisdom):
+        assert "Qwen/Qwen3.5-4B-Base" in text
+        assert "Q8_0" in text
+    assert "--precision" not in service
+    assert "[ValidateSet('int8')]" not in service
+    assert "-Precision int8" not in wisdom
+    assert "CUDA" in service
+
+
+def test_model_service_does_not_use_model_name_only_index_cache_key() -> None:
+    service = _read("scripts/start-model-service.ps1")
+
+    assert "$ModelHash.sqlite3" not in service
+    assert "$ModelHash" not in service

@@ -1,9 +1,5 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Qwen/Qwen3.5-0.8B-Base')]
-    [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
-    [ValidateSet('full', 'sparse')]
-    [string]$Backend = 'full',
     [ValidateRange(10, 3600)]
     [int]$ReadyTimeoutSeconds = 1800,
     [switch]$NoActivate,
@@ -13,6 +9,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$Model = 'Qwen/Qwen3.5-4B-Base'
+$ModelFormat = 'gguf'
+$Quantization = 'Q8_0'
+$Runtime = 'llama.cpp'
+$ComputeBackend = 'CUDA'
 $ExperimentalClsid = '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}'
 $ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
 $InstallRoot = Join-Path $env:LOCALAPPDATA (
@@ -82,7 +83,7 @@ function Wait-ModelPipe {
         if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
             try {
                 $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-                if ($State.state -in @('failed', 'index-failed')) {
+                if ($State.state -eq 'failed') {
                     throw (
                         "The model service reported state '$($State.state)'. " +
                         "See $LogRoot for details."
@@ -169,13 +170,12 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
             '-ExecutionPolicy',
             'Bypass',
             '-File',
-            (Quote-ProcessArgument $ServiceScript),
-            '-Model',
-            (Quote-ProcessArgument $Model),
-            '-Backend',
-            $Backend
+            (Quote-ProcessArgument $ServiceScript)
         ) -join ' '
-        Write-Host 'Starting the isolated 0.8B model service. The first launch may download the model.'
+        Write-Host (
+            "Starting $Model $Quantization $ModelFormat through $Runtime $ComputeBackend. " +
+            'The first launch may download about 4.5 GB and build the pinyin index.'
+        )
         $ServiceProcess = Start-Process `
             -FilePath $PowerShellExe `
             -ArgumentList $Arguments `
@@ -205,4 +205,7 @@ if (-not $NoActivate) {
 }
 
 Write-Host '神经小狼毫（安全版） is running and activated for the current Windows desktop session.'
+Write-Host (
+    "$Model $Quantization $ModelFormat is required to run with full model-layer $ComputeBackend offload."
+)
 Write-Host 'Neural code runs outside application processes; the Windows default input method was not changed.'

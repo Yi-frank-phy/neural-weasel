@@ -155,15 +155,42 @@ class WisdomRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
             diagnostics = self.server.engine.diagnostics()
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "status": "ok",
-                    "model": diagnostics.get("model"),
-                    "precision": diagnostics.get("precision"),
-                    "backend_kind": diagnostics.get("backend_kind"),
-                },
-            )
+            if diagnostics.get("format") == "gguf":
+                keys = (
+                    "model",
+                    "format",
+                    "quantization",
+                    "runtime",
+                    "backend",
+                    "backend_kind",
+                    "gpu_layers",
+                    "gpu_name",
+                    "gpu_uuid",
+                    "gguf_sha256",
+                    "vocab_fingerprint",
+                    "index_model_id",
+                    "index_identity_kind",
+                    "index_gguf_sha256",
+                    "index_vocab_fingerprint",
+                    "index_pypinyin_version",
+                    "index_schema_version",
+                )
+            else:
+                keys = (
+                    "model",
+                    "precision",
+                    "backend_kind",
+                    "tokenizer_revision",
+                    "tokenizer_fingerprint",
+                    "index_model_id",
+                    "index_revision",
+                    "index_tokenizer_fingerprint",
+                    "index_pypinyin_version",
+                    "index_schema_version",
+                )
+            payload = {"status": "ok"}
+            payload.update((key, diagnostics.get(key)) for key in keys)
+            self._write_json(HTTPStatus.OK, payload)
             return
         if self.path == "/stats":
             self._write_json(HTTPStatus.OK, self.server.stats())

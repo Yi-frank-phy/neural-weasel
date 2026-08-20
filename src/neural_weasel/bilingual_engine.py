@@ -18,6 +18,7 @@ class BilingualImeEngine:
         pinyin_constraint: Constraint | None = None,
         latin_prefix_constraint: Constraint | None = None,
         retained_contexts: int = 4,
+        diagnostic_identity: dict[str, object] | None = None,
     ) -> None:
         self.script_policy = ContextScriptPolicy()
         self.constraint_engine = UnifiedConstraintEngine(
@@ -34,6 +35,7 @@ class BilingualImeEngine:
         self._contexts: dict[int, tuple[str, str]] = {}
         self._contexts_lock = threading.Lock()
         self._retained_contexts = retained_contexts
+        self._diagnostic_identity = dict(diagnostic_identity or {})
 
     def _remember_context(self, epoch: int, before: str, after: str) -> None:
         with self._contexts_lock:
@@ -128,4 +130,6 @@ class BilingualImeEngine:
         self.script_policy.stable_script = None
 
     def diagnostics(self) -> dict[str, object]:
-        return self.coordinator.diagnostics()
+        diagnostics = self.coordinator.diagnostics()
+        diagnostics.update(self._diagnostic_identity)
+        return diagnostics

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .backends import SparseProjectionBackend
+from .backends import FullLogitsSnapshotBackend, SparseProjectionBackend
 from .bilingual_engine import BilingualImeEngine
 from .conditional_backend import ConditionalFullLogitsBackend
 from .index import PinyinIndex
 from .mixed_pinyin import MixedPinyinConstraint
+from .runtime_identity import validated_runtime_index_identity
 from .unified import LatinPrefixConstraint
 
 
@@ -16,7 +17,18 @@ def build_bilingual_engine(
     index: PinyinIndex,
     backend_kind: str,
 ) -> BilingualImeEngine:
-    if backend_kind == "full":
+    identity = validated_runtime_index_identity(runtime, index)
+
+    if getattr(runtime, "format", None) == "gguf":
+        if backend_kind != "full":
+            raise ValueError(
+                "GGUF production runtime supports only the snapshot full-logits backend"
+            )
+        # Do not attach the Qwen/Torch conditional-continuation seam here.
+        # Keypress handling reads immutable logits snapshots only; llama.cpp
+        # forwards remain owned by background context refresh.
+        backend = FullLogitsSnapshotBackend(runtime)
+    elif backend_kind == "full":
         backend = ConditionalFullLogitsBackend(runtime)
     elif backend_kind == "sparse":
         backend = SparseProjectionBackend(runtime)
@@ -27,4 +39,5 @@ def build_bilingual_engine(
         backend=backend,
         pinyin_constraint=MixedPinyinConstraint(index),
         latin_prefix_constraint=LatinPrefixConstraint.from_tokenizer(runtime.tokenizer),
+        diagnostic_identity=identity,
     )
