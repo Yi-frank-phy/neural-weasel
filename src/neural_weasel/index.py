@@ -56,6 +56,14 @@ class PinyinQueryPlan:
     groups: tuple[PinyinQueryGroup, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PartialPinyinMatch:
+    entry: IndexedPronunciation
+    consumed_letters: int
+    abbreviation_cost: int
+    covers_input: bool
+
+
 def tokenizer_fingerprint(tokenizer: Any) -> str:
     digest = hashlib.sha256()
     digest.update(tokenizer.__class__.__name__.encode())
@@ -244,10 +252,19 @@ class _TrieNode:
         self.terminals: list[IndexedPronunciation] = []
 
 
+class _SyllableTrieNode:
+    __slots__ = ("children", "terminals")
+
+    def __init__(self) -> None:
+        self.children: dict[str, _SyllableTrieNode] = {}
+        self.terminals: list[IndexedPronunciation] = []
+
+
 class PinyinIndex:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.root = _TrieNode()
+        self.syllable_root = _SyllableTrieNode()
         self.syllables: set[str] = set()
         self.metadata: dict[str, object] = {}
         self._query_plans: dict[tuple[str, tuple[int, ...]], PinyinQueryPlan] = {}
@@ -290,6 +307,10 @@ class PinyinIndex:
                 for character in pinyin_value:
                     node = node.children.setdefault(character, _TrieNode())
                 node.terminals.append(entry)
+                syllable_node = self.syllable_root
+                for syllable in entry.syllable_path:
+                    syllable_node = syllable_node.children.setdefault(syllable, _SyllableTrieNode())
+                syllable_node.terminals.append(entry)
         finally:
             connection.close()
 
@@ -357,6 +378,92 @@ class PinyinIndex:
         plan = PinyinQueryPlan(raw=parsed.compact, groups=tuple(groups))
         self._query_plans[key] = plan
         return plan
+
+    def partial_matches(
+        self,
+        parsed: ParsedPinyinInput,
+        *,
+        max_results: int = 4096,
+        max_states: int = 8192,
+    ) -> list[PartialPinyinMatch]:
+        """Match full syllables mixed with one-letter syllable abbreviations.
+
+        A final incomplete syllable is accepted, as is an indexed token that
+        consumes only a prefix of the raw input for bounded multi-token search.
+        Search and output caps keep this fallback out of the realtime hot path.
+        """
+
+        raw = parsed.compact
+        if not raw or max_results <= 0 or max_states <= 0:
+            return []
+        matches: dict[tuple[int | None, str, int], PartialPinyinMatch] = {}
+        stack: list[tuple[_SyllableTrieNode, int, int]] = [(self.syllable_root, 0, 0)]
+        visited: set[tuple[int, int, int]] = set()
+        states = 0
+
+        def remember(
+            entry: IndexedPronunciation,
+            consumed: int,
+            abbreviation_cost: int,
+            covers_input: bool,
+        ) -> None:
+            key = (entry.token_id, entry.pinyin, consumed)
+            candidate = PartialPinyinMatch(
+                entry=entry,
+                consumed_letters=consumed,
+                abbreviation_cost=abbreviation_cost,
+                covers_input=covers_input,
+            )
+            previous = matches.get(key)
+            if previous is None or (
+                candidate.abbreviation_cost,
+                not candidate.covers_input,
+            ) < (
+                previous.abbreviation_cost,
+                not previous.covers_input,
+            ):
+                matches[key] = candidate
+
+        while stack and states < max_states and len(matches) < max_results:
+            node, position, abbreviation_cost = stack.pop()
+            state_key = (id(node), position, abbreviation_cost)
+            if state_key in visited:
+                continue
+            visited.add(state_key)
+            states += 1
+
+            for entry in node.terminals:
+                remember(entry, position, abbreviation_cost, position == len(raw))
+
+            if position == len(raw):
+                descendants = [node]
+                while descendants and len(matches) < max_results:
+                    descendant = descendants.pop()
+                    for entry in descendant.terminals:
+                        remember(entry, position, abbreviation_cost, True)
+                    descendants.extend(descendant.children.values())
+                continue
+
+            remaining = raw[position:]
+            for syllable, child in node.children.items():
+                if remaining.startswith(syllable):
+                    stack.append((child, position + len(syllable), abbreviation_cost))
+                elif syllable.startswith(remaining):
+                    stack.append((child, len(raw), abbreviation_cost))
+                if len(syllable) > 1 and raw[position] == syllable[0]:
+                    stack.append((child, position + 1, abbreviation_cost + 1))
+
+        return sorted(
+            matches.values(),
+            key=lambda match: (
+                not match.covers_input,
+                match.abbreviation_cost,
+                -match.consumed_letters,
+                match.entry.coverage,
+                match.entry.text,
+                match.entry.pinyin,
+            ),
+        )
 
     def prewarm_prefixes(self, prefixes: str = "abcdefghijklmnopqrstuvwxyz") -> None:
         from .pinyin import parse_raw_pinyin

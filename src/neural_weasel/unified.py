@@ -42,6 +42,9 @@ _PINYIN_INITIALS = (
     "y",
     "w",
 )
+_PARTIAL_BEAM_WIDTH = 1
+_PARTIAL_MAX_MODEL_TOKENS = 1
+_PARTIAL_MAX_HAN_CHARACTERS = 16
 
 
 class Script(StrEnum):
@@ -215,6 +218,101 @@ class PinyinConstraint:
                         parsed, query_parsed, group, fuzzy_cost, backend, state, after_text
                     )
                 )
+        if not candidates:
+            candidates.extend(self._partial_candidates(parsed, backend, state, after_text))
+        return candidates
+
+    def _partial_candidates(
+        self,
+        parsed: Any,
+        backend: ModelBackend,
+        state: BackendState,
+        after_text: str,
+    ) -> list[Candidate]:
+        """Bounded fallback for mixed full-pinyin and syllable-initial input."""
+
+        raw = parsed.compact
+        frontier = [_PartialPath(0, "", (), (), 0.0, 0)]
+        finished: dict[str, _PartialPath] = {}
+        for _depth in range(_PARTIAL_MAX_MODEL_TOKENS):
+            active: dict[tuple[int, str], _PartialPath] = {}
+            for path in frontier:
+                remaining = parse_raw_pinyin(raw[path.consumed_letters :])
+                matches = [
+                    match
+                    for match in self.index.partial_matches(remaining, max_results=4096)
+                    if not match.entry.coverage
+                    and match.entry.token_id is not None
+                    and contains_han(match.entry.text)
+                    and len(path.text) + len(match.entry.text) <= _PARTIAL_MAX_HAN_CHARACTERS
+                ]
+                if not matches:
+                    continue
+                token_ids = [match.entry.token_id for match in matches]
+                scores = backend.score_allowed_tokens(state, token_ids)
+                for match, token_score in zip(matches, scores, strict=True):
+                    entry = match.entry
+                    consumed = path.consumed_letters + match.consumed_letters
+                    token_path = (*path.token_path, entry.token_id)
+                    text = path.text + entry.text
+                    pinyin_path = (*path.pinyin_path, *entry.syllable_path)
+                    score_sum = path.score_sum + float(token_score)
+                    abbreviation_cost = path.abbreviation_cost + match.abbreviation_cost
+                    extension = _PartialPath(
+                        consumed,
+                        text,
+                        pinyin_path,
+                        token_path,
+                        score_sum,
+                        abbreviation_cost,
+                    )
+                    if match.covers_input:
+                        previous = finished.get(text)
+                        if previous is None or _partial_path_key(extension) < _partial_path_key(
+                            previous
+                        ):
+                            finished[text] = extension
+                    elif consumed < len(raw):
+                        key = (consumed, text)
+                        previous = active.get(key)
+                        if previous is None or _partial_path_key(extension) < _partial_path_key(
+                            previous
+                        ):
+                            active[key] = extension
+            frontier = sorted(active.values(), key=_partial_path_key)[:_PARTIAL_BEAM_WIDTH]
+            if not frontier:
+                break
+
+        candidates = []
+        for path in sorted(
+            finished.values(),
+            key=lambda item: (
+                item.abbreviation_cost,
+                len(item.token_path),
+                *_partial_path_key(item),
+            ),
+        )[:64]:
+            if after_text.startswith(path.text):
+                continue
+            model_score = path.score_sum / len(path.token_path) ** 0.7
+            candidates.append(
+                Candidate(
+                    text=path.text,
+                    pinyin="'".join(path.pinyin_path),
+                    consumed_keys=len(parsed.raw),
+                    score=model_score,
+                    context_epoch=state.epoch,
+                    coverage=False,
+                    completes_input=True,
+                    syllables=len(path.pinyin_path),
+                    token_id=path.token_path[0],
+                    constraint_kind="partial_pinyin",
+                    script=detect_script(path.text),
+                    model_score=model_score,
+                    constraint_cost=-0.12 * path.abbreviation_cost,
+                    token_path=path.token_path,
+                )
+            )
         return candidates
 
     def _group_candidates(
@@ -283,6 +381,27 @@ def _covers_current_pinyin(parsed: Any, entry: Any) -> bool:
 
     raw = parsed.compact
     return entry.pinyin.startswith(raw)
+
+
+@dataclass(frozen=True, slots=True)
+class _PartialPath:
+    consumed_letters: int
+    text: str
+    pinyin_path: tuple[str, ...]
+    token_path: tuple[int, ...]
+    score_sum: float
+    abbreviation_cost: int
+
+
+def _partial_path_key(path: _PartialPath) -> tuple[object, ...]:
+    normalized_score = path.score_sum / max(1, len(path.token_path)) ** 0.7
+    return (
+        -(normalized_score - 0.12 * path.abbreviation_cost),
+        path.abbreviation_cost,
+        len(path.token_path),
+        path.text,
+        path.token_path,
+    )
 
 
 def _split_initial(syllable: str) -> tuple[str, str]:
