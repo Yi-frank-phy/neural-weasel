@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
