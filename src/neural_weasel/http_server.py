@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from contextlib import suppress
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -299,11 +300,17 @@ def _serve_file_bridge(
                 success = True
             except Exception:
                 success = False
-                temporary_response.unlink(missing_ok=True)
+                with suppress(OSError):
+                    temporary_response.unlink(missing_ok=True)
                 if send_response:
-                    response_path.write_bytes(b"")
+                    with suppress(OSError):
+                        response_path.write_bytes(b"")
             finally:
-                request_path.unlink(missing_ok=True)
+                with suppress(OSError):
+                    # A transient lock (indexer, antivirus, or a late Lua
+                    # writer) must never kill the bridge thread. Leaving the
+                    # file behind means it may be retried on a later poll.
+                    request_path.unlink(missing_ok=True)
                 elapsed_ms = round((time.perf_counter() - started) * 1000)
                 server.record_request(
                     success=success,
