@@ -171,7 +171,10 @@ context::ContextUpdateMetadata Metadata(bool secure) {
   metadata.session_id =
       "tsf-" + std::to_string(GetCurrentProcessId());
   metadata.secure = secure;
-  metadata.partial = true;
+  // Partiality is a property of the surrounding-text snapshot, not of the
+  // TSF edit session itself. The bridge ORs this with snapshot.partial;
+  // forcing true here would mark every successful capture as partial.
+  metadata.partial = false;
   return metadata;
 }
 

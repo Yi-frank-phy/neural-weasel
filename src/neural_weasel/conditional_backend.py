@@ -64,6 +64,15 @@ class ConditionalFullLogitsBackend(FullLogitsSnapshotBackend):
         return np.asarray(values[token_ids] - log_normalizer, dtype=np.float32)
 
     def start_conditional_continuation(self, state: BackendState):
+        """Open a conditional-forward session for background expansion only.
+
+        This seam must never be called from the query-time key path. The
+        native AiTranslator pipe query has a 6 ms deadline and the first
+        ``QwenContinuationSession.advance`` already runs a full model forward,
+        CUDA synchronize, and full-vocabulary log_softmax. Query fallback uses
+        immutable-snapshot scoring (see ``pinyin_beam.run_beam``).
+        """
+
         self._validate_state(state)
         with self._continuation_gate:
             with self._lock:

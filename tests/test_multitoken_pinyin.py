@@ -185,7 +185,9 @@ def test_partial_matches_accept_full_initial_and_incomplete_final(make_index) ->
     )
 
 
-def test_multitoken_fallback_uses_conditional_scores_for_zhendezmh(make_index) -> None:
+def test_multitoken_fallback_never_starts_conditional_forward_for_zhendezmh(
+    make_index,
+) -> None:
     index = make_index(
         [
             (10, "真的", "zhende", "zhen'de", 2, 0),
@@ -205,10 +207,12 @@ def test_multitoken_fallback_uses_conditional_scores_for_zhendezmh(make_index) -
         after_text="",
     )
 
-    assert backend.started == 1
+    # #10: the query-time key path must never run a conditional Qwen
+    # forward. Multi-token fallback scores only from the immutable snapshot.
+    assert backend.started == 0
     assert candidates[0].text == "真的这么好"
     assert candidates[0].token_path == (10, 20, 30)
-    assert len(backend.session.advances) == 2
+    assert len(backend.session.advances) == 0
 
 
 def test_exact_full_pinyin_path_excludes_higher_scored_shorthand_detour(make_index) -> None:
@@ -418,7 +422,9 @@ def test_snapshot_fallback_uses_token_rank_for_long_full_pinyin(make_index) -> N
     assert candidates[0].token_path == (97896, 96748, 137378)
 
 
-def test_unexpected_conditional_overrun_returns_snapshot_candidate(make_index) -> None:
+def test_query_fallback_never_opens_conditional_session_even_when_budget_ok(
+    make_index,
+) -> None:
     index = make_index(
         [
             (10, "真的", "zhende", "zhen'de", 2, 0),
@@ -441,9 +447,9 @@ def test_unexpected_conditional_overrun_returns_snapshot_candidate(make_index) -
 
     assert candidates[0].text == "真的这么好"
     assert candidates[0].token_path == (10, 20, 30)
-    assert backend.started == 1
-    assert len(backend.session.advances) == 1
-    assert backend.recorded_latencies == [500.0]
+    assert backend.started == 0
+    assert len(backend.session.advances) == 0
+    assert backend.recorded_latencies == []
 
 
 def test_single_token_partial_fallback_precedes_multitoken_search(make_index) -> None:
@@ -522,7 +528,7 @@ def test_long_full_pinyin_can_use_bounded_multitoken_fallback(make_index) -> Non
         after_text="",
     )
 
-    assert backend.started == 1
+    assert backend.started == 0
     assert candidates[0].text == "真的世界这么好"
     assert candidates[0].token_path == (10, 60, 70)
-    assert len(backend.session.advances) == 2
+    assert len(backend.session.advances) == 0

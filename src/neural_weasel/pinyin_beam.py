@@ -40,6 +40,17 @@ def run_beam(
     depth: int,
     ms: float,
 ):
+    """Bounded multi-token pinyin fallback for a query-time key path.
+
+    This function deliberately never opens a QwenContinuationSession. The
+    native AiTranslator pipe query has a 6 ms absolute deadline; one
+    conditional model step plus CUDA synchronize and a full-vocabulary
+    log_softmax cannot finish inside that deadline, and the old
+    "budget" was only observable after the first forward had already
+    completed. The query path must score exclusively from the immutable
+    backend state (snapshot logits).
+    """
+
     can_finish_exact = _exact_finish_checker(raw, matcher)
     all_roots = [
         match
@@ -58,8 +69,7 @@ def run_beam(
     if not roots:
         return []
     ids = [int(match.entry.token_id) for match in roots]
-    scorer = getattr(backend, "score_allowed_sequence_start", None)
-    scores = scorer(state, ids) if callable(scorer) else backend.score_allowed_tokens(state, ids)
+    scores = backend.score_allowed_tokens(state, ids)
     roots_beams = [
         Beam(
             match.entry.text,
@@ -71,139 +81,22 @@ def run_beam(
         )
         for match, score in zip(roots, scores, strict=True)
     ]
-    active = sorted(roots_beams, key=_key)[:width]
     snapshot_roots = tuple(
         sorted(roots_beams, key=lambda beam: _snapshot_frontier_key(beam, matcher))[:width]
     )
-    started = time.perf_counter()
-    budget_check = getattr(backend, "conditional_continuation_within_budget", None)
-    if callable(budget_check) and not budget_check(state, ms):
-        return _snapshot_beam(
-            raw,
-            matcher,
-            backend,
-            state,
-            snapshot_roots,
-            width,
-            depth,
-            ms,
-            exact_mode=exact_mode,
-            can_finish_exact=can_finish_exact,
-        )
-    open_session = getattr(backend, "start_conditional_continuation", None)
-    session = open_session(state) if callable(open_session) else None
-    if session is None:
-        return _snapshot_beam(
-            raw,
-            matcher,
-            backend,
-            state,
-            snapshot_roots,
-            width,
-            depth,
-            ms,
-            exact_mode=exact_mode,
-            can_finish_exact=can_finish_exact,
-        )
-    advance_ms = session.advance([0] * len(active), [beam.path[-1] for beam in active])
-    _record_conditional_latency(backend, state, advance_ms)
-    if advance_ms >= ms or _late(started, ms):
-        return _snapshot_beam(
-            raw,
-            matcher,
-            backend,
-            state,
-            snapshot_roots,
-            width,
-            depth,
-            ms,
-            exact_mode=exact_mode,
-            can_finish_exact=can_finish_exact,
-        )
+    return _snapshot_beam(
+        raw,
+        matcher,
+        backend,
+        state,
+        snapshot_roots,
+        width,
+        depth,
+        ms,
+        exact_mode=exact_mode,
+        can_finish_exact=can_finish_exact,
+    )
 
-    done = []
-    for level in range(2, depth + 1):
-        groups = []
-        for beam in active:
-            group = [
-                match
-                for match in matcher.partial_matches(raw, beam.pos)
-                if match.entry.token_id is not None and not match.entry.coverage
-            ]
-            if exact_mode:
-                group = [
-                    match
-                    for match in group
-                    if _is_exact_token_match(match, beam.pos)
-                    and can_finish_exact(match.next_position, depth - level)
-                ]
-            groups.append(group)
-        allowed = [[int(match.entry.token_id) for match in group] for group in groups]
-        if not any(allowed):
-            break
-        scored = session.score_allowed(allowed)
-        pending = []
-        for parent, (beam, group, values) in enumerate(zip(active, groups, scored, strict=True)):
-            for match, value in zip(group, values, strict=True):
-                entry = match.entry
-                child = Beam(
-                    beam.text + entry.text,
-                    beam.syllables + entry.syllable_path,
-                    match.next_position,
-                    beam.path + (int(entry.token_id),),
-                    beam.score + float(value),
-                    beam.cost + match.cost,
-                )
-                if child.pos == len(raw):
-                    done.append(child)
-                elif child.pos < len(raw):
-                    pending.append((parent, child))
-        if level == depth or not pending:
-            break
-        selected = sorted(pending, key=lambda item: _key(item[1]))[:width]
-        if _late(started, ms):
-            _record_conditional_latency(backend, state, _elapsed_ms(started))
-            return _snapshot_beam(
-                raw,
-                matcher,
-                backend,
-                state,
-                snapshot_roots,
-                width,
-                depth,
-                ms,
-                exact_mode=exact_mode,
-                can_finish_exact=can_finish_exact,
-            )
-        advance_ms = session.advance(
-            [parent for parent, _ in selected],
-            [beam.path[-1] for _, beam in selected],
-        )
-        _record_conditional_latency(backend, state, advance_ms)
-        active = [beam for _, beam in selected]
-        if advance_ms >= ms or _late(started, ms):
-            return _snapshot_beam(
-                raw,
-                matcher,
-                backend,
-                state,
-                snapshot_roots,
-                width,
-                depth,
-                ms,
-                exact_mode=exact_mode,
-                can_finish_exact=can_finish_exact,
-            )
-
-    if _late(started, ms):
-        _record_conditional_latency(backend, state, _elapsed_ms(started))
-        return _snapshot_beam(raw, matcher, backend, state, snapshot_roots, width, depth, ms)
-
-    best = {}
-    for beam in done:
-        if beam.text not in best or beam.rank > best[beam.text].rank:
-            best[beam.text] = beam
-    return sorted(best.values(), key=_key)
 
 
 def _snapshot_beam(
@@ -228,8 +121,7 @@ def _snapshot_beam(
     """
 
     done = []
-    scorer = getattr(backend, "score_allowed_sequence_start", None)
-    score = scorer if callable(scorer) else backend.score_allowed_tokens
+    score = backend.score_allowed_tokens
     started = time.perf_counter()
     start_level = min(len(beam.path) for beam in active) + 1
     match_cache = {}
@@ -290,10 +182,6 @@ def _snapshot_beam(
         replace(beam, selection_score=-float(index) - beam.cost)
         for index, beam in enumerate(ordered)
     ]
-
-
-def _key(beam: Beam):
-    return (-beam.rank, beam.text, beam.path)
 
 
 def _snapshot_frontier_key(beam: Beam, matcher: Any):
@@ -438,9 +326,3 @@ def _late(start: float, ms: float) -> bool:
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
-
-
-def _record_conditional_latency(backend: Any, state: Any, latency_ms: float) -> None:
-    record = getattr(backend, "record_conditional_continuation_latency", None)
-    if callable(record):
-        record(state, latency_ms)

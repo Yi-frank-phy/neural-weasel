@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from .backends import BackendState, ModelBackend
 from .candidate import Candidate
-from .conditional_backend import DEFAULT_CONDITIONAL_BUDGET_MS
 from .pinyin import parse_raw_pinyin
 from .pinyin_beam import exact_token_path_exists, run_beam
 from .pinyin_partial import PartialPinyinMatcher
 from .pinyin_single import single_partial
 from .unified import PinyinConstraint, _pinyin_query_variants, detect_script
+
+# The native AiTranslator gives the pipe query a 6 ms absolute deadline
+# (native/rime/ai_translator.h). The fallback below is CPU-only and
+# fail-closed; the same budget bounds its snapshot scoring.
+QUERY_FALLBACK_BUDGET_MS = 6.0
 
 
 class MixedPinyinConstraint(PinyinConstraint):
@@ -17,7 +21,7 @@ class MixedPinyinConstraint(PinyinConstraint):
         *,
         beam_width: int = 4,
         max_tokens: int = 4,
-        budget_ms: float = DEFAULT_CONDITIONAL_BUDGET_MS,
+        budget_ms: float = QUERY_FALLBACK_BUDGET_MS,
     ) -> None:
         super().__init__(index)
         if beam_width < 1 or not 2 <= max_tokens <= 4 or budget_ms <= 0:
