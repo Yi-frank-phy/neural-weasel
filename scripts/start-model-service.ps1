@@ -1,11 +1,5 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Qwen/Qwen3.5-0.8B-Base')]
-    [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
-    [ValidateSet('full', 'sparse')]
-    [string]$Backend = 'full',
-    [ValidateSet('int8')]
-    [string]$Precision = 'int8',
     [ValidateSet('pipe', 'http')]
     [string]$Transport = 'pipe',
     [ValidateRange(1, 65535)]
@@ -15,6 +9,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$Model = 'Qwen/Qwen3.5-4B-Base'
+$ModelFormat = 'gguf'
+$Quantization = 'Q8_0'
+$Runtime = 'llama.cpp'
+$ComputeBackend = 'CUDA'
+$LlamaCppPythonVersion = '0.3.23'
+$LlamaCudaWheelIndex = 'https://abetlen.github.io/llama-cpp-python/whl/cu124'
 
 $BundledUv = Join-Path $PSScriptRoot 'tools\uv.exe'
 if (Test-Path -LiteralPath $BundledUv -PathType Leaf) {
@@ -59,64 +61,86 @@ function Write-ServiceState {
     $TemporaryState = "$StatePath.tmp-$PID"
     $Json = [ordered]@{
         state = $State
-        backend = $Backend
         transport = $Transport
         model = $Model
-        precision = $Precision
+        format = $ModelFormat
+        quantization = $Quantization
+        runtime = $Runtime
+        compute_backend = $ComputeBackend
+        gpu_layers = 'all'
         index = $Index
         pid = $PID
         exit_code = $ExitCode
-        safety_profile = 'crash-contained-0.8b'
+        safety_profile = 'crash-contained-4b-q8-gguf-cuda'
         updated_utc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json
     Write-Utf8NoBom -Path $TemporaryState -Content $Json
     Move-Item -LiteralPath $TemporaryState -Destination $StatePath -Force
 }
 
-if (-not $Index) {
-    $IndexOutput = @(
-        & $UvCommand run --project $ProjectRoot --frozen python -m neural_weasel.resolve_index `
-            --model $Model
+Write-ServiceState -State 'preparing-runtime'
+
+# Keep the project environment reproducible while preserving the separately
+# verified CUDA llama.cpp wheel between launches.
+& $UvCommand sync --project $ProjectRoot --frozen --inexact
+if ($LASTEXITCODE -ne 0) {
+    Write-ServiceState -State 'failed' -ExitCode $LASTEXITCODE
+    throw "Python environment synchronization failed with exit code $LASTEXITCODE."
+}
+
+$PythonExe = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+    Write-ServiceState -State 'failed' -ExitCode 1
+    throw "The synchronized Python runtime is missing: $PythonExe"
+}
+
+& $PythonExe -m neural_weasel.llama_install_check *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host (
+        "Installing pinned llama-cpp-python $LlamaCppPythonVersion from the official CUDA 12.4 wheel index."
     )
-    if ($LASTEXITCODE -ne 0 -or $IndexOutput.Count -eq 0) {
-        throw 'Failed to resolve the canonical tokenizer-versioned pinyin index path.'
-    }
-    $Index = ([string]$IndexOutput[-1]).Trim()
-    if (-not $Index) {
-        throw 'The canonical pinyin index path resolved to an empty value.'
-    }
-}
-
-if (-not (Test-Path -LiteralPath $Index -PathType Leaf)) {
-    Write-ServiceState -State 'building-index'
-    & $UvCommand run --project $ProjectRoot --frozen neural-weasel build-index `
-        --model $Model `
-        --output $Index
+    & $UvCommand pip install `
+        --python $PythonExe `
+        --reinstall `
+        --extra-index-url $LlamaCudaWheelIndex `
+        "llama-cpp-python==$LlamaCppPythonVersion"
     if ($LASTEXITCODE -ne 0) {
-        Write-ServiceState -State 'index-failed' -ExitCode $LASTEXITCODE
-        throw "Pinyin index initialization failed with exit code $LASTEXITCODE."
+        Write-ServiceState -State 'failed' -ExitCode $LASTEXITCODE
+        throw "CUDA llama.cpp installation failed with exit code $LASTEXITCODE."
     }
 }
 
-Write-ServiceState -State 'running'
+& $PythonExe -m neural_weasel.llama_install_check
+if ($LASTEXITCODE -ne 0) {
+    Write-ServiceState -State 'failed' -ExitCode $LASTEXITCODE
+    throw (
+        'llama-cpp-python did not prove a CUDA-enabled llama.cpp build. ' +
+        'CPU fallback is forbidden.'
+    )
+}
+
+Write-ServiceState -State 'starting'
 try {
     $ServeCommand = if ($Transport -eq 'http') { 'serve-http' } else { 'serve' }
     $Arguments = @(
-        'run', '--project', $ProjectRoot, '--frozen', 'neural-weasel',
-        $ServeCommand,
-        '--model', $Model,
-        '--precision', $Precision,
-        '--backend', $Backend,
-        '--index', $Index
+        'run', '--project', $ProjectRoot, '--no-sync', 'neural-weasel', $ServeCommand
     )
+    if ($Index) {
+        $Arguments += @('--index', $Index)
+    }
     if ($Transport -eq 'http') {
         $Arguments += @('--host', '127.0.0.1', '--port', [string]$Port)
     }
+
+    Write-ServiceState -State 'running'
     & $UvCommand @Arguments
     $ServiceExit = $LASTEXITCODE
     if ($ServiceExit -ne 0) {
         Write-ServiceState -State 'failed' -ExitCode $ServiceExit
-        throw "Model service stopped with exit code $ServiceExit. No automatic restart was attempted."
+        throw (
+            "GGUF CUDA model service stopped with exit code $ServiceExit. " +
+            'No CPU fallback or automatic model substitution was attempted.'
+        )
     }
     Write-ServiceState -State 'stopped'
 } catch {
