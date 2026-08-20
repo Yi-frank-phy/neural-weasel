@@ -61,7 +61,7 @@ $ManifestPath = Join-Path $BuildDirectory 'build-manifest.json'
 $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $InstallFiles = @(
     Get-ChildItem -LiteralPath (Join-Path $BuildDirectory 'python-service') -File -Recurse |
-        Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' }
+                        Where-Object { $_.FullName -notlike '*\__pycache__\*' -and $_.FullName -notlike '*\.venv\*' }
     Get-Item -LiteralPath (Join-Path $BuildDirectory 'tools\uv.exe')
     Get-Item -LiteralPath (Join-Path $BuildDirectory 'start-model-service.ps1')
     Get-Item -LiteralPath (Join-Path $BuildDirectory 'start-wisdom-service.vbs')
