@@ -13,7 +13,7 @@ from neural_weasel.llama_runtime import LlamaCppBackend
 
 
 class FakeContext:
-    def __init__(self, owner: "FakeLlama") -> None:
+    def __init__(self, owner: FakeLlama) -> None:
         self.owner = owner
 
     def get_logits(self):
@@ -67,10 +67,22 @@ class FakeProbe:
     after_free: int = 3300
 
     def before(self) -> NvidiaGpu:
-        return NvidiaGpu(0, "NVIDIA GeForce RTX 4060 Laptop GPU", "GPU-test", 8192, self.before_free)
+        return NvidiaGpu(
+            0,
+            "NVIDIA GeForce RTX 4060 Laptop GPU",
+            "GPU-test",
+            8192,
+            self.before_free,
+        )
 
     def after(self) -> NvidiaGpu:
-        return NvidiaGpu(0, "NVIDIA GeForce RTX 4060 Laptop GPU", "GPU-test", 8192, self.after_free)
+        return NvidiaGpu(
+            0,
+            "NVIDIA GeForce RTX 4060 Laptop GPU",
+            "GPU-test",
+            8192,
+            self.after_free,
+        )
 
 
 def _acquired(tmp_path: Path) -> AcquiredGguf:
