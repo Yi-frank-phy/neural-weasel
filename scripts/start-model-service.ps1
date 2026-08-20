@@ -4,6 +4,8 @@ param(
     [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
     [ValidateSet('full', 'sparse')]
     [string]$Backend = 'full',
+    [ValidateSet('int8')]
+    [string]$Precision = 'int8',
     [ValidateSet('pipe', 'http')]
     [string]$Transport = 'pipe',
     [ValidateRange(1, 65535)]
@@ -40,21 +42,6 @@ $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
 $StatePath = Join-Path $RuntimeRoot 'model-service.json'
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
 
-if (-not $Index) {
-    $Hasher = [Security.Cryptography.SHA256]::Create()
-    try {
-        $Bytes = [Text.Encoding]::UTF8.GetBytes($Model)
-        $Digest = $Hasher.ComputeHash($Bytes)
-        $ModelHash = ([BitConverter]::ToString($Digest)).Replace('-', '')
-        $ModelHash = $ModelHash.Substring(0, 16).ToLowerInvariant()
-    } finally {
-        $Hasher.Dispose()
-    }
-    $IndexRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\indexes'
-    New-Item -ItemType Directory -Path $IndexRoot -Force | Out-Null
-    $Index = Join-Path $IndexRoot "$ModelHash.sqlite3"
-}
-
 function Write-Utf8NoBom {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -75,6 +62,8 @@ function Write-ServiceState {
         backend = $Backend
         transport = $Transport
         model = $Model
+        precision = $Precision
+        index = $Index
         pid = $PID
         exit_code = $ExitCode
         safety_profile = 'crash-contained-0.8b'
@@ -82,6 +71,20 @@ function Write-ServiceState {
     } | ConvertTo-Json
     Write-Utf8NoBom -Path $TemporaryState -Content $Json
     Move-Item -LiteralPath $TemporaryState -Destination $StatePath -Force
+}
+
+if (-not $Index) {
+    $IndexOutput = @(
+        & $UvCommand run --project $ProjectRoot --frozen python -m neural_weasel.resolve_index `
+            --model $Model
+    )
+    if ($LASTEXITCODE -ne 0 -or $IndexOutput.Count -eq 0) {
+        throw 'Failed to resolve the canonical tokenizer-versioned pinyin index path.'
+    }
+    $Index = ([string]$IndexOutput[-1]).Trim()
+    if (-not $Index) {
+        throw 'The canonical pinyin index path resolved to an empty value.'
+    }
 }
 
 if (-not (Test-Path -LiteralPath $Index -PathType Leaf)) {
@@ -100,7 +103,11 @@ try {
     $ServeCommand = if ($Transport -eq 'http') { 'serve-http' } else { 'serve' }
     $Arguments = @(
         'run', '--project', $ProjectRoot, '--frozen', 'neural-weasel',
-        $ServeCommand, '--model', $Model, '--backend', $Backend, '--index', $Index
+        $ServeCommand,
+        '--model', $Model,
+        '--precision', $Precision,
+        '--backend', $Backend,
+        '--index', $Index
     )
     if ($Transport -eq 'http') {
         $Arguments += @('--host', '127.0.0.1', '--port', [string]$Port)
