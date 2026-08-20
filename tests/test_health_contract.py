@@ -21,10 +21,11 @@ class FakeEngine:
             "gguf_sha256": "a" * 64,
             "vocab_fingerprint": "vocab-123",
             "index_model_id": "Qwen/Qwen3.5-4B-Base",
+            "index_identity_kind": "gguf-v1",
             "index_gguf_sha256": "a" * 64,
             "index_vocab_fingerprint": "vocab-123",
             "index_pypinyin_version": "0.55.0",
-            "index_schema_version": 3,
+            "index_schema_version": 2,
         }
 
 
@@ -57,10 +58,11 @@ def test_health_contract_exposes_verified_gguf_cuda_identity() -> None:
             "gguf_sha256": "a" * 64,
             "vocab_fingerprint": "vocab-123",
             "index_model_id": "Qwen/Qwen3.5-4B-Base",
+            "index_identity_kind": "gguf-v1",
             "index_gguf_sha256": "a" * 64,
             "index_vocab_fingerprint": "vocab-123",
             "index_pypinyin_version": "0.55.0",
-            "index_schema_version": 3,
+            "index_schema_version": 2,
         }
         connection.close()
     finally:
