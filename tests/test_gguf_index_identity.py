@@ -4,6 +4,7 @@ from pathlib import Path
 
 from neural_weasel.gguf_index import GgufPinyinIndexBuilder
 from neural_weasel.index import PinyinIndex, SCHEMA_VERSION
+from neural_weasel.pinyin import parse_raw_pinyin
 
 
 class FakeGgufVocab:
@@ -40,4 +41,4 @@ def test_gguf_index_records_artifact_and_vocab_identity(tmp_path: Path) -> None:
     assert index.metadata["model_id"] == "Qwen/Qwen3.5-4B-Base"
     assert index.metadata["gguf_sha256"] == "a" * 64
     assert index.metadata["vocab_fingerprint"] == "f" * 64
-    assert index.compatible(__import__("neural_weasel.pinyin", fromlist=["parse_raw_pinyin"]).parse_raw_pinyin("ni"))
+    assert index.compatible(parse_raw_pinyin("ni"))
