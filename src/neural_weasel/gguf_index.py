@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .index import PinyinIndexBuilder, SCHEMA_VERSION
+from .index import SCHEMA_VERSION, PinyinIndexBuilder
 from .paths import indexes_root
 
 GGUF_IDENTITY_KIND = "gguf-v1"
