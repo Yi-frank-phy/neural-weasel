@@ -91,7 +91,10 @@ def verify_expected_nvidia_binding() -> NvidiaGpu:
             f"launcher GPU name mismatch: expected {EXPECTED_GPU_NAME!r}, got {expected_name!r}"
         )
     target = discover_target_gpu()
-    if target.name != expected_name or _normalize_uuid(target.uuid) != _normalize_uuid(expected_uuid):
+    if (
+        target.name != expected_name
+        or _normalize_uuid(target.uuid) != _normalize_uuid(expected_uuid)
+    ):
         raise GpuBindingError("target GPU changed after process launch")
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if not visible or _normalize_uuid(visible) != _normalize_uuid(expected_uuid):
