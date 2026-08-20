@@ -111,7 +111,8 @@ def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
     assert "tools\\uv.exe" in service
     assert "$UvCommand" in service
     assert "Get-Command uv" in service
-    assert "& $UvCommand run" in service
+    assert "& $UvCommand sync" in service
+    assert "& $UvCommand @Arguments" in service
 
 
 def test_uv_pin_accepts_official_build_metadata_but_not_other_versions() -> None:
