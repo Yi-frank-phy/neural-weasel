@@ -41,6 +41,7 @@ class FakeLlama:
         return 3
 
     def detokenize(self, tokens: list[int], special: bool = False) -> bytes:
+        del special
         return b"".join(self._pieces[token] for token in tokens)
 
     def tokenize(self, text: bytes, add_bos: bool = False, special: bool = False) -> list[int]:
@@ -114,7 +115,7 @@ def test_runtime_reuses_prefix_without_replaying_full_context(tmp_path: Path) ->
     backend.create_snapshot("你")
     backend.create_snapshot("你好")
 
-    assert backend.llama.eval_calls == [[1], [2]]
+    assert backend.llama.eval_calls == [[0], [1], [2]]
 
 
 def test_runtime_rejects_cpu_only_llama_cpp(tmp_path: Path) -> None:
