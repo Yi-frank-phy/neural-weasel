@@ -173,7 +173,9 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
             '-Model',
             (Quote-ProcessArgument $Model),
             '-Backend',
-            $Backend
+            $Backend,
+            '-Precision',
+            'int8'
         ) -join ' '
         Write-Host 'Starting the isolated 0.8B model service. The first launch may download the model.'
         $ServiceProcess = Start-Process `
