@@ -94,13 +94,15 @@ def test_bundle_verifier_rejects_neural_runtime_inside_tsf() -> None:
     assert "in-process TSF contains neural runtime" in verifier
 
 
-def test_safe_release_locks_the_runtime_to_the_08b_model() -> None:
+def test_safe_release_locks_runtime_to_4b_base_q8_gguf() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
     service = _read("scripts/start-model-service.ps1")
 
     for script in (launcher, service):
-        assert "[ValidateSet('Qwen/Qwen3.5-0.8B-Base')]" in script
-        assert "Qwen/Qwen3.5-4B-Base" not in script
+        assert "Qwen/Qwen3.5-4B-Base" in script
+        assert "Qwen/Qwen3.5-0.8B-Base" not in script
+    assert "Q8_0" in service
+    assert "gguf" in service.lower()
 
 
 def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:
@@ -153,18 +155,18 @@ def test_ci_dry_runs_the_downloaded_launcher_before_upload() -> None:
     assert "powershell.exe" in focused_workflow
 
 
-def test_safe_launch_paths_pin_int8_instead_of_inheriting_cli_bf16_default() -> None:
+def test_safe_launch_path_requires_q8_gguf_cuda_instead_of_bitsandbytes_precision() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
     service = _read("scripts/start-model-service.ps1")
     wisdom = _read("scripts/start-wisdom-service.vbs")
 
-    assert "[ValidateSet('int8')]" in service
-    assert "[string]$Precision = 'int8'" in service
-    assert "'--precision', $Precision" in service
-    assert "precision = $Precision" in service
-    assert "'-Precision'" in launcher
-    assert "'int8'" in launcher
-    assert "-Precision int8" in wisdom
+    for text in (launcher, service, wisdom):
+        assert "Qwen/Qwen3.5-4B-Base" in text
+        assert "Q8_0" in text
+    assert "--precision" not in service
+    assert "[ValidateSet('int8')]" not in service
+    assert "-Precision int8" not in wisdom
+    assert "CUDA" in service
 
 
 def test_model_service_does_not_use_model_name_only_index_cache_key() -> None:
