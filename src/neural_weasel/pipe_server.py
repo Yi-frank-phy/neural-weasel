@@ -173,6 +173,68 @@ def _reject_unknown_fields(message: dict[str, Any], allowed: frozenset[str]) -> 
         raise ProtocolError("message contains unsupported fields")
 
 
+class CaptureDiagnostics:
+    """Fail-closed TSF capture counters reported by the native context bridge.
+
+    ``allowed`` counts accepted context updates. Denied captures are bucketed
+    by the native ``CaptureDenyReason`` name so a single Windows session can
+    distinguish ``sensitive_input_scope`` from ``policy_unavailable`` without
+    changing the fail-closed policy.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.allowed = 0
+        self.sensitive = 0
+        self.unavailable = 0
+        self.error = 0
+        self.last_deny_reason: str | None = None
+        self.last_partial: bool | None = None
+
+    def record_allowed(self, *, partial: bool) -> None:
+        with self._lock:
+            self.allowed += 1
+            self.last_partial = bool(partial)
+
+    def record_denied(self, *, reason: str) -> None:
+        with self._lock:
+            self.last_deny_reason = reason
+            if reason == "sensitive_input_scope":
+                self.sensitive += 1
+            elif reason == "policy_unavailable":
+                self.unavailable += 1
+            else:
+                self.error += 1
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "capture_allowed": self.allowed,
+                "capture_sensitive": self.sensitive,
+                "capture_unavailable": self.unavailable,
+                "capture_error": self.error,
+                "last_deny_reason": self.last_deny_reason,
+                "last_partial": self.last_partial,
+            }
+
+    def write_json(self) -> None:
+        """Persist counters for ``diagnose.ps1`` outside the service process."""
+
+        local = os.environ.get("LOCALAPPDATA")
+        if not local:
+            return
+        import json
+        from pathlib import Path
+
+        root = Path(local) / "NeuralWeasel" / "Experimental"
+        root.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(self.snapshot(), ensure_ascii=False, indent=2)
+        temporary = root / "capture-diagnostics.json.tmp"
+        destination = root / "capture-diagnostics.json"
+        temporary.write_text(payload + "\n", encoding="utf-8")
+        temporary.replace(destination)
+
+
 class NamedPipeServer:
     """Per-user, reusable Windows named-pipe service for cached IME queries."""
 
@@ -196,6 +258,7 @@ class NamedPipeServer:
         self._state_lock = threading.Lock()
         self._requested_context_epoch = 0
         self._last_context_error: str | None = None
+        self.capture_diagnostics = CaptureDiagnostics()
 
     def start(self, timeout: float = 5.0) -> None:
         if self._server_thread and self._server_thread.is_alive():
@@ -365,6 +428,7 @@ class NamedPipeServer:
                 "context_epoch": ready_epoch,
                 "requested_context_epoch": requested_epoch,
                 "last_context_error": self._last_context_error,
+                "capture_diagnostics": self.capture_diagnostics.snapshot(),
             }
 
     def _handle_context_update(self, message: dict[str, Any]) -> dict[str, Any]:
@@ -373,6 +437,12 @@ class NamedPipeServer:
         after = message.get("after", "")
         if not isinstance(before, str) or not isinstance(after, str):
             raise ProtocolError("before and after must be strings")
+
+        capture_decision = message.get("capture_decision")
+        if capture_decision == "allowed" or message.get("capture_allowed") is True:
+            partial = message.get("partial")
+            self.capture_diagnostics.record_allowed(partial=bool(partial))
+            self.capture_diagnostics.write_json()
 
         assigned_epoch = self.engine.request_context_update(before, after)
         if isinstance(assigned_epoch, bool) or not isinstance(assigned_epoch, int):
@@ -537,13 +607,31 @@ class NamedPipeServer:
     def _handle_focus(self, message: dict[str, Any]) -> dict[str, Any]:
         _reject_unknown_fields(
             message,
-            frozenset({"type", "request_id", "session_id", "focused", "secure"}),
+            frozenset(
+                {
+                    "type",
+                    "request_id",
+                    "session_id",
+                    "focused",
+                    "secure",
+                    "capture_decision",
+                    "capture_deny_reason",
+                }
+            ),
         )
         session_id = _optional_identifier(message, "session_id")
         if session_id is None:
             raise ProtocolError("session_id is required")
         focused = _require_bool(message, "focused")
         secure = _require_bool(message, "secure")
+
+        capture_decision = message.get("capture_decision")
+        if secure and capture_decision == "denied":
+            reason = message.get("capture_deny_reason")
+            if not isinstance(reason, str) or not reason:
+                reason = "unspecified"
+            self.capture_diagnostics.record_denied(reason=reason)
+            self.capture_diagnostics.write_json()
 
         if secure:
             cleanup_failed = False

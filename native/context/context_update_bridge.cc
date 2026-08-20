@@ -125,12 +125,19 @@ struct SerializedRequest {
 
 SerializedRequest BuildSecureFocusJson(
     std::uint64_t sequence,
-    const ContextUpdateMetadata& metadata) {
+    const ContextUpdateMetadata& metadata,
+    std::string_view capture_decision,
+    std::string_view deny_reason) {
   std::string payload = "{\"type\":\"focus\",\"request_id\":";
   AppendJsonString(RequestId(sequence), &payload);
   payload.append(",\"session_id\":");
   AppendJsonString(SessionId(metadata), &payload);
-  payload.append(",\"focused\":true,\"secure\":true}");
+  payload.append(",\"focused\":true,\"secure\":true");
+  payload.append(",\"capture_decision\":");
+  AppendJsonString(capture_decision, &payload);
+  payload.append(",\"capture_deny_reason\":");
+  AppendJsonString(deny_reason, &payload);
+  payload.push_back('}');
   return {std::move(payload), false};
 }
 
@@ -141,7 +148,18 @@ SerializedRequest BuildContextRequest(
   // This branch executes before any source-text or application-ID conversion.
   // It can only produce the strict focus/secure cleanup message.
   if (RequiresImmediateCleanup(snapshot, metadata)) {
-    return BuildSecureFocusJson(sequence, metadata);
+    std::string_view capture_decision = "denied";
+    std::string deny_reason = metadata.deny_reason;
+    if (deny_reason.empty()) {
+      if (metadata.secure) {
+        capture_decision = "focus_transition";
+        deny_reason = "focus_transition";
+      } else {
+        deny_reason = "capture_failed";
+      }
+    }
+    return BuildSecureFocusJson(
+        sequence, metadata, capture_decision, deny_reason);
   }
 
   std::string application_id;
@@ -150,7 +168,8 @@ SerializedRequest BuildContextRequest(
   if (!Utf16ToUtf8(metadata.application_id, &application_id) ||
       !Utf16ToUtf8(snapshot.before, &before) ||
       !Utf16ToUtf8(snapshot.after, &after)) {
-    return BuildSecureFocusJson(sequence, metadata);
+    return BuildSecureFocusJson(
+        sequence, metadata, "denied", "capture_failed");
   }
 
   const bool partial = metadata.partial || snapshot.partial;
@@ -173,6 +192,7 @@ SerializedRequest BuildContextRequest(
   payload.append(",\"app_id\":");
   AppendJsonString(application_id, &payload);
   payload.append(",\"secure\":false,\"capture_allowed\":true");
+  payload.append(",\"capture_decision\":\"allowed\",\"capture_deny_reason\":\"none\"");
   payload.append(",\"partial\":");
   payload.append(partial ? "true" : "false");
   payload.append(",\"complete_region\":");

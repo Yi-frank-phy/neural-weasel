@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "context/context_update_bridge.h"
@@ -165,12 +166,31 @@ void Submit(SurroundingTextSnapshot snapshot,
   }
 }
 
-context::ContextUpdateMetadata Metadata(bool secure) {
+std::string_view CaptureDenyReasonName(CaptureDenyReason reason) {
+  switch (reason) {
+    case CaptureDenyReason::kNone:
+      return "none";
+    case CaptureDenyReason::kSensitiveInputScope:
+      return "sensitive_input_scope";
+    case CaptureDenyReason::kSecureDesktop:
+      return "secure_desktop";
+    case CaptureDenyReason::kBlacklistedProcess:
+      return "blacklisted_process";
+    case CaptureDenyReason::kPolicyUnavailable:
+      return "policy_unavailable";
+  }
+  return "error";
+}
+
+context::ContextUpdateMetadata Metadata(
+    bool secure,
+    std::string deny_reason = {}) {
   context::ContextUpdateMetadata metadata;
   metadata.application_id = ProcessName();
   metadata.session_id =
       "tsf-" + std::to_string(GetCurrentProcessId());
   metadata.secure = secure;
+  metadata.deny_reason = std::move(deny_reason);
   // Partiality is a property of the surrounding-text snapshot, not of the
   // TSF edit session itself. The bridge ORs this with snapshot.partial;
   // forcing true here would mark every successful capture as partial.
@@ -220,7 +240,13 @@ class ContextCaptureSession final : public ITfEditSession {
         ClassifyInputScope(context_, edit_cookie);
     const SurroundingTextSnapshot snapshot = CaptureSurroundingText(
         context_, edit_cookie, {8192, 4096}, policy);
-    Submit(snapshot, Metadata(!policy.allowed));
+    Submit(
+        snapshot,
+        Metadata(
+            !policy.allowed,
+            policy.allowed
+                ? std::string{}
+                : std::string(CaptureDenyReasonName(policy.reason))));
     return snapshot.result;
   }
 

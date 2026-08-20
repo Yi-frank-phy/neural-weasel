@@ -23,6 +23,10 @@ struct ContextUpdateMetadata {
   std::string session_id;
   bool secure = true;
   bool partial = true;
+  // Empty for allowed captures and focus transitions. Denied captures carry
+  // the CaptureDenyReason name, e.g. "sensitive_input_scope" or
+  // "policy_unavailable".
+  std::string deny_reason;
 };
 
 class ContextUpdateTransport {

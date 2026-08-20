@@ -98,7 +98,6 @@ def run_beam(
     )
 
 
-
 def _snapshot_beam(
     raw,
     matcher,

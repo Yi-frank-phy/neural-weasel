@@ -185,7 +185,6 @@ def test_partial_matches_accept_full_initial_and_incomplete_final(make_index) ->
     )
 
 
-
 def test_default_query_fallback_budget_matches_native_pipe_deadline(make_index) -> None:
     index = make_index([(5, "神经", "shenjing", "shen'jing", 2, 0)])
     constraint = MixedPinyinConstraint(index)

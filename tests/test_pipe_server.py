@@ -122,6 +122,14 @@ def test_reusable_connection_context_query_and_reset() -> None:
                 "context_epoch": 0,
                 "requested_context_epoch": 0,
                 "last_context_error": None,
+                "capture_diagnostics": {
+                    "capture_allowed": 0,
+                    "capture_sensitive": 0,
+                    "capture_unavailable": 0,
+                    "capture_error": 0,
+                    "last_deny_reason": None,
+                    "last_partial": None,
+                },
                 "request_id": "h1",
             }
             accepted = client.request(

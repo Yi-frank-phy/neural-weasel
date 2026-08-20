@@ -146,6 +146,7 @@ int main() {
   sensitive_metadata.application_id = L"test.exe";
   sensitive_metadata.session_id = "test-session";
   sensitive_metadata.secure = true;
+  sensitive_metadata.deny_reason = "sensitive_input_scope";
   if (bridge.Submit(std::move(sensitive), sensitive_metadata) != 2) {
     return Fail("second sequence was not two");
   }
@@ -211,6 +212,11 @@ int main() {
           std::string::npos ||
       denied_request.find("\"type\":\"focus\"") == std::string::npos ||
       denied_request.find("\"secure\":true") == std::string::npos ||
+      denied_request.find("\"capture_decision\":\"denied\"") ==
+          std::string::npos ||
+      denied_request.find(
+          "\"capture_deny_reason\":\"sensitive_input_scope\"") ==
+          std::string::npos ||
       denied_request.find("\"before\"") != std::string::npos ||
       denied_request.find("\"after\"") != std::string::npos) {
     return Fail("secure request or string request_id was malformed");

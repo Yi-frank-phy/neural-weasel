@@ -23,6 +23,9 @@ if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
 $StatePath = Join-Path $env:LOCALAPPDATA (
     'NeuralWeasel\Experimental\model-service.json'
 )
+$CaptureDiagnosticsPath = Join-Path $env:LOCALAPPDATA (
+    'NeuralWeasel\Experimental\capture-diagnostics.json'
+)
 $LogRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental\Logs'
 
 function Get-OptionalProperty {
@@ -77,6 +80,15 @@ if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
         $ModelState = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
     } catch {
         $ModelState = [ordered]@{ state = 'malformed-state-file' }
+    }
+}
+
+$CaptureDiagnostics = $null
+if (Test-Path -LiteralPath $CaptureDiagnosticsPath -PathType Leaf) {
+    try {
+        $CaptureDiagnostics = Get-Content -LiteralPath $CaptureDiagnosticsPath -Raw | ConvertFrom-Json
+    } catch {
+        $CaptureDiagnostics = [ordered]@{ error = 'malformed-capture-diagnostics' }
     }
 }
 
@@ -161,6 +173,7 @@ $Report = [ordered]@{
     weasel_ipc_pipe_present = $WeaselPipePresent
     model_service_state = Get-OptionalProperty $ModelState 'state' 'not-started'
     backend = Get-OptionalProperty $ModelState 'backend'
+    capture_diagnostics = $CaptureDiagnostics
     build_version = Get-OptionalProperty $Manifest 'repository_commit_sha'
     upstream_weasel_revision = Get-OptionalProperty `
         $Manifest 'upstream_weasel_revision'
