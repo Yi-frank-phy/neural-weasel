@@ -185,6 +185,14 @@ def test_partial_matches_accept_full_initial_and_incomplete_final(make_index) ->
     )
 
 
+
+def test_default_query_fallback_budget_matches_native_pipe_deadline(make_index) -> None:
+    index = make_index([(5, "神经", "shenjing", "shen'jing", 2, 0)])
+    constraint = MixedPinyinConstraint(index)
+
+    assert constraint.budget_ms == 6.0
+
+
 def test_multitoken_fallback_never_starts_conditional_forward_for_zhendezmh(
     make_index,
 ) -> None:
@@ -198,7 +206,7 @@ def test_multitoken_fallback_never_starts_conditional_forward_for_zhendezmh(
     )
     backend = FakeConditionalBackend({10: 10.0})
     state = SimpleNamespace(epoch=7)
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhendezmh",
@@ -230,7 +238,7 @@ def test_exact_full_pinyin_path_excludes_higher_scored_shorthand_detour(make_ind
         {10: 10.0, 20: 100.0, 21: -10.0, 22: -10.0, 23: -10.0, 30: 100.0},
         within_budget=False,
     )
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "laofeijingle",
@@ -260,7 +268,7 @@ def test_continuous_full_pinyin_does_not_split_an_inline_ng_interjection(make_in
         {10: 10.0, 11: 100.0, 12: 100.0, 13: 100.0, 20: -10.0, 21: -10.0},
         within_budget=False,
     )
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "laofeijingle",
@@ -289,7 +297,7 @@ def test_exact_multitoken_results_keep_priority_but_reserve_a_low_cost_fuzzy_slo
         {10: 10.0, 11: 10.0, 12: 100.0, 13: -10.0, 14: 10.0},
         within_budget=False,
     )
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "laofeijingle",
@@ -317,7 +325,7 @@ def test_slow_conditional_backend_uses_snapshot_scoring_without_opening_session(
         {10: 10.0, 20: 9.0, 30: 8.0},
         within_budget=False,
     )
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhendezmh",
@@ -356,7 +364,7 @@ def test_snapshot_fallback_uses_character_rank_for_ambiguous_shorthand(make_inde
         {125330: 100.0, 113361: 100.0, 97896: 1.0, 137378: 1.0},
         within_budget=False,
     )
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhendezmh",
@@ -409,7 +417,7 @@ def test_snapshot_fallback_uses_token_rank_for_long_full_pinyin(make_index) -> N
         },
         within_budget=False,
     )
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhendeshijiezhemehao",
@@ -436,7 +444,7 @@ def test_query_fallback_never_opens_conditional_session_even_when_budget_ok(
         {10: 10.0, 20: 9.0, 30: 8.0},
         advance_latency_ms=500.0,
     )
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhendezmh",
@@ -456,7 +464,7 @@ def test_single_token_partial_fallback_precedes_multitoken_search(make_index) ->
     index = make_index([(40, "这么好", "zhemehao", "zhe'me'hao", 3, 0)])
     backend = FakeConditionalBackend({40: 10.0})
     state = SimpleNamespace(epoch=3)
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhemhao",
@@ -479,7 +487,7 @@ def test_single_token_partial_can_complete_one_untyped_suffix(make_index) -> Non
     )
     backend = FakeConditionalBackend({40: 10.0, 41: 9.8})
     state = SimpleNamespace(epoch=4)
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhemhao",
@@ -496,7 +504,7 @@ def test_normal_full_pinyin_never_starts_multitoken_fallback(make_index) -> None
     index = make_index([(5, "神经", "shenjing", "shen'jing", 2, 0)])
     backend = FakeConditionalBackend({5: 10.0})
     state = SimpleNamespace(epoch=2)
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "shenjing",
@@ -519,7 +527,7 @@ def test_long_full_pinyin_can_use_bounded_multitoken_fallback(make_index) -> Non
     )
     backend = FakeConditionalBackend({10: 10.0})
     state = SimpleNamespace(epoch=9)
-    constraint = MixedPinyinConstraint(index)
+    constraint = MixedPinyinConstraint(index, budget_ms=1000.0)
 
     candidates = constraint.candidates(
         "zhendeshijiezhemehao",
