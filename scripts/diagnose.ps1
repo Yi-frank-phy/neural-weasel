@@ -175,6 +175,9 @@ $Report = [ordered]@{
     backend = Get-OptionalProperty $ModelState 'backend'
     capture_diagnostics = $CaptureDiagnostics
     build_version = Get-OptionalProperty $Manifest 'repository_commit_sha'
+    native_build_sha = Get-OptionalProperty $Manifest 'native_build_sha'
+    native_artifacts_fresh = Get-OptionalProperty $Manifest 'native_artifacts_fresh'
+    bundle_state = Get-OptionalProperty $Manifest 'bundle_state'
     upstream_weasel_revision = Get-OptionalProperty `
         $Manifest 'upstream_weasel_revision'
     official_weasel_path_conflict = $ComPathConflict

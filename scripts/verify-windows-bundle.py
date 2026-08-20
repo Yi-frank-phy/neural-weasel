@@ -48,19 +48,20 @@ def _encodings(value: str) -> tuple[bytes, bytes]:
     return value.encode("utf-8"), value.encode("utf-16-le")
 
 
-def verify(root: Path) -> list[str]:
+def verify(root: Path) -> tuple[list[str], list[str]]:
     errors: list[str] = []
+    warnings: list[str] = []
     for relative in REQUIRED:
         if not (root / relative).is_file():
             errors.append(f"missing required artifact: {relative}")
 
     manifest_path = root / "build-manifest.json"
     if not manifest_path.is_file():
-        return errors
+        return errors, warnings
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
-        return [*errors, f"invalid build manifest: {error}"]
+        return [*errors, f"invalid build manifest: {error}"], warnings
 
     expected_manifest = {
         "experimental_clsid": EXPERIMENTAL_CLSID,
@@ -71,6 +72,21 @@ def verify(root: Path) -> list[str]:
     for field, expected in expected_manifest.items():
         if manifest.get(field) != expected:
             errors.append(f"manifest {field} is not the reserved value")
+
+    native_artifacts_fresh = manifest.get("native_artifacts_fresh")
+    if native_artifacts_fresh is not None and not isinstance(native_artifacts_fresh, bool):
+        errors.append("manifest native_artifacts_fresh must be a boolean")
+    native_build_sha = manifest.get("native_build_sha")
+    if native_build_sha is not None and not isinstance(native_build_sha, str):
+        errors.append("manifest native_build_sha must be a string")
+    bundle_state = manifest.get("bundle_state")
+    if bundle_state is not None and not isinstance(bundle_state, str):
+        errors.append("manifest bundle_state must be a string")
+    if native_artifacts_fresh is False:
+        warnings.append(
+            "native_artifacts_fresh=false: native DLLs are stale relative to "
+            "repository_commit_sha; do not use this bundle for native diagnostics"
+        )
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or not artifacts:
@@ -145,17 +161,19 @@ def verify(root: Path) -> list[str]:
             ):
                 errors.append(f"{target.name} does not embed experimental identity {identity}")
 
-    return errors
+    return errors, warnings
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("bundle", type=Path)
     args = parser.parse_args()
-    errors = verify(args.bundle.resolve())
+    errors, warnings = verify(args.bundle.resolve())
     if errors:
         print("\n".join(f"ERROR: {error}" for error in errors), file=sys.stderr)
         return 1
+    for warning in warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
     print(f"Verified isolated Windows bundle: {args.bundle}")
     return 0
 

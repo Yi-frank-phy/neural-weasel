@@ -255,6 +255,9 @@ foreach ($File in $HashTargets) {
 $Manifest = [ordered]@{
     schema_version = 1
     repository_commit_sha = $RepositoryCommit
+    native_build_sha = $RepositoryCommit
+    native_artifacts_fresh = $true
+    bundle_state = 'complete'
     upstream_weasel_revision = $WeaselRevision
     librime_revision = $LibrimeRevision
     compiler = "MSVC $env:VSCMD_VER"
