@@ -21,6 +21,12 @@ def configure_hf_cache() -> Path:
     return cache
 
 
+def models_root() -> Path:
+    path = data_root() / "models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def indexes_root() -> Path:
     path = data_root() / "indexes"
     path.mkdir(parents=True, exist_ok=True)
