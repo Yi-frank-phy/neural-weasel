@@ -3,7 +3,7 @@ local M = {}
 local MAX_INPUT_LENGTH = 64
 local MAX_CANDIDATES = 50
 local MAX_CONTEXT_BYTES = 8192
-local FIRST_PAGE_TIMEOUT_SECONDS = 0.10
+local FIRST_PAGE_TIMEOUT_SECONDS = 0.30
 local BRIDGE_ROOT = os.getenv("LOCALAPPDATA") .. "\\NeuralWeasel\\Bridge"
 local request_counter = 0
 
