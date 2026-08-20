@@ -29,7 +29,7 @@ def _parser() -> argparse.ArgumentParser:
 
     predict = subparsers.add_parser("predict", help="run one constrained Base-model query")
     predict.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
-    predict.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    predict.add_argument("--precision", choices=("bf16", "fp8", "int8", "nf4"), default="bf16")
     predict.add_argument("--index", type=Path)
     predict.add_argument("--before", required=True)
     predict.add_argument("--after", default="")
@@ -38,7 +38,7 @@ def _parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser("serve", help="start the per-user Windows named-pipe server")
     serve.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
-    serve.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    serve.add_argument("--precision", choices=("bf16", "fp8", "int8", "nf4"), default="bf16")
     serve.add_argument("--index", type=Path)
     serve.add_argument("--backend", choices=("full", "sparse"), default="full")
 
@@ -47,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
         help="start the loopback Wisdom Weasel HTTP compatibility server",
     )
     serve_http.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
-    serve_http.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    serve_http.add_argument("--precision", choices=("bf16", "fp8", "int8", "nf4"), default="bf16")
     serve_http.add_argument("--index", type=Path)
     serve_http.add_argument("--backend", choices=("full", "sparse"), default="full")
     serve_http.add_argument("--host", default="127.0.0.1")
@@ -58,7 +58,7 @@ def _parser() -> argparse.ArgumentParser:
         help="interactive candidate simulator; forward once, then query every edited pinyin",
     )
     simulate.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
-    simulate.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    simulate.add_argument("--precision", choices=("bf16", "fp8", "int8", "nf4"), default="bf16")
     simulate.add_argument("--index", type=Path)
     simulate.add_argument("--before", required=True)
     simulate.add_argument("--after", default="")
@@ -68,7 +68,7 @@ def _parser() -> argparse.ArgumentParser:
         help="measure cached pinyin-query latency after one model forward",
     )
     benchmark.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
-    benchmark.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    benchmark.add_argument("--precision", choices=("bf16", "fp8", "int8", "nf4"), default="bf16")
     benchmark.add_argument("--index", type=Path)
     benchmark.add_argument("--before", required=True)
     benchmark.add_argument("--after", default="")
@@ -87,7 +87,7 @@ def _parser() -> argparse.ArgumentParser:
         help="compare full-logits and sparse projection on identical legal tokens",
     )
     compare.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
-    compare.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    compare.add_argument("--precision", choices=("bf16", "fp8", "int8", "nf4"), default="bf16")
     compare.add_argument("--before", required=True)
     compare.add_argument("--after", default="")
     compare.add_argument("--allowed-counts", type=int, nargs="+", default=[32, 128, 512])
@@ -98,7 +98,7 @@ def _parser() -> argparse.ArgumentParser:
         help="run the minimal bilingual replay fixture on the local Base model",
     )
     replay.add_argument("--model", default="Qwen/Qwen3.5-0.8B-Base")
-    replay.add_argument("--precision", choices=("bf16", "int8", "nf4"), default="bf16")
+    replay.add_argument("--precision", choices=("bf16", "fp8", "int8", "nf4"), default="bf16")
     replay.add_argument("--index", type=Path)
     replay.add_argument("--fixture", type=Path, required=True)
     replay.add_argument("--backend", choices=("full", "sparse"), default="full")

@@ -4,6 +4,8 @@ param(
     [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
     [ValidateSet('full', 'sparse')]
     [string]$Backend = 'full',
+    [ValidateSet('bf16', 'fp8', 'int8', 'nf4')]
+    [string]$Precision = 'fp8',
     [ValidateSet('pipe', 'http')]
     [string]$Transport = 'pipe',
     [ValidateRange(1, 65535)]
@@ -73,6 +75,7 @@ function Write-ServiceState {
     $Json = [ordered]@{
         state = $State
         backend = $Backend
+        precision = $Precision
         transport = $Transport
         model = $Model
         pid = $PID
@@ -100,7 +103,8 @@ try {
     $ServeCommand = if ($Transport -eq 'http') { 'serve-http' } else { 'serve' }
     $Arguments = @(
         'run', '--project', $ProjectRoot, '--frozen', 'neural-weasel',
-        $ServeCommand, '--model', $Model, '--backend', $Backend, '--index', $Index
+        $ServeCommand, '--model', $Model, '--precision', $Precision,
+        '--backend', $Backend, '--index', $Index
     )
     if ($Transport -eq 'http') {
         $Arguments += @('--host', '127.0.0.1', '--port', [string]$Port)

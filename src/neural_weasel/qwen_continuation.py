@@ -21,7 +21,9 @@ class QwenContinuationSession:
         needed = ("_lock", "_cache_state_lock", "_context_cache", "torch", "model")
         if any(not hasattr(runtime, name) for name in needed):
             return None
-        with runtime._lock:
+        if not runtime._lock.acquire(blocking=False):
+            return None
+        try:
             with runtime._cache_state_lock:
                 state = runtime._context_cache
                 if state is None or state.past_key_values is None:
@@ -41,6 +43,8 @@ class QwenContinuationSession:
             )
             cache.reorder_cache(root)
             return cls(runtime, cache, len(token_ids))
+        finally:
+            runtime._lock.release()
 
     def advance(self, parent_indices: Sequence[int], token_ids: Sequence[int]) -> float:
         parents = tuple(int(value) for value in parent_indices)

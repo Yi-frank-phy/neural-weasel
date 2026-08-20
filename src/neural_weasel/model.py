@@ -29,11 +29,89 @@ BASE_MODELS: dict[str, dict[str, str]] = {
         "default_precision": "bf16",
     },
 }
-SUPPORTED_PRECISIONS = frozenset({"bf16", "int8", "nf4"})
+SUPPORTED_PRECISIONS = frozenset({"bf16", "fp8", "int8", "nf4"})
 
 
 class ModelPolicyError(RuntimeError):
     pass
+
+
+def _replace_linear_layers_with_fp8(model: Any, torch: Any) -> int:
+    """Quantize transformer linears to native CUDA FP8, leaving lm_head BF16."""
+
+    if not hasattr(torch, "_scaled_mm"):
+        raise ModelPolicyError("this PyTorch build does not expose the CUDA FP8 scaled-mm kernel")
+    major, minor = torch.cuda.get_device_capability(0)
+    if (major, minor) < (8, 9):
+        raise ModelPolicyError(
+            f"native FP8 requires CUDA compute capability 8.9 or newer; found {major}.{minor}"
+        )
+
+    nn = torch.nn
+
+    class NativeFp8Linear(nn.Module):
+        def __init__(self, source: Any) -> None:
+            super().__init__()
+            self.in_features = source.in_features
+            self.out_features = source.out_features
+            fp8_dtype = torch.float8_e4m3fn
+            fp8_info = torch.finfo(fp8_dtype)
+            weight = source.weight.detach()
+            maximum = weight.abs().amax().float()
+            scale = torch.where(maximum > 0, maximum / fp8_info.max, torch.ones_like(maximum))
+            quantized = torch.clamp(weight / scale, fp8_info.min, fp8_info.max).to(fp8_dtype)
+            self.weight = nn.Parameter(quantized, requires_grad=False)
+            self.register_buffer("weight_scale", scale, persistent=True)
+            if source.bias is None:
+                self.register_parameter("bias", None)
+            else:
+                self.bias = nn.Parameter(source.bias.detach(), requires_grad=False)
+
+        def forward(self, inputs: Any) -> Any:
+            original_shape = inputs.shape[:-1]
+            flattened = inputs.reshape(-1, self.in_features)
+            fp8_dtype = torch.float8_e4m3fn
+            fp8_info = torch.finfo(fp8_dtype)
+            maximum = flattened.abs().amax().float()
+            input_scale = torch.where(
+                maximum > 0,
+                maximum / fp8_info.max,
+                torch.ones_like(maximum),
+            )
+            quantized = torch.clamp(
+                flattened / input_scale,
+                fp8_info.min,
+                fp8_info.max,
+            ).to(fp8_dtype)
+            output = torch._scaled_mm(
+                quantized,
+                self.weight.t(),
+                scale_a=input_scale,
+                scale_b=self.weight_scale,
+                out_dtype=inputs.dtype,
+            )
+            if self.bias is not None:
+                output = output + self.bias
+            return output.reshape(*original_shape, self.out_features)
+
+    replaced = 0
+
+    def visit(module: Any, prefix: str = "") -> None:
+        nonlocal replaced
+        for name, child in tuple(module.named_children()):
+            qualified = f"{prefix}.{name}" if prefix else name
+            if type(child) is nn.Linear and qualified != "lm_head":
+                setattr(module, name, NativeFp8Linear(child))
+                replaced += 1
+            else:
+                visit(child, qualified)
+
+    visit(model)
+    if replaced == 0:
+        raise ModelPolicyError(
+            "FP8 was requested but the model exposed no convertible linear layers"
+        )
+    return replaced
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +195,9 @@ class QwenBaseBackend:
         torch.cuda.reset_peak_memory_stats(0)
         model_class = Qwen3_5ForCausalLM if self.model_family == "qwen3_5" else AutoModelForCausalLM
         self.model = model_class.from_pretrained(model_id, **kwargs)
+        self.fp8_linear_count = 0
+        if self.precision == "fp8":
+            self.fp8_linear_count = _replace_linear_layers_with_fp8(self.model, torch)
         self.model.eval()
         verify_model_device_map(self.model)
         require_runtime_headroom(torch)
@@ -349,6 +430,7 @@ class QwenBaseBackend:
             "model": self.model_id,
             "model_family": self.model_family,
             "precision": self.precision,
+            "fp8_linear_count": self.fp8_linear_count,
             "gpu_name": self.target_gpu.name,
             "gpu_uuid": self.target_gpu.uuid,
             "memory": memory_snapshot(self.torch),

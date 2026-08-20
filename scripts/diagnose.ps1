@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 
 $ExperimentalClsid = '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}'
 $ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
+$ExperimentalInputMethodTip = "0804:$ExperimentalClsid$ExperimentalProfileGuid"
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 $ProfileTool = Join-Path $InstallRoot 'NeuralWeaselProfileTool.exe'
 $ServerPath = Join-Path $InstallRoot 'NeuralWeaselServer.exe'
@@ -109,6 +110,20 @@ try {
 }
 
 $ComPathConflict = $false
+$InputMethodTipEnabled = $false
+try {
+    $ZhHans = @(
+        Get-WinUserLanguageList |
+            Where-Object { $_.LanguageTag -eq 'zh-Hans-CN' }
+    )
+    if ($ZhHans.Count -eq 1) {
+        $InputMethodTipEnabled = (
+            @($ZhHans[0].InputMethodTips) -contains $ExperimentalInputMethodTip
+        )
+    }
+} catch {
+    $InputMethodTipProbeError = $_.Exception.GetType().Name
+}
 $Registered = [bool](Get-OptionalProperty $Registration 'registered' $false)
 $ComRegistered = [bool](
     Get-OptionalProperty $Registration 'com_registered' $false
@@ -132,6 +147,7 @@ $Report = [ordered]@{
     experimental_profile_registered = $Registered
     experimental_com_registered = $ComRegistered
     experimental_language_profile_registered = $ProfileRegistered
+    experimental_input_method_tip_enabled = $InputMethodTipEnabled
     experimental_identity_conflict = $IdentityConflict
     experimental_clsid = $ExperimentalClsid
     experimental_profile_guid = $ExperimentalProfileGuid
@@ -154,5 +170,8 @@ $Report = [ordered]@{
 }
 if (Get-Variable PipeProbeError -ErrorAction SilentlyContinue) {
     $Report.named_pipe_probe_error = $PipeProbeError
+}
+if (Get-Variable InputMethodTipProbeError -ErrorAction SilentlyContinue) {
+    $Report.input_method_tip_probe_error = $InputMethodTipProbeError
 }
 $Report | ConvertTo-Json -Depth 5

@@ -2,25 +2,18 @@
 param(
     [ValidateSet('Qwen/Qwen3.5-0.8B-Base')]
     [string]$Model = 'Qwen/Qwen3.5-0.8B-Base',
-    [ValidateSet('full', 'sparse')]
+    [ValidateSet('full')]
     [string]$Backend = 'full',
     [ValidateRange(10, 3600)]
     [int]$ReadyTimeoutSeconds = 1800,
-    [switch]$NoActivate,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$ExperimentalClsid = '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}'
-$ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
-$InstallRoot = Join-Path $env:LOCALAPPDATA (
-    'NeuralWeasel\Experimental\experimental-profile'
-)
-$RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
-$StatePath = Join-Path $RuntimeRoot 'model-service.json'
-$LogRoot = Join-Path $RuntimeRoot 'logs'
+$InstallRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\WisdomIntegration'
+$LogRoot = Join-Path $InstallRoot 'Logs'
 
 function Assert-LastExitCode {
     param([Parameter(Mandatory)][string]$Operation)
@@ -29,97 +22,30 @@ function Assert-LastExitCode {
     }
 }
 
-function Get-ModelPipePath {
-    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    if (-not $Identity.User) {
-        throw 'The current Windows user SID is unavailable.'
-    }
-    $SanitizedSid = $Identity.User.Value -replace '[^A-Za-z0-9-]', '-'
-    return "\\.\pipe\NeuralWeasel-v1-$SanitizedSid"
-}
-
-function Test-ModelPipe {
-    param([Parameter(Mandatory)][string]$PipePath)
-    try {
-        return $PipePath -in [IO.Directory]::GetFiles('\\.\pipe\')
-    } catch {
-        return $false
-    }
-}
-
-function Get-LiveModelServiceProcess {
-    if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
-        return $null
-    }
-    try {
-        $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-        if (-not $State.pid) {
-            return $null
-        }
-        return Get-Process -Id ([int]$State.pid) -ErrorAction SilentlyContinue
-    } catch {
-        return $null
-    }
-}
-
-function Wait-ModelPipe {
-    param(
-        [Parameter(Mandatory)][string]$PipePath,
-        [Parameter(Mandatory)][int]$TimeoutSeconds,
-        [Diagnostics.Process]$ExpectedProcess
-    )
-    $Timer = [Diagnostics.Stopwatch]::StartNew()
-    while ($Timer.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
-        if (Test-ModelPipe -PipePath $PipePath) {
-            return
-        }
-        if ($ExpectedProcess -and $ExpectedProcess.HasExited) {
-            throw (
-                'The model service exited before its named pipe became ready. ' +
-                "See $LogRoot for details."
-            )
-        }
-        if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
-            try {
-                $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-                if ($State.state -in @('failed', 'index-failed')) {
-                    throw (
-                        "The model service reported state '$($State.state)'. " +
-                        "See $LogRoot for details."
-                    )
-                }
-            } catch [System.Management.Automation.RuntimeException] {
-                throw
-            } catch {
-                # The state file can be between atomic writes; retry briefly.
-            }
-        }
-        Start-Sleep -Milliseconds 250
-    }
-    throw (
-        "The model service did not become ready within $TimeoutSeconds seconds. " +
-        "See $LogRoot for details."
-    )
-}
-
 function Quote-ProcessArgument {
     param([Parameter(Mandatory)][string]$Value)
     return '"' + $Value.Replace('"', '\"') + '"'
 }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
-    throw '神经小狼毫 currently supports only 64-bit Windows.'
+    throw 'Neural Weasel currently supports only 64-bit Windows.'
 }
-if (-not $env:LOCALAPPDATA) {
-    throw 'LOCALAPPDATA is required.'
+if (-not $env:LOCALAPPDATA -or -not $env:APPDATA) {
+    throw 'LOCALAPPDATA and APPDATA are required.'
 }
 
+# The public one-click path deliberately uses the registered official Weasel
+# TSF and candidate UI. Neural code runs only in the out-of-process HTTP
+# backend; this launcher must never register or activate another text service.
 $RequiredSourceFiles = @(
-    'install-dev-profile.ps1',
+    'install-wisdom-integration.ps1',
     'start-model-service.ps1',
-    'NeuralWeaselServer.exe',
-    'NeuralWeaselSessionActivator.exe',
+    'start-neural-weasel-integration.ps1',
+    'start-wisdom-service.vbs',
     'tools\uv.exe',
+    'python-service\pyproject.toml',
+    'python-service\uv.lock',
+    'python-service\src\neural_weasel\http_server.py',
     'build-manifest.json'
 )
 foreach ($RelativePath in $RequiredSourceFiles) {
@@ -128,81 +54,49 @@ foreach ($RelativePath in $RequiredSourceFiles) {
     }
 }
 
-$Installer = Join-Path $PSScriptRoot 'install-dev-profile.ps1'
+$Installer = Join-Path $PSScriptRoot 'install-wisdom-integration.ps1'
+& $Installer -BuildDirectory $PSScriptRoot -DryRun
+Assert-LastExitCode -Operation 'Wisdom integration dry-run'
 if ($DryRun) {
-    & $Installer -BuildDirectory $PSScriptRoot -InstallRoot $InstallRoot -DryRun
-    Assert-LastExitCode -Operation 'One-click install dry-run'
-    $DryRunActivator = Join-Path $PSScriptRoot 'NeuralWeaselSessionActivator.exe'
-    & $DryRunActivator activate `
-        --clsid $ExperimentalClsid `
-        --profile-guid $ExperimentalProfileGuid `
-        --dry-run
-    Assert-LastExitCode -Operation 'Current-session activation dry-run'
-    Write-Host 'Dry-run succeeded; no files, profiles, defaults, or processes were changed.'
+    Write-Host (
+        'Dry-run succeeded; no TSF registration, DLL loading, configuration, ' +
+        'defaults, or processes were changed.'
+    )
     exit 0
 }
 
-& $Installer -BuildDirectory $PSScriptRoot -InstallRoot $InstallRoot
-Assert-LastExitCode -Operation 'One-click installation'
+& $Installer -BuildDirectory $PSScriptRoot
+Assert-LastExitCode -Operation 'Wisdom integration installation'
 
-$ServiceScript = Join-Path $InstallRoot 'start-model-service.ps1'
-$Server = Join-Path $InstallRoot 'NeuralWeaselServer.exe'
-$Activator = Join-Path $InstallRoot 'NeuralWeaselSessionActivator.exe'
-foreach ($Path in @($ServiceScript, $Server, $Activator)) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "Installed runtime file is missing: $Path"
-    }
+$InstalledLauncher = Join-Path $InstallRoot 'start-neural-weasel-integration.ps1'
+if (-not (Test-Path -LiteralPath $InstalledLauncher -PathType Leaf)) {
+    throw "Installed official-shell launcher is missing: $InstalledLauncher"
 }
 
 New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
-$PipePath = Get-ModelPipePath
-$ServiceProcess = Get-LiveModelServiceProcess
+$PowerShellExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$Arguments = @(
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    (Quote-ProcessArgument $InstalledLauncher),
+    '-StartupDelaySeconds',
+    '0',
+    '-BackendReadyTimeoutSeconds',
+    [string]$ReadyTimeoutSeconds
+) -join ' '
 
-if (-not (Test-ModelPipe -PipePath $PipePath)) {
-    if (-not $ServiceProcess) {
-        $PowerShellExe = (Get-Process -Id $PID).Path
-        $StdOut = Join-Path $LogRoot 'model-service.stdout.log'
-        $StdErr = Join-Path $LogRoot 'model-service.stderr.log'
-        $Arguments = @(
-            '-NoLogo',
-            '-NoProfile',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-File',
-            (Quote-ProcessArgument $ServiceScript),
-            '-Model',
-            (Quote-ProcessArgument $Model),
-            '-Backend',
-            $Backend
-        ) -join ' '
-        Write-Host 'Starting the isolated 0.8B model service. The first launch may download the model.'
-        $ServiceProcess = Start-Process `
-            -FilePath $PowerShellExe `
-            -ArgumentList $Arguments `
-            -WorkingDirectory $InstallRoot `
-            -WindowStyle Minimized `
-            -RedirectStandardOutput $StdOut `
-            -RedirectStandardError $StdErr `
-            -PassThru
-    } else {
-        Write-Host 'A model-service process already exists; waiting for it to become ready.'
-    }
-    Wait-ModelPipe `
-        -PipePath $PipePath `
-        -TimeoutSeconds $ReadyTimeoutSeconds `
-        -ExpectedProcess $ServiceProcess
-}
+Start-Process `
+    -FilePath $PowerShellExe `
+    -ArgumentList $Arguments `
+    -WorkingDirectory $InstallRoot `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $LogRoot 'official-shell-launch.stdout.log') `
+    -RedirectStandardError (Join-Path $LogRoot 'official-shell-launch.stderr.log') |
+    Out-Null
 
-if (-not (Get-Process -Name 'NeuralWeaselServer' -ErrorAction SilentlyContinue)) {
-    Start-Process -FilePath $Server -WorkingDirectory $InstallRoot | Out-Null
-}
-
-if (-not $NoActivate) {
-    & $Activator activate `
-        --clsid $ExperimentalClsid `
-        --profile-guid $ExperimentalProfileGuid
-    Assert-LastExitCode -Operation 'Current-session 神经小狼毫 activation'
-}
-
-Write-Host '神经小狼毫（安全版） is running and activated for the current Windows desktop session.'
-Write-Host 'Neural code runs outside application processes; the Windows default input method was not changed.'
+Write-Host 'Neural backend startup was handed off to a hidden background process.'
+Write-Host 'The registered official Weasel TSF and candidate UI remain the input-method shell.'

@@ -2,11 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neural_weasel.profile_manifest import (
-    EXPERIMENTAL_CLSID,
-    EXPERIMENTAL_PROFILE_GUID,
-)
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -25,23 +20,47 @@ def test_bundle_exposes_double_click_launchers_and_pinned_uv() -> None:
     assert "NeuralWeaselSessionActivator.exe" in bundle
 
 
-def test_launcher_installs_idempotently_starts_services_and_activates_session() -> None:
+def test_bundle_contains_buildable_python_project_metadata() -> None:
+    bundle = _read("scripts/build-windows-bundle.ps1")
+    verifier = _read("scripts/verify-windows-bundle.py")
+    workflow = _read(".github/workflows/ci.yml")
+
+    assert "README.md" in bundle
+    assert '"python-service/README.md"' in verifier
+    assert "Build bundled Python wheel" in workflow
+    assert "uv build" in workflow
+
+
+def test_launcher_installs_backend_and_uses_the_official_weasel_shell() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
 
-    assert "install-dev-profile.ps1" in launcher
-    assert "start-model-service.ps1" in launcher
-    assert "NeuralWeaselServer.exe" in launcher
-    assert "NeuralWeaselSessionActivator.exe" in launcher
-    assert "Wait-ModelPipe" in launcher
+    assert "install-wisdom-integration.ps1" in launcher
+    assert "start-neural-weasel-integration.ps1" in launcher
+    assert "start-wisdom-service.vbs" in launcher
     assert "Start-Process" in launcher
-    assert " activate " in launcher
-    assert "--clsid $ExperimentalClsid" in launcher
-    assert "--profile-guid $ExperimentalProfileGuid" in launcher
-    assert EXPERIMENTAL_CLSID in launcher
-    assert EXPERIMENTAL_PROFILE_GUID in launcher
+    assert "official Weasel TSF and candidate UI" in launcher
+    assert "install-dev-profile.ps1" not in launcher
+    assert "NeuralWeaselServer.exe" not in launcher
+    assert "NeuralWeaselSessionActivator.exe" not in launcher
+    assert "ExperimentalClsid" not in launcher
+    assert "--clsid" not in launcher
+    assert "--profile-guid" not in launcher
+    assert "& $Activator activate" not in launcher
     assert "SetDefault" not in launcher
     assert "SetDefaultInputMethod" not in launcher
     assert "regsvr32" not in launcher.lower()
+
+
+def test_official_shell_launcher_is_windows_powershell_51_path_safe() -> None:
+    launcher = _read("scripts/start-neural-weasel-integration.ps1")
+
+    assert "C:\\输入法" not in launcher
+    assert "0x8F93, 0x5165, 0x6CD5" in launcher
+    assert "NEURAL_WEASEL_COMPATIBILITY_ROOT" in launcher
+    assert "start-wisdom-service.vbs" in launcher
+    assert "http://127.0.0.1:8000/health" in launcher
+    assert "Start-Process" in launcher
+    assert "-WindowStyle Hidden" in launcher
 
 
 def test_session_activator_is_current_session_only_and_never_enables_profile() -> None:
@@ -141,6 +160,31 @@ def test_identical_install_skips_registration_when_identity_is_healthy() -> None
     assert "--json" in installer
     assert "$ProfileStatus.registered" in installer
     assert "already installed and registered; registration was not repeated" in installer
+
+
+def test_background_runtime_processes_are_hidden() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+
+    assert "-WindowStyle Hidden" in launcher
+    assert "-WindowStyle Minimized" not in launcher
+
+
+def test_wisdom_service_defaults_to_native_fp8_full_logits() -> None:
+    service = _read("scripts/start-model-service.ps1")
+    background = _read("scripts/start-wisdom-service.vbs")
+
+    assert "[string]$Precision = 'fp8'" in service
+    assert "'--precision', $Precision" in service
+    assert "-Backend full -Precision fp8" in background
+
+
+def test_wisdom_install_skips_an_identical_runtime_swap() -> None:
+    installer = _read("scripts/install-wisdom-integration.ps1")
+
+    assert "$InstallMatches" in installer
+    assert "if (-not $InstallMatches)" in installer
+    assert "already current" in installer
+    assert "$ExistingConfig -ne $DesiredConfig" in installer
 
 
 def test_ci_dry_runs_the_downloaded_launcher_before_upload() -> None:

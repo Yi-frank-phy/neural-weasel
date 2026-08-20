@@ -84,6 +84,20 @@ foreach ($File in $FilesToVerify) {
     }
 }
 
+$InstallMatches = Test-Path -LiteralPath $InstallRoot -PathType Container
+if ($InstallMatches) {
+    foreach ($File in $InstallFiles) {
+        $RelativePath = $File.FullName.Substring($BuildDirectory.Length + 1)
+        $InstalledPath = Join-Path $InstallRoot $RelativePath
+        if (-not (Test-Path -LiteralPath $InstalledPath -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $InstalledPath -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash) {
+            $InstallMatches = $false
+            break
+        }
+    }
+}
+
 $ConfigPath = Join-Path $RimeUserRoot 'weasel.custom.yaml'
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     throw "Wisdom Weasel user configuration was not found: $ConfigPath"
@@ -102,26 +116,24 @@ $HadPreviousInstall = Test-Path -LiteralPath $InstallRoot -PathType Container
 $Swapped = $false
 
 try {
-    New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
-    foreach ($File in $InstallFiles) {
-        $RelativePath = $File.FullName.Substring($BuildDirectory.Length + 1)
-        $Destination = Join-Path $StagingRoot $RelativePath
-        New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force |
-            Out-Null
-        Copy-Item -LiteralPath $File.FullName -Destination $Destination -Force
-    }
-    Copy-Item -LiteralPath $ManifestPath `
-        -Destination (Join-Path $StagingRoot 'build-manifest.json') -Force
+    if (-not $InstallMatches) {
+        New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
+        foreach ($File in $InstallFiles) {
+            $RelativePath = $File.FullName.Substring($BuildDirectory.Length + 1)
+            $Destination = Join-Path $StagingRoot $RelativePath
+            New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force |
+                Out-Null
+            Copy-Item -LiteralPath $File.FullName -Destination $Destination -Force
+        }
+        Copy-Item -LiteralPath $ManifestPath `
+            -Destination (Join-Path $StagingRoot 'build-manifest.json') -Force
 
-    if ($HadPreviousInstall) {
-        Move-Item -LiteralPath $InstallRoot -Destination $BackupRoot
+        if ($HadPreviousInstall) {
+            Move-Item -LiteralPath $InstallRoot -Destination $BackupRoot
+        }
+        Move-Item -LiteralPath $StagingRoot -Destination $InstallRoot
+        $Swapped = $true
     }
-    Move-Item -LiteralPath $StagingRoot -Destination $InstallRoot
-    $Swapped = $true
-
-    $Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $ConfigBackup = "$ConfigPath.neural-weasel-backup-$Timestamp"
-    Copy-Item -LiteralPath $ConfigPath -Destination $ConfigBackup
 
     $Lines = @(Get-Content -LiteralPath $ConfigPath -Encoding UTF8)
     $ManagedKeys = @(
@@ -160,7 +172,14 @@ try {
         '  "llm/hf_constraint/startup_timeout_ms": 1800000',
         '  "llm/hf_constraint/startup_poll_interval_ms": 500'
     )
-    Write-Utf8NoBom -Path $ConfigPath -Content (($Filtered -join "`r`n") + "`r`n")
+    $DesiredConfig = ($Filtered -join "`r`n") + "`r`n"
+    $ExistingConfig = [IO.File]::ReadAllText($ConfigPath, [Text.Encoding]::UTF8)
+    if ($ExistingConfig -ne $DesiredConfig) {
+        $Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $ConfigBackup = "$ConfigPath.neural-weasel-backup-$Timestamp"
+        Copy-Item -LiteralPath $ConfigPath -Destination $ConfigBackup
+        Write-Utf8NoBom -Path $ConfigPath -Content $DesiredConfig
+    }
 
     if (Test-Path -LiteralPath $BackupRoot -PathType Container) {
         Remove-Item -LiteralPath $BackupRoot -Recurse -Force
@@ -179,6 +198,10 @@ try {
     throw $Failure
 }
 
-Write-Host "Installed the Wisdom Weasel model adapter at $InstallRoot"
+if ($InstallMatches) {
+    Write-Host "Wisdom Weasel model adapter files are already current at $InstallRoot"
+} else {
+    Write-Host "Installed the Wisdom Weasel model adapter at $InstallRoot"
+}
 Write-Host 'The existing Rime schemas and user dictionary were not replaced.'
 Write-Host 'Start start-wisdom-service.vbs, then redeploy or restart Wisdom Weasel.'

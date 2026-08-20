@@ -81,8 +81,48 @@ def test_chinese_pinyin_and_latin_share_candidate_pipeline(make_index) -> None:
         assert isinstance(candidate.token_path, tuple)
 
 
-def test_english_context_penalizes_han_without_blocking_bilingual_input(make_index) -> None:
-    """English context prefers Latin but keeps Neural Han candidates available."""
+def test_exact_short_pinyin_excludes_latin_from_the_chinese_candidate_set(make_index) -> None:
+    index = make_index(
+        [
+            (10, "这", "zhe", "zhe", 1, 0),
+            (11, "这是一个", "zheshiyige", "zhe'shi'yi'ge", 4, 0),
+        ]
+    )
+    backend, state = make_backend({10: -100.0, 11: 100.0, 20: 200.0})
+    engine = UnifiedConstraintEngine(
+        backend=backend,
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint([LatinCompletion("zher", (20,))]),
+    )
+
+    candidates = engine.query("这是中文上下文", "zhe", state=state)
+
+    assert candidates[0].text == "这"
+    assert "这是一个" in {candidate.text for candidate in candidates}
+    assert "zher" not in {candidate.text for candidate in candidates}
+
+
+def test_exact_pinyin_excludes_higher_scored_fuzzy_reading(make_index) -> None:
+    index = make_index(
+        [
+            (10, "森津", "senjin", "sen'jin", 2, 0),
+            (11, "神经", "shenjing", "shen'jing", 2, 0),
+        ]
+    )
+    backend, state = make_backend({10: -100.0, 11: 100.0})
+    engine = UnifiedConstraintEngine(
+        backend=backend,
+        pinyin_constraint=PinyinConstraint(index),
+    )
+
+    candidates = engine.query("中文上下文", "senjin", state=state)
+
+    assert candidates[0].text == "森津"
+    assert next(candidate for candidate in candidates if candidate.text == "森津").fuzzy_cost == 0
+    assert "神经" not in {candidate.text for candidate in candidates}
+
+
+def test_valid_lowercase_pinyin_remains_hard_even_after_english_context(make_index) -> None:
     index = make_index([(10, "阿西", "asy", "a'sy", 2, 0)])
     backend, state = make_backend({10: 100.0, 20: 8.0, 21: 7.0, 22: 6.0})
     engine = UnifiedConstraintEngine(
@@ -103,10 +143,25 @@ def test_english_context_penalizes_han_without_blocking_bilingual_input(make_ind
         state=state,
     )
 
-    assert "asymmetric" in {candidate.text for candidate in candidates}
-    han = next(candidate for candidate in candidates if contains_han(candidate.text))
-    latin = next(candidate for candidate in candidates if candidate.text == "asymmetric")
-    assert han.language_prior < latin.language_prior
+    assert any(contains_han(candidate.text) for candidate in candidates)
+    assert "asymmetric" not in {candidate.text for candidate in candidates}
+    assert not any(candidate.constraint_kind == "latin_prefix" for candidate in candidates)
+
+
+def test_raw_literal_does_not_consume_a_first_page_slot_when_pinyin_is_legal(make_index) -> None:
+    index = make_index(
+        [(token_id, text, "wo", "wo", 1, 0) for token_id, text in enumerate("我窝沃卧握", 10)]
+    )
+    backend, state = make_backend({token_id: float(token_id) for token_id in range(10, 15)})
+    engine = UnifiedConstraintEngine(
+        backend=backend,
+        pinyin_constraint=PinyinConstraint(index),
+    )
+
+    candidates = engine.query("这些话", "wo", state=state, limit=5)
+
+    assert len(candidates) == 5
+    assert all(candidate.constraint_kind == "pinyin" for candidate in candidates)
 
 
 def test_literal_latin_prefix_is_always_commit_able() -> None:

@@ -37,6 +37,9 @@ def single_partial(raw_keys, raw, matcher, backend, state, after_text):
                 model_score=value,
                 constraint_cost=match.cost,
                 token_path=(int(entry.token_id),),
+                fuzzy_cost=(
+                    match.shorthand + int(match.incomplete_final) + match.completion_syllables
+                ),
             )
         )
     result.sort(

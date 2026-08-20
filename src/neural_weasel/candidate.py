@@ -21,6 +21,7 @@ class Candidate:
     language_prior: float = 0.0
     total_score: float = 0.0
     token_path: tuple[int, ...] = ()
+    fuzzy_cost: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

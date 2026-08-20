@@ -392,6 +392,14 @@ jobs:
           python scripts/verify-windows-bundle.py `
             dist/neural-weasel-experimental
 
+      - name: Build bundled Python wheel
+        shell: pwsh
+        run: |
+          uv build `
+            ./dist/neural-weasel-experimental/python-service `
+            --wheel `
+            --out-dir "$env:RUNNER_TEMP/neural-weasel-wheel"
+
       - name: Exercise fail-closed install and uninstall dry runs
         shell: pwsh
         env:

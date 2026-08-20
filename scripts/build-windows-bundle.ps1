@@ -221,6 +221,8 @@ $PythonService = Join-Path $OutputRoot 'python-service'
 New-Item -ItemType Directory -Path $PythonService -Force | Out-Null
 Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'pyproject.toml') `
     -Destination (Join-Path $PythonService 'pyproject.toml')
+Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'README.md') `
+    -Destination (Join-Path $PythonService 'README.md')
 Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'uv.lock') `
     -Destination (Join-Path $PythonService 'uv.lock')
 Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'src') `
@@ -266,8 +268,12 @@ $Manifest = [ordered]@{
     install_directory = '%LOCALAPPDATA%\NeuralWeasel\Experimental\experimental-profile'
     artifacts = $Hashes
 }
-$Manifest | ConvertTo-Json -Depth 6 |
-    Set-Content -LiteralPath (Join-Path $OutputRoot 'build-manifest.json') `
-        -Encoding utf8NoBOM
+$ManifestJson = $Manifest | ConvertTo-Json -Depth 6
+$Utf8WithBom = New-Object Text.UTF8Encoding($true)
+[IO.File]::WriteAllText(
+    (Join-Path $OutputRoot 'build-manifest.json'),
+    $ManifestJson + [Environment]::NewLine,
+    $Utf8WithBom
+)
 
 Write-Host "Built Windows bundle: $OutputRoot"

@@ -11,6 +11,7 @@ from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.candidate import Candidate
 from neural_weasel.http_server import (
     FIRST_PAGE_CANDIDATES,
+    FIRST_PAGE_CONTEXT_WAIT_SECONDS,
     WisdomHttpServer,
     _encode_bridge_candidates,
     _validate_request,
@@ -152,7 +153,7 @@ class NegativeLogitConstraint(Constraint):
         ]
 
 
-def test_unified_neural_query_keeps_chinese_and_english_candidates() -> None:
+def test_unified_neural_query_does_not_append_raw_literal_to_constrained_candidates() -> None:
     backend = FullLogitsSnapshotBackend(FakeRuntime(np.zeros(8, dtype=np.float32)))
     state = backend.update_context("The surrounding context is English", "")
     engine = UnifiedConstraintEngine(backend=backend, pinyin_constraint=MixedPinyinConstraint())
@@ -165,17 +166,18 @@ def test_unified_neural_query_keeps_chinese_and_english_candidates() -> None:
     )
 
     texts = {candidate.text for candidate in candidates}
-    assert {"神经", "neural", "shenjing"} <= texts
+    assert {"神经", "neural"} <= texts
+    assert "shenjing" not in texts
 
 
-def test_literal_english_is_last_and_never_crowds_model_scored_first_page() -> None:
+def test_raw_literal_never_crowds_a_model_scored_chinese_first_page() -> None:
     backend = FullLogitsSnapshotBackend(FakeRuntime(np.zeros(8, dtype=np.float32)))
     state = backend.update_context("中文上下文", "")
     engine = UnifiedConstraintEngine(backend=backend, pinyin_constraint=NegativeLogitConstraint())
 
     candidates = engine.query("中文上下文", "shenjing", state=state, limit=2)
 
-    assert [candidate.text for candidate in candidates] == ["神经", "shenjing"]
+    assert [candidate.text for candidate in candidates] == ["神经"]
 
 
 def test_http_request_candidate_count_defaults_to_first_page_and_caps_at_fifty() -> None:
@@ -224,7 +226,7 @@ class AsyncFakeEngine:
 
     def wait_for_epoch(self, epoch: int, timeout_seconds: float) -> bool:
         assert epoch == self.requested_epoch
-        assert timeout_seconds > 0
+        assert timeout_seconds == FIRST_PAGE_CONTEXT_WAIT_SECONDS
         return False
 
     def query(self, raw_keys: str, limit: int, context_epoch: int):

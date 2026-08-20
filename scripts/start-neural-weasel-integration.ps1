@@ -3,13 +3,27 @@ param(
     [ValidateRange(0, 60)]
     [int]$StartupDelaySeconds = 5,
     [ValidateRange(10, 1800)]
-    [int]$BackendReadyTimeoutSeconds = 1800
+    [int]$BackendReadyTimeoutSeconds = 1800,
+    [string]$CompatibilityRoot
 )
 
 $ErrorActionPreference = 'Stop'
 
-$compatibilityRoot = 'C:\输入法\wisdom_weasel_installer\weasel-release'
-$compatibilityShell = Join-Path $compatibilityRoot 'WeaselServer.exe'
+# Windows PowerShell 5.1 treats UTF-8 scripts without a BOM as the active ANSI
+# code page. Construct the non-ASCII directory name from code points so the
+# launcher behaves identically under Windows PowerShell 5.1 and PowerShell 7.
+if ([string]::IsNullOrWhiteSpace($CompatibilityRoot)) {
+    if ($env:NEURAL_WEASEL_COMPATIBILITY_ROOT) {
+        $CompatibilityRoot = $env:NEURAL_WEASEL_COMPATIBILITY_ROOT
+    } else {
+        $InputMethodDirectory = -join [char[]]@(0x8F93, 0x5165, 0x6CD5)
+        $CompatibilityRoot = Join-Path (
+            Join-Path "$env:SystemDrive\" $InputMethodDirectory
+        ) 'wisdom_weasel_installer\weasel-release'
+    }
+}
+$CompatibilityRoot = [IO.Path]::GetFullPath($CompatibilityRoot)
+$compatibilityShell = Join-Path $CompatibilityRoot 'WeaselServer.exe'
 $backendLauncher = Join-Path $PSScriptRoot 'start-wisdom-service.vbs'
 
 foreach ($requiredFile in @($compatibilityShell, $backendLauncher)) {
@@ -59,9 +73,27 @@ foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='WeaselServer
         $desiredShellRunning = $true
         continue
     }
+    $officialRoot = [IO.Path]::GetFullPath((Join-Path $env:ProgramFiles 'Rime'))
+    $processPath = if ($process.ExecutablePath) {
+        [IO.Path]::GetFullPath($process.ExecutablePath)
+    } else {
+        $null
+    }
+    if (-not $processPath -or -not $processPath.StartsWith(
+        $officialRoot + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw (
+            'Refusing to stop an unexpected WeaselServer process: ' +
+            "PID $($process.ProcessId), path '$processPath'"
+        )
+    }
     Stop-Process -Id $process.ProcessId -ErrorAction Stop
 }
 
 if (-not $desiredShellRunning) {
-    & $compatibilityShell
+    Start-Process `
+        -FilePath $compatibilityShell `
+        -WorkingDirectory $CompatibilityRoot `
+        -WindowStyle Hidden | Out-Null
 }

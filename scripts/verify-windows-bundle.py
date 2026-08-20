@@ -35,6 +35,7 @@ REQUIRED = (
     "tools/uv.exe",
     "build-manifest.json",
     "README-INSTALL-TEST.md",
+    "python-service/README.md",
     "data/neural_weasel.schema.yaml",
 )
 

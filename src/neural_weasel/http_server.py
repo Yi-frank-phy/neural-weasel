@@ -17,7 +17,7 @@ MAX_CONSTRAINTS = 64
 MAX_CONSTRAINT_CHARS = 32
 FIRST_PAGE_CANDIDATES = 5
 MAX_CANDIDATES = 50
-FIRST_PAGE_CONTEXT_WAIT_SECONDS = 0.012
+FIRST_PAGE_CONTEXT_WAIT_SECONDS = 0.200
 BRIDGE_POLL_SECONDS = 0.005
 
 
@@ -101,7 +101,9 @@ class WisdomHttpServer(ThreadingHTTPServer):
         epoch = self.request_context(prompt)
         exact_snapshot = self.engine.has_snapshot(epoch)
         if not exact_snapshot:
-            # Candidate count must not turn a keypress into a slow paging wait.
+            # A changed committed prefix is part of candidate correctness, not
+            # a soft hint. Wait through the measured incremental-cache budget
+            # before considering an immutable older snapshot.
             exact_snapshot = self.engine.wait_for_epoch(epoch, FIRST_PAGE_CONTEXT_WAIT_SECONDS)
         query_epoch = epoch
         if not exact_snapshot:

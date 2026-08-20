@@ -14,17 +14,125 @@ Set-StrictMode -Version Latest
 
 $ExperimentalClsid = '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}'
 $ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
+$ExperimentalInputMethodTip = "0804:$ExperimentalClsid$ExperimentalProfileGuid"
 $ExpectedWeaselRevision = '9cc96e20dc71b80876b12f689bb5863c76c2a7ed'
 $ProfileToolName = 'NeuralWeaselProfileTool.exe'
 $ActivatorName = 'NeuralWeaselSessionActivator.exe'
 $TsfDllName = 'NeuralWeaselExperimentalTSF.dll'
 $ServerName = 'NeuralWeaselServer.exe'
+$MachineComRoot = (
+    "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\$ExperimentalClsid"
+)
+$MachineComInproc = Join-Path $MachineComRoot 'InprocServer32'
 
 function Assert-LastExitCode {
     param([Parameter(Mandatory)][string]$Operation)
     if ($LASTEXITCODE -ne 0) {
         throw "$Operation failed with exit code $LASTEXITCODE."
     }
+}
+
+function Assert-Elevated {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $Principal = [Security.Principal.WindowsPrincipal]::new($Identity)
+    if (-not $Principal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )) {
+        throw 'Installing the experimental TSF profile requires an elevated PowerShell session.'
+    }
+}
+
+function Get-MachineComState {
+    param([Parameter(Mandatory)][string]$ExpectedDll)
+    if (-not (Test-Path -LiteralPath $MachineComRoot)) {
+        return [pscustomobject]@{ Exists = $false; Exact = $false }
+    }
+    if (-not (Test-Path -LiteralPath $MachineComInproc)) {
+        return [pscustomobject]@{ Exists = $true; Exact = $false }
+    }
+    $Key = Get-Item -LiteralPath $MachineComInproc
+    $RegisteredDll = [string]$Key.GetValue('')
+    $ThreadingModel = [string]$Key.GetValue('ThreadingModel')
+    $Exact = (
+        $RegisteredDll -and
+        [IO.Path]::GetFullPath($RegisteredDll).Equals(
+            [IO.Path]::GetFullPath($ExpectedDll),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        $ThreadingModel.Equals(
+            'Apartment',
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    )
+    return [pscustomobject]@{ Exists = $true; Exact = $Exact }
+}
+
+function Set-MachineComRegistration {
+    param([Parameter(Mandatory)][string]$ExpectedDll)
+    $State = Get-MachineComState -ExpectedDll $ExpectedDll
+    if ($State.Exists -and -not $State.Exact) {
+        throw 'The reserved experimental machine COM identity is in conflict.'
+    }
+    if ($State.Exact) {
+        return $false
+    }
+    New-Item -Path $MachineComInproc -Force | Out-Null
+    Set-Item -LiteralPath $MachineComInproc -Value $ExpectedDll
+    New-ItemProperty -LiteralPath $MachineComInproc `
+        -Name 'ThreadingModel' `
+        -Value 'Apartment' `
+        -PropertyType String `
+        -Force | Out-Null
+    return $true
+}
+
+function Remove-MachineComRegistration {
+    param([Parameter(Mandatory)][string]$ExpectedDll)
+    $State = Get-MachineComState -ExpectedDll $ExpectedDll
+    if ($State.Exists -and -not $State.Exact) {
+        throw 'Refusing to remove a conflicting machine COM identity.'
+    }
+    if ($State.Exact) {
+        Remove-Item -LiteralPath $MachineComRoot -Recurse -Force
+    }
+}
+
+function Get-ZhHansUserLanguage {
+    param([Parameter(Mandatory)][object]$LanguageList)
+    $Matches = @(
+        $LanguageList | Where-Object { $_.LanguageTag -eq 'zh-Hans-CN' }
+    )
+    if ($Matches.Count -ne 1) {
+        throw "Expected exactly one zh-Hans-CN user language, found $($Matches.Count)."
+    }
+    return $Matches[0]
+}
+
+function Test-ExperimentalInputMethodTip {
+    $LanguageList = Get-WinUserLanguageList
+    $ZhHans = Get-ZhHansUserLanguage -LanguageList $LanguageList
+    return @($ZhHans.InputMethodTips) -contains $ExperimentalInputMethodTip
+}
+
+function Add-ExperimentalInputMethodTip {
+    $LanguageList = Get-WinUserLanguageList
+    $ZhHans = Get-ZhHansUserLanguage -LanguageList $LanguageList
+    if (@($ZhHans.InputMethodTips) -contains $ExperimentalInputMethodTip) {
+        return $false
+    }
+    $ZhHans.InputMethodTips.Add($ExperimentalInputMethodTip)
+    Set-WinUserLanguageList -LanguageList $LanguageList -Force
+    return $true
+}
+
+function Remove-ExperimentalInputMethodTip {
+    $LanguageList = Get-WinUserLanguageList
+    $ZhHans = Get-ZhHansUserLanguage -LanguageList $LanguageList
+    if (@($ZhHans.InputMethodTips) -notcontains $ExperimentalInputMethodTip) {
+        return
+    }
+    $ZhHans.InputMethodTips.Remove($ExperimentalInputMethodTip)
+    Set-WinUserLanguageList -LanguageList $LanguageList -Force
 }
 
 function Get-ProfileStatus {
@@ -88,6 +196,16 @@ if (
     throw 'Build manifest does not describe the reserved experimental bundle.'
 }
 
+$LocalizedLauncherName = -join @(
+    [char]0x542F,
+    [char]0x52A8,
+    [char]0x795E,
+    [char]0x7ECF,
+    [char]0x5C0F,
+    [char]0x72FC,
+    [char]0x6BEB
+) + '.cmd'
+
 $Required = @(
     $TsfDllName,
     $ProfileToolName,
@@ -101,7 +219,7 @@ $Required = @(
     'start-model-service.ps1',
     'launch-neural-weasel.ps1',
     'Start-Neural-Weasel.cmd',
-    '启动神经小狼毫.cmd',
+    $LocalizedLauncherName,
     'tools\uv.exe',
     'README-INSTALL-TEST.md',
     'data\neural_weasel.schema.yaml',
@@ -196,19 +314,55 @@ if (Test-Path -LiteralPath $ExistingManifestPath -PathType Leaf) {
         $ProfileStatus = Get-ProfileStatus `
             -Tool $InstalledTool `
             -ExpectedDll $InstalledDll
-        if (-not $ProfileStatus.registered) {
-            & $InstalledTool register `
-                --clsid $ExperimentalClsid `
-                --profile-guid $ExperimentalProfileGuid `
-                --dll $InstalledDll
-            Assert-LastExitCode -Operation 'Missing experimental profile registration repair'
-            Write-Host 'The identical bundle was already installed; its missing registration was repaired.'
-        } else {
-            Write-Host 'The identical bundle is already installed and registered; registration was not repeated.'
+        $MachineComState = Get-MachineComState -ExpectedDll $InstalledDll
+        if ($ProfileStatus.registered -and $MachineComState.Exact) {
+            if (Test-ExperimentalInputMethodTip) {
+                Write-Host 'The identical bundle is already installed and registered; registration was not repeated.'
+            } else {
+                Add-ExperimentalInputMethodTip | Out-Null
+                Write-Host 'The identical bundle was already installed; its missing input-method list entry was repaired.'
+            }
+            exit 0
+        }
+        Assert-Elevated
+        $MachineComCreated = $false
+        $ProfileRegistrationRepaired = $false
+        $InputMethodTipAdded = $false
+        try {
+            $MachineComCreated = Set-MachineComRegistration `
+                -ExpectedDll $InstalledDll
+            if (-not $ProfileStatus.registered) {
+                & $InstalledTool register `
+                    --clsid $ExperimentalClsid `
+                    --profile-guid $ExperimentalProfileGuid `
+                    --dll $InstalledDll
+                Assert-LastExitCode -Operation 'Missing experimental profile registration repair'
+                $ProfileRegistrationRepaired = $true
+                Write-Host 'The identical bundle was already installed; its missing registration was repaired.'
+            } elseif ($MachineComCreated) {
+                Write-Host 'The identical bundle was already installed; its missing machine COM registration was repaired.'
+            }
+            $InputMethodTipAdded = Add-ExperimentalInputMethodTip
+        } catch {
+            if ($InputMethodTipAdded) {
+                Remove-ExperimentalInputMethodTip
+            }
+            if ($ProfileRegistrationRepaired) {
+                & $InstalledTool unregister `
+                    --clsid $ExperimentalClsid `
+                    --profile-guid $ExperimentalProfileGuid `
+                    --dll $InstalledDll | Out-Null
+            }
+            if ($MachineComCreated) {
+                Remove-MachineComRegistration -ExpectedDll $InstalledDll
+            }
+            throw
         }
         exit 0
     }
 }
+
+Assert-Elevated
 
 $InstallParent = Split-Path -Parent $InstallRoot
 New-Item -ItemType Directory -Path $InstallParent -Force | Out-Null
@@ -216,6 +370,8 @@ $StagingRoot = "$InstallRoot.staging-$([guid]::NewGuid().ToString('N'))"
 $BackupRoot = "$InstallRoot.backup-$([guid]::NewGuid().ToString('N'))"
 $HadPreviousInstall = Test-Path -LiteralPath $InstallRoot -PathType Container
 $InstallSwapped = $false
+$MachineComCreated = $false
+$InputMethodTipAdded = $false
 
 try {
     New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
@@ -255,11 +411,13 @@ try {
 
     $InstalledTool = Join-Path $InstallRoot $ProfileToolName
     $InstalledDll = Join-Path $InstallRoot $TsfDllName
+    $MachineComCreated = Set-MachineComRegistration -ExpectedDll $InstalledDll
     & $InstalledTool register `
         --clsid $ExperimentalClsid `
         --profile-guid $ExperimentalProfileGuid `
         --dll $InstalledDll
     Assert-LastExitCode -Operation 'Experimental profile registration'
+    $InputMethodTipAdded = Add-ExperimentalInputMethodTip
 
     if (Test-Path -LiteralPath $BackupRoot) {
         try {
@@ -270,6 +428,9 @@ try {
     }
 } catch {
     $InstallFailure = $_
+    if ($InputMethodTipAdded) {
+        Remove-ExperimentalInputMethodTip
+    }
     if (
         $InstallSwapped -and
         (Test-Path -LiteralPath $InstallRoot -PathType Container)
@@ -287,6 +448,9 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw 'Install failed and previous profile registration could not be restored.'
         }
+    } elseif ($MachineComCreated) {
+        Remove-MachineComRegistration `
+            -ExpectedDll (Join-Path $InstallRoot $TsfDllName)
     }
     if (Test-Path -LiteralPath $StagingRoot -PathType Container) {
         Remove-Item -LiteralPath $StagingRoot -Recurse -Force

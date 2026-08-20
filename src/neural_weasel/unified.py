@@ -207,15 +207,30 @@ class PinyinConstraint:
         if not raw:
             return []
 
-        candidates: list[Candidate] = []
+        exact_candidates: list[Candidate] = []
+        relaxed_candidates: dict[int, list[Candidate]] = {}
         for query_parsed, fuzzy_cost in _pinyin_query_variants(parsed, self.fuzzy_aliases):
+            variant_candidates: list[Candidate] = []
             for group in self.index.query_plan(query_parsed).groups:
-                candidates.extend(
+                variant_candidates.extend(
                     self._group_candidates(
                         parsed, query_parsed, group, fuzzy_cost, backend, state, after_text
                     )
                 )
-        return candidates
+            if fuzzy_cost == 0:
+                exact_candidates.extend(variant_candidates)
+            elif variant_candidates:
+                relaxed_candidates.setdefault(fuzzy_cost, []).extend(variant_candidates)
+
+        # Tail pinyin is a legality boundary, not a soft feature. A fuzzy
+        # pronunciation is considered only when the exact reading produces no
+        # usable model token at all; larger fuzzy costs are subsequent fallback
+        # levels rather than competitors in one global logit sort.
+        if exact_candidates:
+            return exact_candidates
+        if not relaxed_candidates:
+            return []
+        return relaxed_candidates[min(relaxed_candidates)]
 
     def _group_candidates(
         self,
@@ -273,6 +288,7 @@ class PinyinConstraint:
                     model_score=model_score,
                     constraint_cost=structural_cost,
                     token_path=token_path,
+                    fuzzy_cost=fuzzy_cost,
                 )
             )
         return candidates
@@ -485,18 +501,34 @@ def rank_unified_candidates(
             continue
         prior = policy.language_prior(context_kind, script, raw_keys)
         model_score = candidate.model_score if candidate.model_score is not None else 0.0
+        ranking_score = candidate.score if candidate.score is not None else model_score
         ranked.append(
             replace(
                 candidate,
                 language_prior=prior,
-                total_score=model_score + candidate.constraint_cost + prior,
+                total_score=ranking_score + candidate.constraint_cost + prior,
             )
         )
 
+    def input_method_tier(candidate: Candidate) -> int:
+        # IME legality is a hard ordering boundary. The language model may
+        # reorder candidates only inside one boundary; a high logit must never
+        # make fuzzy pinyin or an English completion outrank an exact reading.
+        if candidate.constraint_kind == "pinyin":
+            if candidate.fuzzy_cost == 0:
+                return 0 if candidate.completes_input else 1
+            return 2
+        if candidate.constraint_kind == "latin_prefix":
+            return 3
+        if candidate.constraint_kind == "literal":
+            return 4
+        return 3
+
     ranked.sort(
         key=lambda candidate: (
+            input_method_tier(candidate),
+            len(candidate.text) if candidate.constraint_kind == "pinyin" else 0,
             -candidate.total_score,
-            candidate.constraint_kind == "literal",
             -candidate.consumed_keys,
             candidate.text,
             candidate.token_path,
@@ -545,23 +577,24 @@ class UnifiedConstraintEngine:
             return [_literal_candidate(raw_keys, 0)] if _LATIN_PREFIX.fullmatch(raw_keys) else []
 
         candidates: list[Candidate] = []
+        pinyin_candidates: list[Candidate] = []
         if self.pinyin_constraint is not None:
+            pinyin_candidates = self.pinyin_constraint.candidates(
+                raw_keys,
+                backend=self.backend,
+                state=state,
+                after_text=after_text,
+            )
+            candidates.extend(pinyin_candidates)
+        if not pinyin_candidates or self.script_policy._explicit_latin_shape(raw_keys):
             candidates.extend(
-                self.pinyin_constraint.candidates(
+                self.latin_prefix_constraint.candidates(
                     raw_keys,
                     backend=self.backend,
                     state=state,
                     after_text=after_text,
                 )
             )
-        candidates.extend(
-            self.latin_prefix_constraint.candidates(
-                raw_keys,
-                backend=self.backend,
-                state=state,
-                after_text=after_text,
-            )
-        )
         candidates = [candidate for candidate in candidates if candidate.model_score is not None]
         literal = (
             _literal_candidate(raw_keys, state.epoch) if _LATIN_PREFIX.fullmatch(raw_keys) else None
@@ -573,7 +606,12 @@ class UnifiedConstraintEngine:
             and candidate.consumed_keys == len(raw_keys)
             for candidate in candidates
         )
-        reserve_literal = literal is not None and not model_has_exact_literal and limit > 0
+        reserve_literal = (
+            literal is not None
+            and not model_has_exact_literal
+            and not pinyin_candidates
+            and limit > 0
+        )
         ranked = rank_unified_candidates(
             candidates,
             context_kind=self.script_policy.classify(before),

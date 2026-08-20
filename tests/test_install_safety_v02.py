@@ -110,6 +110,37 @@ def test_uninstall_has_no_identifier_override_parameters() -> None:
     assert "--profile-guid $ExperimentalProfileGuid" in uninstall
 
 
+def test_machine_com_registration_is_scoped_symmetric_and_elevated() -> None:
+    """Windows TSF needs one machine COM key, guarded by the reserved CLSID."""
+    install = (ROOT / "scripts" / "install-dev-profile.ps1").read_text(encoding="utf-8")
+    uninstall = (ROOT / "scripts" / "uninstall-dev-profile.ps1").read_text(encoding="utf-8")
+
+    machine_key = "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\CLSID\\$ExperimentalClsid"
+    assert machine_key in install
+    assert machine_key in uninstall
+    assert "Assert-Elevated" in install
+    assert "Assert-Elevated" in uninstall
+    assert "Set-MachineComRegistration" in install
+    assert "Remove-MachineComRegistration" in install
+    assert "Remove-MachineComRegistration" in uninstall
+    assert "Refusing to remove a conflicting machine COM identity" in uninstall
+
+
+def test_experimental_tip_is_added_and_removed_without_changing_default() -> None:
+    install = (ROOT / "scripts" / "install-dev-profile.ps1").read_text(encoding="utf-8")
+    uninstall = (ROOT / "scripts" / "uninstall-dev-profile.ps1").read_text(encoding="utf-8")
+    diagnose = (ROOT / "scripts" / "diagnose.ps1").read_text(encoding="utf-8")
+    combined = install + uninstall
+
+    assert "0804:$ExperimentalClsid$ExperimentalProfileGuid" in combined
+    assert "Add-ExperimentalInputMethodTip" in install
+    assert "Remove-ExperimentalInputMethodTip" in install
+    assert "Remove-ExperimentalInputMethodTip" in uninstall
+    assert "Set-WinUserLanguageList" in combined
+    assert "Set-WinDefaultInputMethodOverride" not in combined
+    assert "experimental_input_method_tip_enabled" in diagnose
+
+
 def test_experimental_identity_is_consistent_across_all_mutation_boundaries() -> None:
     header = (ROOT / "native/tsf/experimental_profile_ids.h").read_text(encoding="utf-8")
     profile_tool = (ROOT / "native/profile_tool/profile_tool.cpp").read_text(encoding="utf-8")

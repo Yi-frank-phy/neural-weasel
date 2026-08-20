@@ -47,6 +47,7 @@ class FakeRuntime:
 
 class EmptyPinyinIndex:
     syllables: set[str] = set()
+    root = SimpleNamespace(children={}, terminals=[])
 
     def query_plan(self, parsed):
         return SimpleNamespace(groups=())
@@ -91,6 +92,13 @@ def test_serve_cli_exposes_explicit_backend_selection() -> None:
 
     assert full.backend == "full"
     assert sparse.backend == "sparse"
+
+
+def test_serve_cli_exposes_native_fp8_without_changing_full_logits_backend() -> None:
+    args = _parser().parse_args(["serve-http", "--precision", "fp8", "--backend", "full"])
+
+    assert args.precision == "fp8"
+    assert args.backend == "full"
 
 
 def test_backend_benchmark_cli_is_directly_runnable() -> None:
