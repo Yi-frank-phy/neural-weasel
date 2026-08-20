@@ -58,14 +58,14 @@ def verified_local_sha256(path: Path, sidecar: Path | None = None) -> str:
         cached = json.loads(sidecar.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
         cached = None
-    if isinstance(cached, dict):
-        if (
-            cached.get("size") == stat.st_size
-            and cached.get("mtime_ns") == stat.st_mtime_ns
-            and isinstance(cached.get("sha256"), str)
-            and len(cached["sha256"]) == 64
-        ):
-            return cached["sha256"]
+    if (
+        isinstance(cached, dict)
+        and cached.get("size") == stat.st_size
+        and cached.get("mtime_ns") == stat.st_mtime_ns
+        and isinstance(cached.get("sha256"), str)
+        and len(cached["sha256"]) == 64
+    ):
+        return cached["sha256"]
 
     sha256 = _sha256_file(path)
     payload = json.dumps(
