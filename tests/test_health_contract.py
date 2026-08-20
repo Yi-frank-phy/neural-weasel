@@ -9,14 +9,20 @@ from neural_weasel.http_server import WisdomHttpServer
 class FakeEngine:
     def diagnostics(self) -> dict[str, object]:
         return {
-            "backend_kind": "qwen",
-            "model_id": "Qwen/Qwen3.5-0.8B-Base",
-            "quantization": "int8",
+            "backend_kind": "full_logits",
+            "model": "Qwen/Qwen3.5-0.8B-Base",
+            "precision": "int8",
+            "tokenizer_revision": "rev-123",
             "tokenizer_fingerprint": "abc123",
+            "index_model_id": "Qwen/Qwen3.5-0.8B-Base",
+            "index_revision": "rev-123",
+            "index_tokenizer_fingerprint": "abc123",
+            "index_pypinyin_version": "0.55.0",
+            "index_schema_version": 2,
         }
 
 
-def test_health_contract_exposes_backend_identity_fields() -> None:
+def test_health_contract_exposes_verified_runtime_and_index_identity() -> None:
     server = WisdomHttpServer(("127.0.0.1", 0), FakeEngine())
     thread = None
     try:
@@ -31,10 +37,19 @@ def test_health_contract_exposes_backend_identity_fields() -> None:
         payload = json.loads(response.read().decode("utf-8"))
 
         assert response.status == 200
-        assert payload["backend_kind"] == "qwen"
-        assert payload["model_id"] == "Qwen/Qwen3.5-0.8B-Base"
-        assert payload["quantization"] == "int8"
-        assert payload["tokenizer_fingerprint"] == "abc123"
+        assert payload == {
+            "status": "ok",
+            "model": "Qwen/Qwen3.5-0.8B-Base",
+            "precision": "int8",
+            "backend_kind": "full_logits",
+            "tokenizer_revision": "rev-123",
+            "tokenizer_fingerprint": "abc123",
+            "index_model_id": "Qwen/Qwen3.5-0.8B-Base",
+            "index_revision": "rev-123",
+            "index_tokenizer_fingerprint": "abc123",
+            "index_pypinyin_version": "0.55.0",
+            "index_schema_version": 2,
+        }
         connection.close()
     finally:
         server.shutdown()
