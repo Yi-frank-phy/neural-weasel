@@ -9,6 +9,7 @@ from typing import Any
 
 EXPECTED_GPU_NAME = "NVIDIA GeForce RTX 4060 Laptop GPU"
 MIN_RUNTIME_FREE_MIB = 2048
+MIN_FULL_GGUF_OFFLOAD_DELTA_MIB = 3000
 
 
 class GpuBindingError(RuntimeError):
@@ -76,6 +77,43 @@ def _normalize_uuid(value: Any) -> str:
     if text.startswith("gpu-"):
         text = text[4:]
     return text.replace("-", "")
+
+
+def verify_expected_nvidia_binding() -> NvidiaGpu:
+    """Prove the launcher isolated the expected physical RTX 4060."""
+
+    expected_uuid = os.environ.get("NEURAL_WEASEL_EXPECTED_GPU_UUID")
+    expected_name = os.environ.get("NEURAL_WEASEL_EXPECTED_GPU_NAME")
+    if not expected_uuid or not expected_name:
+        raise GpuBindingError("GPU guard environment is missing; use the neural-weasel launcher")
+    if expected_name != EXPECTED_GPU_NAME:
+        raise GpuBindingError(
+            f"launcher GPU name mismatch: expected {EXPECTED_GPU_NAME!r}, got {expected_name!r}"
+        )
+    target = discover_target_gpu()
+    if target.name != expected_name or _normalize_uuid(target.uuid) != _normalize_uuid(expected_uuid):
+        raise GpuBindingError("target GPU changed after process launch")
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if not visible or _normalize_uuid(visible) != _normalize_uuid(expected_uuid):
+        raise GpuBindingError("CUDA_VISIBLE_DEVICES does not isolate the expected RTX 4060")
+    return target
+
+
+def require_full_gguf_offload(before: NvidiaGpu, after: NvidiaGpu) -> int:
+    if before.uuid != after.uuid or before.name != after.name:
+        raise GpuBindingError("target GPU changed while loading GGUF runtime")
+    delta = before.memory_free_mib - after.memory_free_mib
+    if delta < MIN_FULL_GGUF_OFFLOAD_DELTA_MIB:
+        raise GpuBindingError(
+            "GGUF load did not consume enough target-GPU VRAM to prove full model offload: "
+            f"observed {delta} MiB, require at least {MIN_FULL_GGUF_OFFLOAD_DELTA_MIB} MiB"
+        )
+    if after.memory_free_mib < MIN_RUNTIME_FREE_MIB:
+        raise GpuBindingError(
+            f"VRAM headroom {after.memory_free_mib} MiB is below required "
+            f"{MIN_RUNTIME_FREE_MIB} MiB after GGUF load"
+        )
+    return delta
 
 
 def verify_torch_binding(torch_module: Any) -> NvidiaGpu:
