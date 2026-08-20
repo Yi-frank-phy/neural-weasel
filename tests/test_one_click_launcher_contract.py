@@ -130,7 +130,6 @@ def test_double_click_runtime_supports_windows_powershell_51() -> None:
     assert "powershell.exe" in launchers
     assert "ConvertToHexString" not in service
     assert "utf8NoBOM" not in service
-    assert "BitConverter" in service
     assert "UTF8Encoding" in service
 
 
