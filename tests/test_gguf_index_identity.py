@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from neural_weasel.gguf_index import GgufPinyinIndexBuilder
-from neural_weasel.index import PinyinIndex, SCHEMA_VERSION
+from neural_weasel.index import SCHEMA_VERSION, PinyinIndex
 from neural_weasel.pinyin import parse_raw_pinyin
 
 
