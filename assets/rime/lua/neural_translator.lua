@@ -153,7 +153,7 @@ function M.func(input, seg, env)
             local key = tostring(consumed) .. "\t" .. text
             if not seen[key] then
                 seen[key] = true
-                local candidate = Candidate("neural", seg.start, math.min(seg._end, seg.start + consumed), text, " Neural")
+                local candidate = Candidate("neural", seg.start, math.min(seg._end, seg.start + consumed), text, " AI")
                 candidate.quality = 100000 - emitted
                 yield(candidate)
                 emitted = emitted + 1

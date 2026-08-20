@@ -1,4 +1,2 @@
 patch:
-  "engine/translators":
-    - punct_translator
-    - "lua_translator@*neural_translator"
+  "engine/translators/@before 0": lua_translator@*neural_translator
