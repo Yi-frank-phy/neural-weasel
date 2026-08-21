@@ -13,6 +13,41 @@ def test_secure_context_never_keeps_text() -> None:
     assert "after" not in context.metadata()
 
 
+def test_metadata_contains_no_raw_text_or_context_dump_and_is_whitelisted() -> None:
+    before = "NW_SENTINEL_BEFORE_BANK_PASSWORD_9b4b1b4e"
+    after = "NW_SENTINEL_AFTER_PRIVATE_RESEARCH_6c51d7a2"
+    context = EditorContext(
+        before=before,
+        after=after,
+        app_id="editor.exe",
+        partial=False,
+        complete_region=True,
+        secure=False,
+    )
+
+    metadata = context.metadata()
+    serialized = repr(metadata)
+    allowed_keys = {
+        "before_utf16",
+        "after_utf16",
+        "scope_label",
+        "revision",
+        "app_id",
+    }
+
+    assert before not in serialized
+    assert after not in serialized
+    assert "before" not in metadata
+    assert "after" not in metadata
+    assert "raw_context" not in metadata
+    assert "context_dump" not in metadata
+    assert set(metadata) <= allowed_keys
+    assert metadata["before_utf16"] == len(before)
+    assert metadata["after_utf16"] == len(after)
+    assert metadata["scope_label"] == "NORMAL"
+    assert metadata["app_id"] == "editor.exe"
+
+
 def test_utf16_clipping_does_not_split_non_bmp_character() -> None:
     context = EditorContext(
         before="a" * 8191 + "😀",
