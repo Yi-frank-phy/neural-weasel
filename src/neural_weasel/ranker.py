@@ -31,6 +31,11 @@ def _candidate(
     )
 
 
+def _phrase_bonus(entry: IndexedPronunciation) -> float:
+    """Keep longer lexical candidates visible under nearly tied model scores."""
+    return min(0.08, max(0, len(entry.text) - 1) * 0.02)
+
+
 def _rank_model_group(
     group: PinyinQueryGroup,
     logits: np.ndarray,
@@ -41,7 +46,13 @@ def _rank_model_group(
         return []
     if int(group.token_ids.max(initial=0)) >= logits.size:
         raise IndexError("token id is outside logits length")
-    scores = logits[group.token_ids]
+    model_scores = logits[group.token_ids]
+    phrase_bonuses = np.fromiter(
+        (_phrase_bonus(entry) for entry in group.entries),
+        dtype=np.float32,
+        count=len(group.entries),
+    )
+    scores = model_scores + phrase_bonuses
     selection_size = min(len(group.entries), max(limit * 8, 64))
     while True:
         if selection_size == len(group.entries):
