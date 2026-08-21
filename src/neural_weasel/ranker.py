@@ -52,16 +52,17 @@ def _rank_model_group(
         dtype=np.float32,
         count=len(group.entries),
     )
-    scores = model_scores + phrase_bonuses
+    ranking_scores = model_scores + phrase_bonuses
     selection_size = min(len(group.entries), max(limit * 8, 64))
     while True:
         if selection_size == len(group.entries):
             selected = np.arange(len(group.entries))
         else:
-            selected = np.argpartition(-scores, selection_size - 1)[:selection_size]
-        selected = selected[np.argsort(-scores[selected], kind="stable")]
+            selected = np.argpartition(-ranking_scores, selection_size - 1)[:selection_size]
+        selected = selected[np.argsort(-ranking_scores[selected], kind="stable")]
         ranked = [
-            (group.entries[int(position)], float(scores[int(position)])) for position in selected
+            (group.entries[int(position)], float(model_scores[int(position)]))
+            for position in selected
         ]
         if selection_size == len(group.entries):
             return ranked
