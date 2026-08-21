@@ -280,6 +280,8 @@ struct ContextCaptureBroker::Impl final {
   }
 };
 
+ContextCaptureBroker::ContextCaptureBroker() = default;
+
 ContextCaptureBroker::~ContextCaptureBroker() {
   Stop();
 }

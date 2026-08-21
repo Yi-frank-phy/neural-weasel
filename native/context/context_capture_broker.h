@@ -9,7 +9,7 @@ namespace neural_weasel::context {
 // latest valid source snapshot to the existing model-service bridge.
 class ContextCaptureBroker final {
  public:
-  ContextCaptureBroker() = default;
+  ContextCaptureBroker();
   ~ContextCaptureBroker();
 
   ContextCaptureBroker(const ContextCaptureBroker&) = delete;
