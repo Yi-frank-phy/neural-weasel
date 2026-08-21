@@ -49,14 +49,24 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
   engine_->context()->set_property("neural_candidate_fresh", "0");
 
   try {
+    const AcceptedEditorContext context_identity =
+        EditorContextEpoch::Instance().LoadAccepted();
+    if (!context_identity.valid() || context_identity.model_epoch == 0) {
+      // Never let epoch 0 implicitly select a previous application's model
+      // snapshot. Ordinary Rime candidates remain available while editor
+      // context is absent or still refreshing.
+      return nullptr;
+    }
+
     const std::uint64_t request_revision = ++revision_;
-    const std::uint64_t context_epoch = EditorContextEpoch::Instance().Load();
     const std::string request_session_id = std::to_string(session_id_);
     const Json request = {
         {"type", "query_candidates"},
         {"session_id", request_session_id},
         {"revision", request_revision},
-        {"context_epoch", context_epoch},
+        {"context_epoch", context_identity.model_epoch},
+        {"context_session", context_identity.source_capability},
+        {"source_revision", context_identity.source_revision},
         {"raw_keys", input},
         {"candidate_count", kCandidateCount},
     };
@@ -71,7 +81,7 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
         response.value("session_id", std::string{}) != request_session_id ||
         response.value("revision", std::uint64_t{0}) != request_revision ||
         !IsResponseEpochAcceptable(
-            context_epoch,
+            context_identity.model_epoch,
             response.value("context_epoch", std::uint64_t{0})) ||
         !response.contains("candidates") ||
         !response["candidates"].is_array()) {
