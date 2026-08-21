@@ -197,6 +197,17 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   )
   add_test(NAME neural_weasel_epoch_semantics_test
            COMMAND neural_weasel_epoch_semantics_test)
+
+  add_executable(neural_weasel_editor_context_security_e2e_test
+    context/editor_context_security_e2e_test.cc
+    context/context_ipc_protocol.cc
+    tsf/input_scope_policy.cc
+  )
+  target_include_directories(neural_weasel_editor_context_security_e2e_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME neural_weasel_editor_context_security_e2e_test
+           COMMAND neural_weasel_editor_context_security_e2e_test)
 endif()
 
 if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
