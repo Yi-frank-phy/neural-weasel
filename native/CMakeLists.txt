@@ -33,6 +33,13 @@ target_compile_definitions(neural_weasel_pipe PRIVATE
 )
 target_link_libraries(neural_weasel_pipe PRIVATE advapi32)
 
+add_library(neural_weasel_context_ipc STATIC
+  context/context_ipc_protocol.cc
+)
+target_include_directories(neural_weasel_context_ipc
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 add_library(neural_weasel_tsf_context STATIC
   tsf/backend_fallback_state_machine.cc
   tsf/experimental_profile_plan.cc
@@ -147,6 +154,15 @@ target_include_directories(neural_weasel_bilingual_key_semantics
 
 if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   enable_testing()
+  add_executable(neural_weasel_context_ipc_protocol_test
+    context/context_ipc_protocol_test.cc
+  )
+  target_link_libraries(neural_weasel_context_ipc_protocol_test PRIVATE
+    neural_weasel_context_ipc
+  )
+  add_test(NAME neural_weasel_context_ipc_protocol_test
+           COMMAND neural_weasel_context_ipc_protocol_test)
+
   add_executable(neural_weasel_context_bridge_test
     context/context_update_bridge_test.cc
   )
