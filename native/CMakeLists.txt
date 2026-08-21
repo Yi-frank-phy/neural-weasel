@@ -101,6 +101,22 @@ if(NEURAL_WEASEL_BUILD_SESSION_ACTIVATOR)
   )
 endif()
 
+add_library(neural_weasel_source_context_identity STATIC
+  context/source_context_identity.cc
+)
+target_include_directories(neural_weasel_source_context_identity
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(neural_weasel_source_context_identity PRIVATE
+  UNICODE
+  _UNICODE
+  WINVER=0x0A00
+  _WIN32_WINNT=0x0A00
+  WIN32_LEAN_AND_MEAN
+  NOMINMAX
+)
+target_link_libraries(neural_weasel_source_context_identity PRIVATE bcrypt)
+
 add_library(neural_weasel_context_bridge STATIC
   context/context_update_bridge.cc
   rime/editor_context_epoch.cc
@@ -165,8 +181,8 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   add_executable(neural_weasel_source_context_identity_test
     context/source_context_identity_test.cc
   )
-  target_include_directories(neural_weasel_source_context_identity_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
+  target_link_libraries(neural_weasel_source_context_identity_test PRIVATE
+    neural_weasel_source_context_identity
   )
   add_test(NAME neural_weasel_source_context_identity_test
            COMMAND neural_weasel_source_context_identity_test)
