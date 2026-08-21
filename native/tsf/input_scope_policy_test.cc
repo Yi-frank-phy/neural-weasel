@@ -17,6 +17,22 @@ int main() {
     return 1;
   }
 
+  const InputScope credential_scopes[] = {
+      IS_NUMERIC_PASSWORD,
+      IS_NUMERIC_PIN,
+      IS_ALPHANUMERIC_PIN,
+      IS_ALPHANUMERIC_PIN_SET,
+  };
+  for (const InputScope credential_scope : credential_scopes) {
+    const auto credential = ClassifyInputScopes(&credential_scope, 1);
+    if (credential.state != InputScopeState::kPassword ||
+        credential.allow_prediction || credential.allow_persistence ||
+        credential.allow_capture) {
+      std::cerr << "credential scope was not denied\n";
+      return 1;
+    }
+  }
+
   const InputScope private_scope_value = IS_PRIVATE;
   const auto private_scope = ClassifyInputScopes(&private_scope_value, 1);
   if (private_scope.state != InputScopeState::kPrivate ||
