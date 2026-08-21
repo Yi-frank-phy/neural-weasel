@@ -162,6 +162,15 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   add_test(NAME neural_weasel_context_bridge_test
            COMMAND neural_weasel_context_bridge_test)
 
+  add_executable(neural_weasel_source_context_identity_test
+    context/source_context_identity_test.cc
+  )
+  target_include_directories(neural_weasel_source_context_identity_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME neural_weasel_source_context_identity_test
+           COMMAND neural_weasel_source_context_identity_test)
+
   add_executable(neural_weasel_fallback_state_machine_test
     tsf/backend_fallback_state_machine_test.cc
   )
