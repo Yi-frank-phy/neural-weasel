@@ -51,6 +51,21 @@ target_compile_definitions(neural_weasel_tsf_context PRIVATE
 )
 target_link_libraries(neural_weasel_tsf_context PRIVATE ole32 oleaut32 uuid)
 
+add_library(neural_weasel_capture_pipeline STATIC
+  context/capture_pipeline.cc
+  context/source_context_identity.cc
+)
+target_include_directories(neural_weasel_capture_pipeline
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(neural_weasel_capture_pipeline PRIVATE
+  UNICODE
+  _UNICODE
+  WIN32_LEAN_AND_MEAN
+  NOMINMAX
+)
+target_link_libraries(neural_weasel_capture_pipeline PUBLIC bcrypt)
+
 if(NEURAL_WEASEL_BUILD_PROFILE_TOOL)
   add_executable(NeuralWeaselProfileTool
     profile_tool/profile_tool.cpp
@@ -135,6 +150,7 @@ target_compile_definitions(neural_weasel_weasel_context_adapter PRIVATE
 )
 target_link_libraries(neural_weasel_weasel_context_adapter PUBLIC
   neural_weasel_context_bridge
+  neural_weasel_capture_pipeline
   neural_weasel_tsf_context
   ole32
 )
@@ -188,6 +204,7 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
     NOMINMAX
   )
   target_link_libraries(neural_weasel_input_scope_policy_test PRIVATE
+    neural_weasel_capture_pipeline
     neural_weasel_tsf_context
   )
   add_test(NAME neural_weasel_input_scope_policy_test
