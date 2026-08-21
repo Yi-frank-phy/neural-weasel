@@ -28,6 +28,16 @@ class SourceContextIdentity final {
   // making them live again.
   void EndFocus() noexcept;
 
+  // A document transition is a source-lifetime boundary. Old captures stay
+  // invalid until a new source lifetime is explicitly activated.
+  void OnDocumentChange() noexcept;
+
+  // Deactivation is also a hard invalidation boundary.
+  void Deactivate() noexcept;
+
+  // Reactivation always starts a fresh source lifetime and capability.
+  bool Reactivate() noexcept;
+
   bool IsCurrent(const SourceContextStamp& stamp) const noexcept;
 
   bool active() const noexcept { return active_; }
