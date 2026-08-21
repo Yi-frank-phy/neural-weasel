@@ -1,17 +1,37 @@
 #include "tsf/input_scope_policy.h"
 
 namespace neural_weasel::tsf {
+namespace {
 
-InputScopePolicyResult ClassifyInputScope(unsigned long input_scope) {
-  // TSF scope values are application-dependent. Unknown values intentionally
-  // fall back to NORMAL rather than blocking context capture.
-  if (input_scope == 0x00000001UL) {
-    return {InputScopeState::kPassword, false, false, false};
+constexpr InputScopePolicyResult kNormalPolicy{
+    InputScopeState::kNormal, true, true, true};
+constexpr InputScopePolicyResult kPrivatePolicy{
+    InputScopeState::kPrivate, true, false, true};
+constexpr InputScopePolicyResult kPasswordPolicy{
+    InputScopeState::kPassword, false, false, false};
+
+}  // namespace
+
+InputScopePolicyResult ClassifyInputScopes(const InputScope* input_scopes,
+                                           std::size_t input_scope_count) {
+  if (input_scopes == nullptr || input_scope_count == 0) {
+    return kNormalPolicy;
   }
-  if (input_scope == 0x00000002UL) {
-    return {InputScopeState::kPrivate, true, false, true};
+
+  bool saw_private = false;
+  for (std::size_t i = 0; i < input_scope_count; ++i) {
+    switch (input_scopes[i]) {
+      case IS_PASSWORD:
+        return kPasswordPolicy;
+      case IS_PRIVATE:
+        saw_private = true;
+        break;
+      default:
+        break;
+    }
   }
-  return {InputScopeState::kNormal, true, true, true};
+
+  return saw_private ? kPrivatePolicy : kNormalPolicy;
 }
 
 }  // namespace neural_weasel::tsf
