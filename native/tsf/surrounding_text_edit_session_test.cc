@@ -3,6 +3,8 @@
 #include <cassert>
 #include <string>
 
+// RED contract: production must sanitize UTF-16 text returned at a bounded
+// TSF range edge without changing ordinary text or complete surrogate pairs.
 namespace neural_weasel::tsf::detail {
 void TrimUnpairedUtf16Edges(std::wstring* text) noexcept;
 }
