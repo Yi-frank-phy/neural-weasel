@@ -76,9 +76,7 @@ def test_normal_editor_capture_metadata_ipc_server_path() -> None:
     assert after not in serialized
     forbidden_key_fragments = ("sha", "hash", "digest", "fingerprint")
     assert not any(
-        fragment in str(key).casefold()
-        for key in metadata
-        for fragment in forbidden_key_fragments
+        fragment in str(key).casefold() for key in metadata for fragment in forbidden_key_fragments
     )
 
 

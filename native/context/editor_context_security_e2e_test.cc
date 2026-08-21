@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <string>
+#include <utility>
 
 using neural_weasel::context::ContextFrame;
 using neural_weasel::context::ContextFrameReceiver;
