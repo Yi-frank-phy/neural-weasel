@@ -194,6 +194,8 @@ class NamedPipeServer:
         self._client_threads: set[threading.Thread] = set()
         self._client_threads_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._context_forward_lock = threading.Lock()
+        self._latest_client_context_epoch = 0
         self._requested_context_epoch = 0
         self._last_context_error: str | None = None
 
@@ -374,12 +376,30 @@ class NamedPipeServer:
         if not isinstance(before, str) or not isinstance(after, str):
             raise ProtocolError("before and after must be strings")
 
-        assigned_epoch = self.engine.request_context_update(before, after)
-        if isinstance(assigned_epoch, bool) or not isinstance(assigned_epoch, int):
-            raise RuntimeError("engine returned an invalid context epoch")
-        with self._state_lock:
-            self._requested_context_epoch = assigned_epoch
-            self._last_context_error = None
+        # Multiple pipe clients may race. Serialize only the cheap forwarding
+        # decision so an already superseded client revision never enters the
+        # model coordinator. request_context_update itself is asynchronous.
+        with self._context_forward_lock:
+            if epoch <= self._latest_client_context_epoch:
+                with self._state_lock:
+                    requested_epoch = self._requested_context_epoch
+                return {
+                    "type": "context_update",
+                    "ok": True,
+                    "accepted": False,
+                    "stale": True,
+                    "context_epoch": requested_epoch,
+                    "client_context_epoch": epoch,
+                }
+
+            assigned_epoch = self.engine.request_context_update(before, after)
+            if isinstance(assigned_epoch, bool) or not isinstance(assigned_epoch, int):
+                raise RuntimeError("engine returned an invalid context epoch")
+            self._latest_client_context_epoch = epoch
+            with self._state_lock:
+                self._requested_context_epoch = assigned_epoch
+                self._last_context_error = None
+
         return {
             "type": "context_update",
             "ok": True,
