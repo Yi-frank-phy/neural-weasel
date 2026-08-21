@@ -37,6 +37,7 @@ add_library(neural_weasel_tsf_context STATIC
   tsf/backend_fallback_state_machine.cc
   tsf/experimental_profile_plan.cc
   tsf/input_processor_profiles.cc
+  tsf/input_scope_policy.cc
   tsf/surrounding_text_edit_session.cc
 )
 target_include_directories(neural_weasel_tsf_context
@@ -176,6 +177,21 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   )
   add_test(NAME neural_weasel_fallback_state_machine_test
            COMMAND neural_weasel_fallback_state_machine_test)
+
+  add_executable(neural_weasel_input_scope_policy_test
+    tsf/input_scope_policy_test.cc
+  )
+  target_compile_definitions(neural_weasel_input_scope_policy_test PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+  )
+  target_link_libraries(neural_weasel_input_scope_policy_test PRIVATE
+    neural_weasel_tsf_context
+  )
+  add_test(NAME neural_weasel_input_scope_policy_test
+           COMMAND neural_weasel_input_scope_policy_test)
 
   add_executable(neural_weasel_bilingual_key_semantics_test
     rime/bilingual_key_semantics_test.cc
