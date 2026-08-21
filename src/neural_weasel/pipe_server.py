@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
 from .protocol import MAX_MESSAGE_BYTES, ProtocolError, decode_message, encode_message
@@ -13,7 +15,16 @@ PIPE_PREFIX = r"\\.\pipe\NeuralWeasel-v1-"
 MAX_PINYIN_KEYS = 512
 MAX_CANDIDATES = 50
 MAX_COMMIT_TEXT = 32_768
+MAX_CONTEXT_BINDINGS = 8
 IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9._:-]+")
+CONTEXT_SESSION_PATTERN = re.compile(r"[0-9a-f]{32}")
+
+
+@dataclass(frozen=True, slots=True)
+class ContextBinding:
+    context_session: str
+    source_revision: int
+    security_label: str
 
 
 class PipeUnavailableError(RuntimeError):
@@ -115,7 +126,6 @@ def _write_message(handle: Any, message: dict[str, Any]) -> None:
     while written < len(frame):
         _, count = win32file.WriteFile(handle, frame[written:])
         if not isinstance(count, int):
-            # pywin32 returns the written bytes for synchronous pipe handles.
             count = len(count)
         if count <= 0:
             raise EOFError("named-pipe peer disconnected")
@@ -160,6 +170,37 @@ def _optional_identifier(message: dict[str, Any], key: str) -> str | None:
     return value
 
 
+def _require_context_session(message: dict[str, Any]) -> str:
+    value = message.get("context_session")
+    if not isinstance(value, str) or CONTEXT_SESSION_PATTERN.fullmatch(value) is None:
+        raise ProtocolError("context_session must be exactly 32 lowercase hex characters")
+    return value
+
+
+def _optional_update_binding(message: dict[str, Any]) -> ContextBinding | None:
+    keys = ("context_session", "source_revision", "security_label")
+    if not any(key in message for key in keys):
+        return None
+    if not all(key in message for key in keys):
+        raise ProtocolError("context binding fields must be supplied together")
+    context_session = _require_context_session(message)
+    source_revision = _require_int(message, "source_revision", 1)
+    security_label = message.get("security_label")
+    if security_label not in {"normal", "private"}:
+        raise ProtocolError("security_label must be normal or private")
+    return ContextBinding(context_session, source_revision, security_label)
+
+
+def _optional_query_identity(message: dict[str, Any]) -> tuple[str, int] | None:
+    has_session = "context_session" in message
+    has_revision = "source_revision" in message
+    if not has_session and not has_revision:
+        return None
+    if not has_session or not has_revision:
+        raise ProtocolError("query context identity fields must be supplied together")
+    return _require_context_session(message), _require_int(message, "source_revision", 1)
+
+
 def _require_bool(message: dict[str, Any], key: str) -> bool:
     value = message.get(key)
     if not isinstance(value, bool):
@@ -169,7 +210,6 @@ def _require_bool(message: dict[str, Any], key: str) -> bool:
 
 def _reject_unknown_fields(message: dict[str, Any], allowed: frozenset[str]) -> None:
     if not message.keys() <= allowed:
-        # Do not include caller-controlled field names: they may themselves contain private text.
         raise ProtocolError("message contains unsupported fields")
 
 
@@ -194,8 +234,11 @@ class NamedPipeServer:
         self._client_threads: set[threading.Thread] = set()
         self._client_threads_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._context_forward_lock = threading.Lock()
+        self._latest_client_context_epoch = 0
         self._requested_context_epoch = 0
         self._last_context_error: str | None = None
+        self._context_bindings: OrderedDict[int, ContextBinding] = OrderedDict()
 
     def start(self, timeout: float = 5.0) -> None:
         if self._server_thread and self._server_thread.is_alive():
@@ -218,8 +261,6 @@ class NamedPipeServer:
         while not self._stop_event.is_set():
             open_mode = win32pipe.PIPE_ACCESS_DUPLEX
             if first_instance:
-                # Refuse to start behind a pre-created permissive pipe with the
-                # same predictable SID-derived name.
                 open_mode |= win32pipe.FILE_FLAG_FIRST_PIPE_INSTANCE
             try:
                 handle = win32pipe.CreateNamedPipe(
@@ -236,9 +277,7 @@ class NamedPipeServer:
                     security_attributes,
                 )
             except pywintypes.error as error:
-                if not first_instance and error.winerror == 231:  # ERROR_PIPE_BUSY
-                    # All persistent instances are occupied. There is no
-                    # capacity for another listener until one disconnects.
+                if not first_instance and error.winerror == 231:
                     self._stop_event.wait(0.005)
                     continue
                 raise
@@ -248,12 +287,9 @@ class NamedPipeServer:
                 try:
                     win32pipe.ConnectNamedPipe(handle, None)
                 except pywintypes.error as error:
-                    if error.winerror == 535:  # ERROR_PIPE_CONNECTED
+                    if error.winerror == 535:
                         pass
-                    elif error.winerror == 232:  # ERROR_NO_DATA
-                        # A client can connect and close between CreateNamedPipe
-                        # and ConnectNamedPipe. The instance is no longer
-                        # reusable, but the listener itself must stay alive.
+                    elif error.winerror == 232:
                         win32file.CloseHandle(handle)
                         if self._stop_event.is_set():
                             break
@@ -345,7 +381,6 @@ class NamedPipeServer:
         except ProtocolError as error:
             return _error("invalid_request", str(error), request_id=request_id)
         except Exception:
-            # Never include exception text: model errors can contain prompt fragments.
             return _error(
                 "internal_error",
                 "request processing failed",
@@ -367,19 +402,74 @@ class NamedPipeServer:
                 "last_context_error": self._last_context_error,
             }
 
+    def _remember_binding(self, epoch: int, binding: ContextBinding | None) -> None:
+        if binding is None:
+            return
+        with self._state_lock:
+            self._context_bindings[epoch] = binding
+            self._context_bindings.move_to_end(epoch)
+            while len(self._context_bindings) > MAX_CONTEXT_BINDINGS:
+                self._context_bindings.popitem(last=False)
+
+    def _binding_error(
+        self,
+        message: dict[str, Any],
+        requested_epoch: int,
+    ) -> dict[str, Any] | None:
+        identity = _optional_query_identity(message)
+        if identity is None:
+            return None
+        if requested_epoch == 0:
+            return _error(
+                "context_session_mismatch",
+                "context identity requires a nonzero model epoch",
+                request_id=message.get("request_id"),
+            )
+        context_session, source_revision = identity
+        with self._state_lock:
+            binding = self._context_bindings.get(requested_epoch)
+        if (
+            binding is None
+            or binding.context_session != context_session
+            or binding.source_revision != source_revision
+        ):
+            return _error(
+                "context_session_mismatch",
+                "requested editor context identity does not match model epoch",
+                request_id=message.get("request_id"),
+            )
+        return None
+
     def _handle_context_update(self, message: dict[str, Any]) -> dict[str, Any]:
         epoch = _require_int(message, "context_epoch", 1)
+        binding = _optional_update_binding(message)
         before = message.get("before")
         after = message.get("after", "")
         if not isinstance(before, str) or not isinstance(after, str):
             raise ProtocolError("before and after must be strings")
 
-        assigned_epoch = self.engine.request_context_update(before, after)
-        if isinstance(assigned_epoch, bool) or not isinstance(assigned_epoch, int):
-            raise RuntimeError("engine returned an invalid context epoch")
-        with self._state_lock:
-            self._requested_context_epoch = assigned_epoch
-            self._last_context_error = None
+        with self._context_forward_lock:
+            if epoch <= self._latest_client_context_epoch:
+                with self._state_lock:
+                    requested_epoch = self._requested_context_epoch
+                return {
+                    "type": "context_update",
+                    "ok": True,
+                    "accepted": False,
+                    "stale": True,
+                    "context_epoch": requested_epoch,
+                    "client_context_epoch": epoch,
+                }
+
+            assigned_epoch = self.engine.request_context_update(before, after)
+            if isinstance(assigned_epoch, bool) or not isinstance(assigned_epoch, int):
+                raise RuntimeError("engine returned an invalid context epoch")
+            self._latest_client_context_epoch = epoch
+            with self._state_lock:
+                self._requested_context_epoch = assigned_epoch
+                self._last_context_error = None
+            self._remember_binding(assigned_epoch, binding)
+
         return {
             "type": "context_update",
             "ok": True,
@@ -387,6 +477,36 @@ class NamedPipeServer:
             "context_epoch": assigned_epoch,
             "client_context_epoch": epoch,
         }
+
+    def _resolve_requested_epoch(
+        self,
+        message: dict[str, Any],
+        requested_epoch: int,
+    ) -> tuple[int, dict[str, Any] | None]:
+        binding_error = self._binding_error(message, requested_epoch)
+        if binding_error is not None:
+            return requested_epoch, binding_error
+
+        latest_epoch = int(self.engine.context_epoch)
+        if requested_epoch == 0:
+            return latest_epoch, None
+        if requested_epoch > latest_epoch:
+            return requested_epoch, _error(
+                "context_not_ready",
+                "requested model context snapshot is not ready",
+                request_id=message.get("request_id"),
+                retryable=True,
+            )
+        if requested_epoch < latest_epoch:
+            has_snapshot = getattr(self.engine, "has_snapshot", None)
+            if callable(has_snapshot) and not has_snapshot(requested_epoch):
+                return requested_epoch, _error(
+                    "context_expired",
+                    "requested model context snapshot has expired",
+                    request_id=message.get("request_id"),
+                    retryable=False,
+                )
+        return requested_epoch, None
 
     def _handle_query_pinyin(self, message: dict[str, Any]) -> dict[str, Any]:
         session_id = _optional_identifier(message, "session_id")
@@ -404,25 +524,10 @@ class NamedPipeServer:
         if limit > MAX_CANDIDATES:
             raise ProtocolError(f"candidate_count must not exceed {MAX_CANDIDATES}")
 
+        requested_epoch, error = self._resolve_requested_epoch(message, requested_epoch)
+        if error is not None:
+            return error
         latest_epoch = int(self.engine.context_epoch)
-        if requested_epoch == 0:
-            requested_epoch = latest_epoch
-        elif requested_epoch > latest_epoch:
-            return _error(
-                "context_not_ready",
-                "requested model context snapshot is not ready",
-                request_id=message.get("request_id"),
-                retryable=True,
-            )
-        elif requested_epoch < latest_epoch:
-            has_snapshot = getattr(self.engine, "has_snapshot", None)
-            if callable(has_snapshot) and not has_snapshot(requested_epoch):
-                return _error(
-                    "context_expired",
-                    "requested model context snapshot has expired",
-                    request_id=message.get("request_id"),
-                    retryable=False,
-                )
 
         candidates = []
         for candidate in self.engine.query(raw_pinyin, limit, context_epoch=requested_epoch):
@@ -435,9 +540,6 @@ class NamedPipeServer:
             "session_id": session_id,
             "revision": revision,
             "context_epoch": requested_epoch,
-            # An empty result for an older epoch is ambiguous without an engine
-            # snapshot-membership API. Never claim it is current; callers should
-            # retry against the latest epoch.
             "stale": not candidates and requested_epoch < latest_epoch,
             "candidates": candidates,
         }
@@ -457,25 +559,10 @@ class NamedPipeServer:
         if limit > MAX_CANDIDATES:
             raise ProtocolError(f"candidate_count must not exceed {MAX_CANDIDATES}")
 
+        requested_epoch, error = self._resolve_requested_epoch(message, requested_epoch)
+        if error is not None:
+            return error
         latest_epoch = int(self.engine.context_epoch)
-        if requested_epoch == 0:
-            requested_epoch = latest_epoch
-        elif requested_epoch > latest_epoch:
-            return _error(
-                "context_not_ready",
-                "requested model context snapshot is not ready",
-                request_id=message.get("request_id"),
-                retryable=True,
-            )
-        elif requested_epoch < latest_epoch:
-            has_snapshot = getattr(self.engine, "has_snapshot", None)
-            if callable(has_snapshot) and not has_snapshot(requested_epoch):
-                return _error(
-                    "context_expired",
-                    "requested model context snapshot has expired",
-                    request_id=message.get("request_id"),
-                    retryable=False,
-                )
 
         values = []
         for candidate in self.engine.query(raw_keys, limit, context_epoch=requested_epoch):
@@ -547,6 +634,8 @@ class NamedPipeServer:
 
         if secure:
             cleanup_failed = False
+            with self._state_lock:
+                self._context_bindings.clear()
             for method_name in ("reset_private_context", "clear_history"):
                 method = getattr(self.engine, method_name, None)
                 if callable(method):
@@ -575,8 +664,6 @@ class NamedPipeServer:
             raise ProtocolError("session_id is required")
         revision = _require_int(message, "revision", 0)
 
-        # This is deliberately only a protocol acknowledgement. System-profile
-        # switching belongs to the native TSF integration, never the model service.
         return {
             "type": "fatal",
             "ok": True,

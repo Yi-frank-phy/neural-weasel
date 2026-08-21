@@ -141,9 +141,13 @@ def test_pinned_overlay_rewrites_all_official_runtime_identities() -> None:
     assert "NeuralWeaselServer.exe" in overlay
     assert "Software\\\\NeuralWeasel\\\\Experimental" in overlay
     assert "NeuralWeaselExperimentalTSF.dll" in overlay
-    assert "CaptureWeaselContext" not in overlay
+    assert "CaptureWeaselContext" in overlay
     assert "crash-contained" in overlay
     assert "rime_require_module_ai_translator" in overlay
+
+    tsf_block = overlay[overlay.index("$TsfXmake") : overlay.index("$ServerXmake")]
+    assert "native/context/context_update_bridge.cc" not in tsf_block
+    assert "native/pipe/named_pipe_client.cc" not in tsf_block
 
 
 def test_ci_runs_disposable_install_safety_suite_without_global_registration() -> None:
