@@ -57,24 +57,32 @@ def test_session_activator_is_current_session_only_and_never_enables_profile() -
     assert "IsExpectedIdentity" in activator
 
 
-def test_safe_tsf_shell_contains_no_neural_runtime_or_context_capture() -> None:
+def test_safe_tsf_shell_contains_only_crash_contained_context_capture() -> None:
     overlay = _read("scripts/prepare-weasel-overlay.ps1")
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")
     tsf_block = overlay[tsf_start:server_start]
 
+    required = (
+        "native/tsf/input_scope_policy.cc",
+        "native/tsf/surrounding_text_edit_session.cc",
+        "native/tsf/context_capture_client.cc",
+        "native/tsf/weasel_context_adapter.cc",
+        "CaptureWeaselContext",
+        "ClearWeaselContext",
+        "$TextEditSource",
+        "$WeaselTsfSource",
+    )
+    for marker in required:
+        assert marker in tsf_block
+
     forbidden = (
         "native/pipe/named_pipe_client.cc",
         "native/context/context_update_bridge.cc",
         "native/rime/editor_context_epoch.cc",
-        "native/tsf/surrounding_text_edit_session.cc",
-        "native/tsf/weasel_context_adapter.cc",
-        "CaptureWeaselContext",
-        "ClearWeaselContext",
+        "native/rime/ai_translator.cc",
         "StartWeaselContext",
         "StopWeaselContext",
-        "$TextEditSink",
-        "$WeaselTsfSource",
     )
     for marker in forbidden:
         assert marker not in tsf_block
