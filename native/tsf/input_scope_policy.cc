@@ -22,6 +22,10 @@ InputScopePolicyResult ClassifyInputScopes(const InputScope* input_scopes,
   for (std::size_t i = 0; i < input_scope_count; ++i) {
     switch (input_scopes[i]) {
       case IS_PASSWORD:
+      case IS_NUMERIC_PASSWORD:
+      case IS_NUMERIC_PIN:
+      case IS_ALPHANUMERIC_PIN:
+      case IS_ALPHANUMERIC_PIN_SET:
         return kPasswordPolicy;
       case IS_PRIVATE:
         saw_private = true;
