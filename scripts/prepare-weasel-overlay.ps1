@@ -106,10 +106,25 @@ Copy-Item -LiteralPath (
     Join-Path $ResolvedWeaselRoot 'WeaselTSF/NeuralWeaselIdentity.cpp'
 ) -Force
 
-# Crash-containment boundary: keep the in-process TSF shell as close to pinned
-# upstream Weasel as possible. Neural candidate generation, model IPC, and
-# surrounding-context code must never be linked into this DLL.
+# Crash-containment boundary: the editor-hosted DLL gets only bounded TSF
+# capture/classification, source identity, the binary frame codec, and the
+# authenticated one-way sender. Model IPC, JSON, workers, and backend lifecycle
+# stay out of the TSF process and live in NeuralWeaselServer.exe or later.
 $TsfXmake = Join-Path $ResolvedWeaselRoot 'WeaselTSF/xmake.lua'
+Replace-Literal -Path $TsfXmake -Old '  add_files("./*.cpp", "WeaselTSF.def")' -New @'
+  add_files("./*.cpp", "WeaselTSF.def")
+  local neural_root = os.getenv("NEURAL_WEASEL_ROOT")
+  add_files(
+    neural_root .. "/native/tsf/input_scope_policy.cc",
+    neural_root .. "/native/tsf/surrounding_text_edit_session.cc",
+    neural_root .. "/native/tsf/context_capture_client.cc",
+    neural_root .. "/native/tsf/weasel_context_adapter.cc",
+    neural_root .. "/native/context/context_ipc_protocol.cc",
+    neural_root .. "/native/context/source_context_identity.cc"
+  )
+  add_includedirs(neural_root .. "/native")
+  add_syslinks("advapi32", "bcrypt")
+'@
 Replace-Literal -Path $TsfXmake -Old 'set_filename(fname)' `
     -New 'set_basename("NeuralWeaselExperimentalTSF")'
 Replace-Literal -Path $TsfXmake -Old (
@@ -128,6 +143,75 @@ local pdb = path.join(target:targetdir(), "NeuralWeaselExperimentalTSF.pdb")
 Replace-Literal -Path $TsfXmake `
     -Old '  add_shflags("/DEBUG /OPT:REF /OPT:ICF")' `
     -New '  add_shflags("/DEBUG /OPT:REF /OPT:ICF /LTCG")'
+
+$WeaselTsfSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.cpp'
+Replace-Literal -Path $WeaselTsfSource -Old '#include "WeaselTSF.h"' -New @'
+#include "WeaselTSF.h"
+#include "tsf/weasel_context_adapter.h"
+'@
+Replace-Literal -Path $WeaselTsfSource -Old @'
+STDAPI WeaselTSF::Deactivate() {
+  m_client.EndSession();
+'@ -New @'
+STDAPI WeaselTSF::Deactivate() {
+  neural_weasel::tsf::ClearWeaselContext();
+  m_client.EndSession();
+'@
+Replace-Literal -Path $WeaselTsfSource -Old @'
+STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
+  std::wstring _ToggleImeOnOpenClose{};
+'@ -New @'
+STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
+  neural_weasel::tsf::BeginWeaselContextFocus();
+  std::wstring _ToggleImeOnOpenClose{};
+'@
+Replace-Literal -Path $WeaselTsfSource -Old @'
+STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
+  _AbortComposition();
+'@ -New @'
+STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
+  neural_weasel::tsf::ClearWeaselContext();
+  _AbortComposition();
+'@
+
+$ThreadMgrSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/ThreadMgrEventSink.cpp'
+Replace-Literal -Path $ThreadMgrSource -Old '#include "WeaselTSF.h"' -New @'
+#include "WeaselTSF.h"
+#include "tsf/weasel_context_adapter.h"
+'@
+Replace-Literal -Path $ThreadMgrSource -Old @'
+STDAPI WeaselTSF::OnSetFocus(ITfDocumentMgr* pDocMgrFocus,
+                             ITfDocumentMgr* pDocMgrPrevFocus) {
+  _InitTextEditSink(pDocMgrFocus);
+'@ -New @'
+STDAPI WeaselTSF::OnSetFocus(ITfDocumentMgr* pDocMgrFocus,
+                             ITfDocumentMgr* pDocMgrPrevFocus) {
+  if (pDocMgrFocus != pDocMgrPrevFocus) {
+    neural_weasel::tsf::ClearWeaselContext();
+    if (pDocMgrFocus != nullptr) {
+      neural_weasel::tsf::BeginWeaselContextFocus();
+    }
+  }
+  _InitTextEditSink(pDocMgrFocus);
+'@
+
+$TextEditSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/TextEditSink.cpp'
+Replace-Literal -Path $TextEditSource -Old '#include "WeaselTSF.h"' -New @'
+#include "WeaselTSF.h"
+#include "tsf/weasel_context_adapter.h"
+'@
+Replace-Literal -Path $TextEditSource -Old @'
+    pEnumTextChanges->Release();
+  }
+  return S_OK;
+}
+'@ -New @'
+    pEnumTextChanges->Release();
+  }
+  neural_weasel::tsf::CaptureWeaselContext(pContext, _tfClientId);
+  return S_OK;
+}
+'@
 
 $LanguageBarSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/LanguageBar.cpp'
 Replace-RegexOnce -Path $LanguageBarSource `
@@ -148,6 +232,40 @@ $ServerXmake = Join-Path $ResolvedWeaselRoot 'WeaselServer/xmake.lua'
 Replace-Literal -Path $ServerXmake -Old '  set_kind("binary")' -New @'
   set_kind("binary")
   set_filename("__NEURAL_WEASEL_SERVER_EXE__")
+'@
+Replace-Literal -Path $ServerXmake -Old '  add_files("./*.cpp")' -New @'
+  add_files("./*.cpp")
+  local neural_root = os.getenv("NEURAL_WEASEL_ROOT")
+  add_files(
+    neural_root .. "/native/context/context_capture_broker.cc",
+    neural_root .. "/native/context/context_ipc_protocol.cc",
+    neural_root .. "/native/context/context_update_bridge.cc",
+    neural_root .. "/native/pipe/named_pipe_client.cc"
+  )
+  add_includedirs(neural_root .. "/native")
+  add_syslinks("advapi32")
+'@
+
+$ServerSource = Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServer.cpp'
+Replace-Literal -Path $ServerSource -Old '#include "WeaselService.h"' -New @'
+#include "WeaselService.h"
+#include "context/context_capture_broker.h"
+'@
+Replace-Literal -Path $ServerSource -Old @'
+  try {
+    WeaselServerApp app;
+    RegisterApplicationRestart(NULL, 0);
+    nRet = app.Run();
+  } catch (...) {
+'@ -New @'
+  try {
+    WeaselServerApp app;
+    neural_weasel::context::ContextCaptureBroker context_broker;
+    context_broker.Start();
+    RegisterApplicationRestart(NULL, 0);
+    nRet = app.Run();
+    context_broker.Stop();
+  } catch (...) {
 '@
 
 $RimeXmake = Join-Path $ResolvedWeaselRoot 'RimeWithWeasel/xmake.lua'

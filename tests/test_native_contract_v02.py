@@ -82,22 +82,30 @@ def test_plugin_build_generates_librime_build_config_header() -> None:
     assert "${RIME_ROOT}/include" in cmake
 
 
-def test_safe_tsf_shell_contains_no_neural_context_or_model_runtime() -> None:
-    """The in-process TSF shell must not carry our model or context bridge."""
+def test_safe_tsf_shell_contains_capture_but_no_backend_runtime() -> None:
+    """The TSF may capture/send bounded context but never own backend work."""
     overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")
     tsf_block = overlay[tsf_start:server_start]
 
     for marker in (
+        "native/tsf/input_scope_policy.cc",
+        "native/tsf/surrounding_text_edit_session.cc",
+        "native/tsf/context_capture_client.cc",
+        "native/tsf/weasel_context_adapter.cc",
         "CaptureWeaselContext",
         "ClearWeaselContext",
+    ):
+        assert marker in tsf_block
+
+    for marker in (
         "StartWeaselContext",
         "StopWeaselContext",
         "native/pipe/named_pipe_client.cc",
         "native/context/context_update_bridge.cc",
-        "native/tsf/weasel_context_adapter.cc",
-        "native/tsf/surrounding_text_edit_session.cc",
+        "native/rime/editor_context_epoch.cc",
+        "native/rime/ai_translator.cc",
     ):
         assert marker not in tsf_block
 

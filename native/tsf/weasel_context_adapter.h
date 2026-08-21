@@ -5,14 +5,14 @@
 
 namespace neural_weasel::tsf {
 
-void StartWeaselContext();
-void StopWeaselContext() noexcept;
+// Focus hooks rotate a fresh 128-bit source capability. No worker/backend
+// lifecycle is owned by the editor-hosted TSF DLL.
+void BeginWeaselContextFocus() noexcept;
 
-// Called from the pinned Weasel 0.17.4 text-edit sink. It only schedules a
-// read-only TSF edit session; model-service pipe work runs on the bridge worker.
-HRESULT CaptureWeaselContext(ITfContext* context, TfClientId client_id);
+// Schedules a bounded read-only edit session and best-effort one-way push.
+HRESULT CaptureWeaselContext(ITfContext* context, TfClientId client_id) noexcept;
 
-// Sends a text-free secure-focus cleanup after focus leaves the editor.
+// Invalidates the current source and queues a text-free clear frame.
 void ClearWeaselContext() noexcept;
 
 }  // namespace neural_weasel::tsf
