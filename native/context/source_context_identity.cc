@@ -38,6 +38,18 @@ void SourceContextIdentity::EndFocus() noexcept {
   active_ = false;
 }
 
+void SourceContextIdentity::OnDocumentChange() noexcept {
+  EndFocus();
+}
+
+void SourceContextIdentity::Deactivate() noexcept {
+  EndFocus();
+}
+
+bool SourceContextIdentity::Reactivate() noexcept {
+  return BeginFocus();
+}
+
 bool SourceContextIdentity::IsCurrent(
     const SourceContextStamp& stamp) const noexcept {
   return active_ && stamp.revision == revision_ &&
