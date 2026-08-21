@@ -9,10 +9,14 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
+#include "context/capture_pipeline.h"
 #include "context/context_update_bridge.h"
+#include "context/source_context_identity.h"
+#include "tsf/input_scope_policy.h"
 #include "tsf/surrounding_text_edit_session.h"
 
 namespace neural_weasel::tsf {
@@ -79,10 +83,17 @@ bool IsInputDesktop() {
   return valid && _wcsicmp(input_name, thread_name) == 0;
 }
 
-CapturePolicyDecision ClassifyInputScope(ITfContext* context,
-                                         TfEditCookie edit_cookie) {
-  if (context == nullptr || IsBlacklistedProcess() || !IsInputDesktop()) {
-    return {false, CaptureDenyReason::kSecureDesktop};
+InputScopePolicyResult ReadInputScopePolicy(
+    ITfContext* context, TfEditCookie edit_cookie) noexcept {
+  const InputScopePolicyResult normal = ClassifyInputScopes(nullptr, 0);
+  if (context == nullptr) {
+    return normal;
+  }
+
+  ITfReadOnlyProperty* property = nullptr;
+  if (FAILED(context->GetAppProperty(kInputScopePropertyGuid, &property)) ||
+      property == nullptr) {
+    return normal;
   }
 
   TF_SELECTION selection{};
@@ -90,21 +101,19 @@ CapturePolicyDecision ClassifyInputScope(ITfContext* context,
   if (FAILED(context->GetSelection(
           edit_cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched)) ||
       fetched != 1 || selection.range == nullptr) {
-    return {false, CaptureDenyReason::kPolicyUnavailable};
+    SafeRelease(selection.range);
+    SafeRelease(property);
+    return normal;
   }
 
-  ITfProperty* property = nullptr;
   VARIANT value;
   VariantInit(&value);
-  const HRESULT property_result =
-      context->GetProperty(kInputScopePropertyGuid, &property);
-  HRESULT value_result = E_FAIL;
-  if (SUCCEEDED(property_result) && property != nullptr) {
-    value_result = property->GetValue(edit_cookie, selection.range, &value);
-  }
+  const HRESULT value_result =
+      property->GetValue(edit_cookie, selection.range, &value);
+  SafeRelease(selection.range);
+  SafeRelease(property);
 
-  bool positively_classified = false;
-  bool sensitive = false;
+  InputScopePolicyResult policy = normal;
   if (SUCCEEDED(value_result) && value.vt == VT_UNKNOWN &&
       value.punkVal != nullptr) {
     ITfInputScope* input_scope = nullptr;
@@ -114,39 +123,21 @@ CapturePolicyDecision ClassifyInputScope(ITfContext* context,
         input_scope != nullptr) {
       InputScope* scopes = nullptr;
       UINT count = 0;
-      if (SUCCEEDED(input_scope->GetInputScopes(&scopes, &count)) &&
-          scopes != nullptr && count > 0) {
-        positively_classified = true;
-        for (UINT index = 0; index < count; ++index) {
-          sensitive =
-              sensitive || scopes[index] == IS_PASSWORD ||
-              scopes[index] == IS_PRIVATE ||
-              scopes[index] == IS_NUMERIC_PASSWORD ||
-              scopes[index] == IS_NUMERIC_PIN ||
-              scopes[index] == IS_ALPHANUMERIC_PIN ||
-              scopes[index] == IS_ALPHANUMERIC_PIN_SET;
-        }
+      if (SUCCEEDED(input_scope->GetInputScopes(&scopes, &count))) {
+        policy = ClassifyInputScopes(scopes, count);
       }
       CoTaskMemFree(scopes);
       input_scope->Release();
     }
   }
-
   VariantClear(&value);
-  SafeRelease(property);
-  SafeRelease(selection.range);
-  if (sensitive) {
-    return {false, CaptureDenyReason::kSensitiveInputScope};
-  }
-  if (!positively_classified) {
-    return {false, CaptureDenyReason::kPolicyUnavailable};
-  }
-  return {true, CaptureDenyReason::kNone};
+  return policy;
 }
 
 struct BridgeState {
   std::mutex mutex;
   std::unique_ptr<context::ContextUpdateBridge> bridge;
+  context::SourceContextIdentity identity;
 };
 
 BridgeState& State() {
@@ -154,15 +145,6 @@ BridgeState& State() {
   // worker is always stopped from WeaselTSF::Deactivate before DLL unload.
   static auto* state = new BridgeState;
   return *state;
-}
-
-void Submit(SurroundingTextSnapshot snapshot,
-            context::ContextUpdateMetadata metadata) {
-  auto& state = State();
-  std::lock_guard lock(state.mutex);
-  if (state.bridge != nullptr) {
-    state.bridge->Submit(std::move(snapshot), std::move(metadata));
-  }
 }
 
 context::ContextUpdateMetadata Metadata(bool secure) {
@@ -173,6 +155,15 @@ context::ContextUpdateMetadata Metadata(bool secure) {
   metadata.secure = secure;
   metadata.partial = true;
   return metadata;
+}
+
+void SubmitCleanupLocked(BridgeState& state) {
+  if (state.bridge == nullptr) {
+    return;
+  }
+  SurroundingTextSnapshot snapshot;
+  snapshot.result = E_ACCESSDENIED;
+  state.bridge->Submit(std::move(snapshot), Metadata(true));
 }
 
 class ContextCaptureSession final : public ITfEditSession {
@@ -213,12 +204,55 @@ class ContextCaptureSession final : public ITfEditSession {
 
   HRESULT STDMETHODCALLTYPE DoEditSession(
       TfEditCookie edit_cookie) override {
-    const CapturePolicyDecision policy =
-        ClassifyInputScope(context_, edit_cookie);
-    const SurroundingTextSnapshot snapshot = CaptureSurroundingText(
-        context_, edit_cookie, {8192, 4096}, policy);
-    Submit(snapshot, Metadata(!policy.allowed));
-    return snapshot.result;
+    const InputScopePolicyResult policy =
+        ReadInputScopePolicy(context_, edit_cookie);
+
+    // Explicit protected scopes are a hard deny before any surrounding-text
+    // read. The text-free cleanup also invalidates the prior source lifetime.
+    if (policy.state == InputScopeState::kPassword || !policy.allow_capture ||
+        IsBlacklistedProcess() || !IsInputDesktop()) {
+      auto& state = State();
+      std::lock_guard lock(state.mutex);
+      state.identity.EndFocus();
+      SubmitCleanupLocked(state);
+      return S_OK;
+    }
+
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    if (state.bridge == nullptr) {
+      return S_OK;
+    }
+    if (!state.identity.active() && !state.identity.BeginFocus()) {
+      return S_OK;
+    }
+
+    auto captured = context::CaptureWithPolicy(
+        policy, state.identity, [&]() {
+          return CaptureSurroundingText(
+              context_, edit_cookie, {8192, 4096},
+              {true, CaptureDenyReason::kNone});
+        });
+    if (!captured) {
+      return S_OK;
+    }
+
+    const context::SourceContextStamp stamp{
+        captured->metadata.source_capability,
+        captured->metadata.revision,
+    };
+    if (!state.identity.IsCurrent(stamp)) {
+      return S_OK;
+    }
+
+    // PRIVATE is prediction-only. The current bridge has no persistence sink;
+    // keep raw text solely in the ephemeral snapshot and never copy it into
+    // capture metadata.
+    context::ContextUpdateMetadata metadata = Metadata(false);
+    metadata.partial = captured->snapshot.partial;
+    const HRESULT capture_result = captured->snapshot.result;
+    state.bridge->Submit(std::move(captured->snapshot), std::move(metadata));
+    return capture_result;
   }
 
  private:
@@ -244,6 +278,7 @@ void StopWeaselContext() noexcept {
   {
     auto& state = State();
     std::lock_guard lock(state.mutex);
+    state.identity.EndFocus();
     bridge = std::move(state.bridge);
   }
   bridge.reset();
@@ -262,10 +297,11 @@ HRESULT CaptureWeaselContext(ITfContext* context, TfClientId client_id) {
 }
 
 void ClearWeaselContext() noexcept {
-  SurroundingTextSnapshot snapshot;
-  snapshot.result = E_ACCESSDENIED;
   try {
-    Submit(snapshot, Metadata(true));
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    state.identity.EndFocus();
+    SubmitCleanupLocked(state);
   } catch (...) {
     // Focus transitions and host shutdown must never cross a TSF exception.
   }
