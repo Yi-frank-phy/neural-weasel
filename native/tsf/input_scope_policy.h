@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstddef>
+
+#include <inputscope.h>
+
 namespace neural_weasel::tsf {
 
 enum class InputScopeState {
@@ -9,12 +13,13 @@ enum class InputScopeState {
 };
 
 struct InputScopePolicyResult {
-  InputScopeState state;
-  bool allow_prediction;
-  bool allow_persistence;
-  bool allow_capture;
+  InputScopeState state = InputScopeState::kNormal;
+  bool allow_prediction = true;
+  bool allow_persistence = true;
+  bool allow_capture = true;
 };
 
-InputScopePolicyResult ClassifyInputScope(unsigned long input_scope);
+InputScopePolicyResult ClassifyInputScopes(const InputScope* input_scopes,
+                                           std::size_t input_scope_count);
 
 }  // namespace neural_weasel::tsf
