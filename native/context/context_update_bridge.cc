@@ -76,15 +76,13 @@ void AppendJsonString(std::string_view value, std::string* output) {
 
 void AppendUnsigned(std::uint64_t value, std::string* output) {
   char buffer[32]{};
-  const auto result =
-      std::to_chars(buffer, buffer + sizeof(buffer), value);
+  const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
   output->append(buffer, result.ptr);
 }
 
 void AppendSigned(std::int64_t value, std::string* output) {
   char buffer[32]{};
-  const auto result =
-      std::to_chars(buffer, buffer + sizeof(buffer), value);
+  const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
   output->append(buffer, result.ptr);
 }
 
@@ -102,9 +100,8 @@ std::string SessionId(const ContextUpdateMetadata& metadata) {
     const bool allowed =
         (character >= 'a' && character <= 'z') ||
         (character >= 'A' && character <= 'Z') ||
-        (character >= '0' && character <= '9') ||
-        character == '-' || character == '_' || character == '.' ||
-        character == ':';
+        (character >= '0' && character <= '9') || character == '-' ||
+        character == '_' || character == '.' || character == ':';
     if (!allowed) {
       return "context-bridge";
     }
@@ -112,10 +109,38 @@ std::string SessionId(const ContextUpdateMetadata& metadata) {
   return metadata.session_id;
 }
 
+bool IsLowerHexCapability(std::string_view capability) {
+  if (capability.size() != 32U) {
+    return false;
+  }
+  return std::all_of(capability.begin(), capability.end(), [](char value) {
+    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
+  });
+}
+
+bool HasSourceIdentity(const ContextUpdateMetadata& metadata) {
+  return IsLowerHexCapability(metadata.source_capability) &&
+         metadata.source_revision > 0 &&
+         metadata.security_label != EditorSecurityLabel::kPassword;
+}
+
+const char* SecurityLabelName(EditorSecurityLabel label) {
+  switch (label) {
+    case EditorSecurityLabel::kPrivate:
+      return "private";
+    case EditorSecurityLabel::kNormal:
+      return "normal";
+    case EditorSecurityLabel::kPassword:
+      return "password";
+  }
+  return "normal";
+}
+
 bool RequiresImmediateCleanup(
     const tsf::SurroundingTextSnapshot& snapshot,
     const ContextUpdateMetadata& metadata) {
-  return metadata.secure || snapshot.result != S_OK;
+  return metadata.secure || metadata.security_label == EditorSecurityLabel::kPassword ||
+         snapshot.result != S_OK;
 }
 
 struct SerializedRequest {
@@ -138,8 +163,6 @@ SerializedRequest BuildContextRequest(
     std::uint64_t sequence,
     const tsf::SurroundingTextSnapshot& snapshot,
     const ContextUpdateMetadata& metadata) {
-  // This branch executes before any source-text or application-ID conversion.
-  // It can only produce the strict focus/secure cleanup message.
   if (RequiresImmediateCleanup(snapshot, metadata)) {
     return BuildSecureFocusJson(sequence, metadata);
   }
@@ -159,7 +182,7 @@ SerializedRequest BuildContextRequest(
       snapshot.after_reached_region_boundary;
 
   std::string payload;
-  payload.reserve(256U + before.size() + after.size());
+  payload.reserve(320U + before.size() + after.size());
   payload.append("{\"type\":\"context_update\",\"request_id\":");
   AppendJsonString(RequestId(sequence), &payload);
   payload.append(",\"context_epoch\":");
@@ -179,6 +202,14 @@ SerializedRequest BuildContextRequest(
   payload.append(complete_region ? "true" : "false");
   payload.append(",\"capture_hresult\":");
   AppendSigned(static_cast<std::int32_t>(snapshot.result), &payload);
+  if (HasSourceIdentity(metadata)) {
+    payload.append(",\"context_session\":");
+    AppendJsonString(metadata.source_capability, &payload);
+    payload.append(",\"source_revision\":");
+    AppendUnsigned(metadata.source_revision, &payload);
+    payload.append(",\"security_label\":");
+    AppendJsonString(SecurityLabelName(metadata.security_label), &payload);
+  }
   payload.append(",\"before\":");
   AppendJsonString(before, &payload);
   payload.append(",\"after\":");
@@ -332,9 +363,6 @@ std::uint64_t ContextUpdateBridge::Submit(
   latest_sequence_.store(sequence, std::memory_order_release);
   PendingUpdate update{sequence, std::move(snapshot), std::move(metadata)};
   if (RequiresImmediateCleanup(update.snapshot, update.metadata)) {
-    // A secure/failed capture invalidates local candidates before Submit
-    // returns. Keep the cleanup as a barrier that later normal updates cannot
-    // coalesce away before it reaches the service.
     rime_plugin::EditorContextEpoch::Instance().Reset();
     cleanup_pending_ = std::move(update);
     pending_.reset();
@@ -383,8 +411,7 @@ void ContextUpdateBridge::WorkerLoop() noexcept {
     {
       std::unique_lock lock(mutex_);
       condition_.wait(lock, [this] {
-        return stopping_ || cleanup_pending_.has_value() ||
-               pending_.has_value();
+        return stopping_ || cleanup_pending_.has_value() || pending_.has_value();
       });
       if (stopping_) {
         return;
@@ -402,11 +429,9 @@ void ContextUpdateBridge::WorkerLoop() noexcept {
 }
 
 void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
-  const SerializedRequest request = BuildContextRequest(
-      update.sequence, update.snapshot, update.metadata);
+  const SerializedRequest request =
+      BuildContextRequest(update.sequence, update.snapshot, update.metadata);
   if (!request.context_update) {
-    // Encoding failures are discovered on the worker. Reset locally before
-    // any timeout/transport exit, under the same mutex as final publication.
     std::lock_guard lock(mutex_);
     rime_plugin::EditorContextEpoch::Instance().Reset();
   }
@@ -425,8 +450,7 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
     SetResult(ContextUpdateResult::kReadinessTimeout);
     return;
   }
-  const pipe::QueryResult response =
-      transport_->TryQuery(request.payload, timeout);
+  const pipe::QueryResult response = transport_->TryQuery(request.payload, timeout);
   if (!response) {
     SetResult(ContextUpdateResult::kTransportError);
     return;
@@ -443,8 +467,8 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
   }
 
   std::uint64_t assigned_epoch = 0;
-  if (!ParseContextUpdateAcknowledgement(response.payload, update.sequence,
-                                         &assigned_epoch)) {
+  if (!ParseContextUpdateAcknowledgement(
+          response.payload, update.sequence, &assigned_epoch)) {
     SetResult(ContextUpdateResult::kProtocolError);
     return;
   }
@@ -475,12 +499,20 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
     if (ready_epoch == assigned_epoch) {
       std::lock_guard lock(mutex_);
       if (stopping_ ||
-          latest_sequence_.load(std::memory_order_acquire) !=
-              update.sequence) {
+          latest_sequence_.load(std::memory_order_acquire) != update.sequence) {
         SetResult(ContextUpdateResult::kSuperseded);
         return;
       }
-      rime_plugin::EditorContextEpoch::Instance().Publish(assigned_epoch);
+      if (HasSourceIdentity(update.metadata)) {
+        rime_plugin::EditorContextEpoch::Instance().Publish(
+            rime_plugin::AcceptedEditorContext{
+                assigned_epoch,
+                update.metadata.source_capability,
+                update.metadata.source_revision,
+            });
+      } else {
+        rime_plugin::EditorContextEpoch::Instance().Publish(assigned_epoch);
+      }
       SetResult(ContextUpdateResult::kPublished);
       return;
     }
@@ -489,8 +521,8 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
       return;
     }
 
-    const auto remaining = RemainingTimeout(
-        deadline, options_.health_poll_interval);
+    const auto remaining =
+        RemainingTimeout(deadline, options_.health_poll_interval);
     if (remaining.count() <= 0) {
       SetResult(ContextUpdateResult::kReadinessTimeout);
       return;
