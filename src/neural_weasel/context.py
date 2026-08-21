@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, replace
 
 FAST_BEFORE_UTF16 = 8192
@@ -71,13 +70,11 @@ class EditorContext:
         )
 
     def metadata(self) -> dict[str, object]:
-        """Return log-safe metadata. This method never returns context text."""
+        """Return content-independent metadata suitable for diagnostics."""
         return {
             "app_id": self.app_id,
             "before_utf16": _utf16_units(self.before),
             "after_utf16": _utf16_units(self.after),
-            "before_sha256": hashlib.sha256(self.before.encode("utf-8")).hexdigest(),
-            "after_sha256": hashlib.sha256(self.after.encode("utf-8")).hexdigest(),
             "partial": self.partial,
             "complete_region": self.complete_region,
             "secure": self.secure,
