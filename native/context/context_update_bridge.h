@@ -18,9 +18,18 @@
 
 namespace neural_weasel::context {
 
+enum class EditorSecurityLabel {
+  kNormal,
+  kPrivate,
+  kPassword,
+};
+
 struct ContextUpdateMetadata {
   std::wstring application_id;
   std::string session_id;
+  std::string source_capability;
+  std::uint64_t source_revision = 0;
+  EditorSecurityLabel security_label = EditorSecurityLabel::kNormal;
   bool secure = true;
   bool partial = true;
 };
@@ -62,9 +71,8 @@ struct ContextUpdateBridgeOptions {
   std::chrono::milliseconds health_poll_interval{5};
 };
 
-// Receives snapshots after the TSF read-only edit-session callback has
-// returned. Submit only moves data into a latest-wins queue; all pipe I/O and
-// readiness polling happen on the owned worker thread.
+// Server-side bridge. Submit only queues the newest snapshot; all model-pipe
+// request/response I/O and readiness polling run on this owned worker thread.
 class ContextUpdateBridge final {
  public:
   ContextUpdateBridge(
@@ -75,16 +83,12 @@ class ContextUpdateBridge final {
   ContextUpdateBridge(const ContextUpdateBridge&) = delete;
   ContextUpdateBridge& operator=(const ContextUpdateBridge&) = delete;
 
-  // Returns the monotonic bridge sequence, or zero after shutdown/overflow.
-  // The same value is sent as revision, sequence and the client context epoch.
-  // request_id is the strict string "ctx-<sequence>", allowing the response to
-  // be matched without trusting transport order.
   std::uint64_t Submit(
       tsf::SurroundingTextSnapshot snapshot,
       ContextUpdateMetadata metadata);
 
-  // Invalidates queued and in-flight responses, clears the published epoch and
-  // never waits for the worker's current pipe operation.
+  // Invalidates queued/in-flight publication and clears the identity exposed to
+  // candidate queries without waiting for the worker's current pipe operation.
   void Invalidate() noexcept;
   void Stop() noexcept;
 
@@ -111,8 +115,6 @@ class ContextUpdateBridge final {
   ContextUpdateBridgeOptions options_;
   mutable std::mutex mutex_;
   std::condition_variable condition_;
-  // A fail-closed cleanup is a barrier: a later normal snapshot may replace
-  // pending_, but cannot remove cleanup_pending_ before it reaches the service.
   std::optional<PendingUpdate> cleanup_pending_;
   std::optional<PendingUpdate> pending_;
   std::thread worker_;
