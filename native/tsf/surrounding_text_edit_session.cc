@@ -5,6 +5,34 @@
 #include <vector>
 
 namespace neural_weasel::tsf {
+namespace detail {
+namespace {
+
+bool IsHighSurrogate(wchar_t value) noexcept {
+  const auto code_unit = static_cast<unsigned int>(value);
+  return code_unit >= 0xD800U && code_unit <= 0xDBFFU;
+}
+
+bool IsLowSurrogate(wchar_t value) noexcept {
+  const auto code_unit = static_cast<unsigned int>(value);
+  return code_unit >= 0xDC00U && code_unit <= 0xDFFFU;
+}
+
+}  // namespace
+
+void TrimUnpairedUtf16Edges(std::wstring* text) noexcept {
+  if (text == nullptr || text->empty()) {
+    return;
+  }
+  if (IsLowSurrogate(text->front())) {
+    text->erase(text->begin());
+  }
+  if (!text->empty() && IsHighSurrogate(text->back())) {
+    text->pop_back();
+  }
+}
+
+}  // namespace detail
 namespace {
 
 template <typename T>
@@ -33,6 +61,7 @@ HRESULT ReadRange(ITfRange* range,
       range->GetText(edit_cookie, 0, buffer.data(), maximum_code_units, &fetched);
   if (SUCCEEDED(result)) {
     output->assign(buffer.data(), fetched);
+    detail::TrimUnpairedUtf16Edges(output);
   }
   return result;
 }
