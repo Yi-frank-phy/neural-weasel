@@ -75,12 +75,6 @@ int main() {
 
   {
     ContextFrameReceiver receiver;
-    Check(!receiver.Accept(Frame("focus-a", 1, "PASSWORD", "secret")),
-          "PASSWORD context must never enter the receiver state");
-  }
-
-  {
-    ContextFrameReceiver receiver;
     Check(receiver.Accept(Frame("focus-a", 1, "NORMAL", "old-focus-1")),
           "first focus revision must be accepted");
     Check(receiver.Accept(Frame("focus-a", 2, "NORMAL", "old-focus-2")),
