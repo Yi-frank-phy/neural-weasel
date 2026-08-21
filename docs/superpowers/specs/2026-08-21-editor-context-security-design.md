@@ -17,6 +17,7 @@ The design therefore allows the IME to use bounded plaintext context for local p
 - Accidental plaintext persistence in logs, temp files, caches, SQLite, traces, crash-oriented diagnostics, or telemetry.
 - A normal local program looking for an easy centralized source of recently typed text.
 - A local program discovering Neural Weasel IPC and attempting to use it as a cross-application text oracle.
+- A local program attempting to impersonate/squat the Neural Weasel context endpoint so the IME sends plaintext to the wrong process.
 - A broken or stalled Neural Weasel backend causing an editor/TSF host to freeze or crash.
 - Focus changes, stale revisions, or delayed background inference causing one application’s context to be reused in another application.
 - Password/PIN/credential fields that the host/Windows explicitly identifies as protected.
@@ -35,8 +36,9 @@ The design therefore allows the IME to use bounded plaintext context for local p
 3. **No raw-context read API.** IPC accepts current context and returns candidates/status only; no caller can request captured text back.
 4. **Protected means hard deny.** Explicit password/PIN/credential scopes never enter the model path.
 5. **Current session only.** Context is bound to focus/session identity and monotonically increasing revision; stale or foreign-session state is unusable.
-6. **Editor-host code stays minimal.** TSF code performs bounded read, classification, bounded serialization/copy, best-effort nonblocking send, and return. No model, JSON, disk I/O, wait loops, or worker/model lifecycle belongs in the host process.
-7. **Backend failure degrades to ordinary IME behavior.** Context loss or backend failure may reduce prediction quality but must not block typing.
+6. **Editor-host code stays minimal.** TSF code performs bounded read, classification, bounded binary copy, best-effort nonblocking send, and return. No model, JSON, disk I/O, wait loops, or worker/model lifecycle belongs in the host process.
+7. **Authenticate the receiver before releasing plaintext.** The TSF client must not send context to an arbitrary process merely because it owns the expected pipe name.
+8. **Backend failure degrades to ordinary IME behavior.** Context loss or backend failure may reduce prediction quality but must not block typing.
 
 ## Security labels
 
@@ -89,7 +91,7 @@ Capture occurs only for the currently focused TSF context through a read-only ed
 
 The payload contains only what prediction needs:
 
-- random source-session capability/nonce;
+- random 128-bit source-session capability/nonce;
 - source process identity for diagnostics and stale-session checks;
 - context revision;
 - security label;
@@ -103,23 +105,42 @@ No document path, project scan, clipboard history, browser history, or unrelated
 
 Do **not** restore the old `ContextUpdateBridge` architecture inside the TSF DLL unchanged. It placed a worker thread, custom transport lifecycle, serialization, and pipe machinery inside editor-hosted processes and was deliberately removed by crash containment.
 
-Use a dedicated **best-effort, one-way, nonblocking context push** to the out-of-process Neural Weasel service/broker.
+Use a dedicated **best-effort, one-way, nonblocking context push** to a trusted out-of-process Neural Weasel broker. The first implementation should terminate this plaintext push in the bundled native `WeaselServer.exe`/equivalent trusted broker rather than an arbitrary `python.exe` process, so the TSF side can verify the receiving process identity.
 
-Required transport properties:
+### Wire format
+
+The TSF path uses a bounded binary message, not JSON. The header contains version, message kind, label, source PID, 128-bit session nonce, revision, and before/after UTF-16 lengths followed by the bounded text payload.
+
+The decoder rejects unknown versions, invalid lengths, and messages above the compile-time maximum before any state publication.
+
+### Nonblocking contract
 
 - no `WaitNamedPipe` loop;
 - no `FlushFileBuffers` on the TSF callback path;
 - no synchronous request/response carrying raw context;
-- bounded payload size;
-- at most a small fixed number of in-flight buffers;
-- if the backend is absent, busy, or slow, drop/coalesce the update rather than wait;
+- no unbounded allocation or queue;
+- exactly one overlapped write may be in flight;
+- at most one additional latest coalesced payload is retained in the host process;
+- while a write is pending, newer updates replace the coalesced payload rather than queueing history;
+- completion is polled only with nonblocking status checks on later callbacks;
+- if the backend is absent, busy, invalid, or slow, drop/coalesce the update rather than wait;
 - the service never offers an operation that returns submitted raw context.
 
-A Windows named pipe with overlapped/best-effort writes is the preferred first implementation because it avoids introducing a globally readable plaintext shared-memory mailbox. The exact low-level transport may change if testing shows the TSF host path can still block, but the nonblocking/drop-on-pressure contract may not change.
+### Endpoint identity and anti-squatting
+
+A predictable pipe name alone is not trusted.
+
+The broker must create the local pipe as the first instance where Windows supports that contract and reject remote clients. The pipe DACL is restricted to the expected local user/session and required system identities, but same-user ACLs are **not** treated as sufficient authentication.
+
+After connecting and **before writing plaintext**, the TSF client obtains the named-pipe server PID and verifies that it is the expected bundled Neural Weasel broker image (canonical executable identity/path from the same installed bundle; stronger signing/hash verification may be added by packaging). If identity verification fails, context is dropped and no plaintext is sent.
+
+This check is performed on connection establishment/re-establishment, not on every edit callback. A connection to an unverified endpoint is never used for context.
+
+The design does not claim this resists an attacker that can already replace/inject into the trusted installed broker binary; that is equivalent to compromising the trusted application itself and is outside the same-user opportunistic-spyware target.
 
 ## Session and stale-state isolation
 
-Each focused source session owns a cryptographically random capability/nonce and a monotonic revision.
+Each focused source session owns a cryptographically random 128-bit capability/nonce and a monotonic revision.
 
 The service accepts a context update only as state for that session. Candidate queries must identify the same active session/revision relationship; a different process/session cannot ask the service to reuse another source session’s context.
 
@@ -149,6 +170,8 @@ It must not create:
 
 Diagnostics may expose metadata such as source PID/application identity, label, revision, capture length, drop reason, latency, and stale/discard counters, but not the captured text itself.
 
+The native broker may forward the current context to the local model service, but that internal protocol must preserve the same no-history/no-raw-read-API contract.
+
 ## Candidate behavior
 
 The production GGUF path keeps its existing realtime invariant: **keypress handling never owns a model forward**.
@@ -167,6 +190,7 @@ All failure modes are fail-soft for typing:
 - Explicit protected scope: clear/drop context.
 - Capture failure: publish no new context.
 - Pipe unavailable/busy: drop or coalesce; never wait for backend recovery.
+- Pipe server identity mismatch: drop and reconnect later; never release plaintext.
 - Broker crash: ordinary IME and context-free/stale-safe candidate behavior continue.
 - Malformed/oversized message: broker rejects it without publishing state.
 - Session/revision mismatch: reject/discard.
@@ -184,13 +208,18 @@ Implementation is test-driven. Tests must be written failing first for each cont
 - explicit password/PIN/credential scopes produce `PASSWORD` and no context push;
 - missing/unsupported scope metadata does not suppress ordinary capture;
 - capture remains bounded to configured before/after limits;
-- TSF shipped shell contains no model runtime or background model worker;
+- shipped TSF shell contains no model runtime or background model worker;
+- wire format is bounded binary and rejects overflow/invalid lengths;
 - context-send path contains no wait loop / synchronous flush contract;
-- backend absence does not block or fail the TSF callback.
+- only one write plus one latest coalesced payload can exist;
+- backend absence does not block or fail the TSF callback;
+- an unverified/squatted pipe server receives no plaintext;
+- a verified bundled broker can receive the push.
 
 ### Protocol/broker tests
 
 - raw context can be pushed but cannot be retrieved through any public operation;
+- remote pipe clients are rejected;
 - malformed/oversized payloads are rejected;
 - session nonce and revision isolate context updates;
 - focus/secure transition invalidates prior state;
@@ -208,6 +237,7 @@ Use distinctive sentinel secrets and verify repository/runtime test outputs do n
 - missing InputScope metadata: context still works;
 - password control: no model-context update is observed;
 - rapid typing/focus changes: no cross-session context publication;
+- fake pipe server: TSF refuses to release context;
 - broker stopped/hung: typing path remains responsive and ordinary IME remains usable.
 
 Target-machine latency measurements should record p50/p95/p99 capture/send and background refresh separately. The security design does not claim the slow-context issue solved until those measurements exist.
@@ -240,8 +270,9 @@ The design is complete when all of the following are true:
 1. A normal editor with absent InputScope metadata can provide bounded surrounding text to the local model.
 2. Explicit password/PIN/credential fields provide no surrounding plaintext to the model path.
 3. Raw context exists only as current ephemeral state; no history or raw-context query API exists.
-4. Focus/session/revision isolation prevents deliberate cross-application reuse of captured context.
-5. TSF capture/send performs no backend wait and no model work; backend failure cannot block typing.
-6. No feature-added log/cache/temp/telemetry path persists raw context.
-7. Production keypress handling remains immutable-snapshot/CPU-query only.
-8. Automated tests enforce the contracts above, and target-machine measurements establish the resulting latency behavior.
+4. A squatted/unverified context endpoint receives no plaintext from the TSF client.
+5. Focus/session/revision isolation prevents deliberate cross-application reuse of captured context.
+6. TSF capture/send performs no backend wait and no model work; backend failure cannot block typing.
+7. No feature-added log/cache/temp/telemetry path persists raw context.
+8. Production keypress handling remains immutable-snapshot/CPU-query only.
+9. Automated tests enforce the contracts above, and target-machine measurements establish the resulting latency behavior.
