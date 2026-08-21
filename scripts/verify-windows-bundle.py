@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import re
@@ -45,6 +46,36 @@ def _digest(path: Path) -> str:
 
 def _encodings(value: str) -> tuple[bytes, bytes]:
     return value.encode("utf-8"), value.encode("utf-16-le")
+
+
+def _verify_tsf_loadable_without_backend(tsf_path: Path) -> str | None:
+    """Load/unload the TSF in CI before any Neural Weasel backend is started."""
+    if sys.platform != "win32" or not tsf_path.is_file():
+        return None
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    load_library = kernel32.LoadLibraryExW
+    load_library.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32]
+    load_library.restype = ctypes.c_void_p
+    free_library = kernel32.FreeLibrary
+    free_library.argtypes = [ctypes.c_void_p]
+    free_library.restype = ctypes.c_int
+
+    # Resolve dependencies beside the DLL, but do not start or contact the
+    # bundled server/model service. DllMain must therefore tolerate backend
+    # absence on its own.
+    load_library_search_dll_load_dir = 0x00000100
+    load_library_search_default_dirs = 0x00001000
+    handle = load_library(
+        str(tsf_path),
+        None,
+        load_library_search_dll_load_dir | load_library_search_default_dirs,
+    )
+    if not handle:
+        return f"TSF cannot load with backend absent: {ctypes.WinError(ctypes.get_last_error())}"
+    if not free_library(handle):
+        return f"TSF cannot unload cleanly: {ctypes.WinError(ctypes.get_last_error())}"
+    return None
 
 
 def verify(root: Path) -> list[str]:
@@ -127,6 +158,9 @@ def verify(root: Path) -> list[str]:
                     "in-process TSF contains neural runtime "
                     f"marker {literal!r}; crash containment is broken"
                 )
+        load_error = _verify_tsf_loadable_without_backend(tsf_path)
+        if load_error is not None:
+            errors.append(load_error)
 
     identity_targets = (
         root / "NeuralWeaselExperimentalTSF.dll",
