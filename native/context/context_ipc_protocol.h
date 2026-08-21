@@ -1,33 +1,77 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace neural_weasel::context {
 
-constexpr std::size_t kMaxContextPayloadBytes = 4096;
+constexpr std::uint32_t kContextFrameMagic = 0x5443574eU;  // "NWCT" LE
+constexpr std::uint16_t kContextFrameVersion = 1;
+constexpr std::size_t kContextFrameHeaderBytes = 44;
+constexpr std::uint32_t kMaxContextBeforeUtf16Units = 8192;
+constexpr std::uint32_t kMaxContextAfterUtf16Units = 4096;
+constexpr std::size_t kMaxContextFrameBytes =
+    kContextFrameHeaderBytes +
+    2U * (kMaxContextBeforeUtf16Units + kMaxContextAfterUtf16Units);
+
+using SourceContextCapability = std::array<std::uint8_t, 16>;
+
+enum class ContextFrameKind : std::uint8_t {
+  kContext = 1,
+  kClear = 2,
+};
+
+enum class ContextScopeLabel : std::uint8_t {
+  kNormal = 0,
+  kPrivate = 1,
+  kPassword = 2,
+};
 
 struct ContextFrame {
-  std::string source_capability;
+  ContextFrameKind kind = ContextFrameKind::kContext;
+  ContextScopeLabel scope_label = ContextScopeLabel::kNormal;
+  std::uint32_t source_pid = 0;
   std::uint64_t revision = 0;
-  std::string scope_label;
-  std::uint32_t before_length = 0;
-  std::uint32_t after_length = 0;
-  std::string payload;
+  SourceContextCapability source_capability{};
+  std::u16string before;
+  std::u16string after;
 };
 
-class ContextFrameReceiver {
+enum class ContextFrameDecodeResult {
+  kOk,
+  kMalformed,
+  kOversized,
+};
+
+enum class ContextFrameAcceptResult {
+  kAccepted,
+  kMalformed,
+  kOversized,
+  kStale,
+};
+
+bool EncodeContextFrame(const ContextFrame& frame,
+                        std::vector<std::uint8_t>* output) noexcept;
+ContextFrameDecodeResult DecodeContextFrame(std::string_view bytes,
+                                            ContextFrame* output) noexcept;
+
+class ContextFrameReceiver final {
  public:
-  bool Accept(ContextFrame frame);
-  const ContextFrame& last_frame() const noexcept { return last_frame_; }
+  ContextFrameAcceptResult Accept(std::string_view bytes,
+                                  ContextFrame* accepted = nullptr) noexcept;
+
+  bool has_source() const noexcept { return has_source_; }
+  std::uint64_t latest_revision() const noexcept { return latest_revision_; }
 
  private:
-  ContextFrame last_frame_;
+  SourceContextCapability latest_capability_{};
+  std::uint32_t latest_source_pid_ = 0;
   std::uint64_t latest_revision_ = 0;
+  bool has_source_ = false;
 };
-
-bool ValidateContextFrame(const ContextFrame& frame);
 
 }  // namespace neural_weasel::context
