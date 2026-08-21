@@ -11,6 +11,7 @@ int main() {
   using neural_weasel::context::CaptureContextSnapshot;
   using neural_weasel::context::CaptureWithPolicy;
   using neural_weasel::context::SourceContextIdentity;
+  using neural_weasel::context::SourceContextStamp;
   using neural_weasel::tsf::ClassifyInputScopes;
   using neural_weasel::tsf::InputScopeState;
   using neural_weasel::tsf::SurroundingTextSnapshot;
@@ -113,6 +114,14 @@ int main() {
       normal_result->snapshot.after != L"world" ||
       normal_result->metadata.revision == 0) {
     std::cerr << "normal capture snapshot was invalid\n";
+    return 1;
+  }
+  const SourceContextStamp normal_stamp{
+      normal_result->metadata.source_capability,
+      normal_result->metadata.revision,
+  };
+  if (!identity.IsCurrent(normal_stamp)) {
+    std::cerr << "normal capture was not bound to current identity\n";
     return 1;
   }
 
