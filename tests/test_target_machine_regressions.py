@@ -25,10 +25,11 @@ def test_static_rime_module_has_explicit_registration_before_setup() -> None:
 
     assert "rime_register_module_ai_translator_explicit" in module
     assert 'RimeFindModule("ai_translator")' in module
-    assert "rime_register_module_ai_translator_explicit();" in overlay
+    assert "void rime_require_module_ai_translator()" in module
+    assert "rime_register_module_ai_translator_explicit();" in module
 
     setup_marker = "void RimeWithWeaselHandler::_Setup() {"
-    call_marker = "rime_register_module_ai_translator_explicit();"
+    call_marker = "rime_require_module_ai_translator();"
     traits_marker = "RIME_STRUCT(RimeTraits, weasel_traits);"
     setup = overlay.index(setup_marker)
     call = overlay.index(call_marker, setup)
