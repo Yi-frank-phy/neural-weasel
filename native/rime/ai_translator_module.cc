@@ -23,3 +23,9 @@ static void rime_ai_translator_finalize() {
 }
 
 RIME_REGISTER_MODULE(ai_translator)
+
+void rime_register_module_ai_translator_explicit() {
+  if (RimeFindModule("ai_translator") == nullptr) {
+    rime_register_module_ai_translator();
+  }
+}
