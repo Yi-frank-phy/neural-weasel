@@ -60,7 +60,7 @@ def test_python_service_bundle_contains_declared_readme() -> None:
     bundle = _read("scripts/build-windows-bundle.ps1")
     install = _read("scripts/install-dev-profile.ps1")
 
-    assert "python-service 'README.md'" in bundle
+    assert "Join-Path $PythonService 'README.md'" in bundle
     assert "python-service\\README.md" in install
 
 
