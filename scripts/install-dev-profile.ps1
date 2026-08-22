@@ -19,11 +19,36 @@ $ProfileToolName = 'NeuralWeaselProfileTool.exe'
 $ActivatorName = 'NeuralWeaselSessionActivator.exe'
 $TsfDllName = 'NeuralWeaselExperimentalTSF.dll'
 $ServerName = 'NeuralWeaselServer.exe'
+# Build the non-ASCII launcher name from Unicode code points. Windows
+# PowerShell 5.1 otherwise decodes a UTF-8-without-BOM script as the system
+# ANSI code page and corrupts the filename before any filesystem access.
+$LauncherCmdName = (-join @(
+    [char]0x542F,
+    [char]0x52A8,
+    [char]0x795E,
+    [char]0x7ECF,
+    [char]0x5C0F,
+    [char]0x72FC,
+    [char]0x6BEB
+)) + '.cmd'
 
 function Assert-LastExitCode {
     param([Parameter(Mandatory)][string]$Operation)
     if ($LASTEXITCODE -ne 0) {
         throw "$Operation failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Assert-Administrator {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
+    if (-not $Principal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )) {
+        throw (
+            'Administrator privileges are required for real installation ' +
+            'because the experimental TSF COM server is registered machine-wide.'
+        )
     }
 }
 
@@ -78,7 +103,8 @@ $ManifestPath = Join-Path $BuildDirectory 'build-manifest.json'
 if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
     throw "Missing build manifest: $ManifestPath"
 }
-$Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+$Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 |
+    ConvertFrom-Json
 if (
     $Manifest.experimental_clsid -ne $ExperimentalClsid -or
     $Manifest.experimental_profile_guid -ne $ExperimentalProfileGuid -or
@@ -101,13 +127,14 @@ $Required = @(
     'start-model-service.ps1',
     'launch-neural-weasel.ps1',
     'Start-Neural-Weasel.cmd',
-    '启动神经小狼毫.cmd',
+    $LauncherCmdName,
     'tools\uv.exe',
     'README-INSTALL-TEST.md',
     'data\neural_weasel.schema.yaml',
     'rime-user\default.custom.yaml',
     'python-service\pyproject.toml',
-    'python-service\uv.lock'
+    'python-service\uv.lock',
+    'python-service\README.md'
 )
 foreach ($RelativePath in $Required) {
     $Path = Join-Path $BuildDirectory $RelativePath
@@ -163,6 +190,10 @@ if ($DryRun) {
     Write-Host 'Dry-run succeeded; no files, registry keys, profiles, or defaults were changed.'
     exit 0
 }
+
+# No real-install mutation is allowed before this point. Dry-run deliberately
+# remains usable without elevation.
+Assert-Administrator
 
 $ExistingManifestPath = Join-Path $InstallRoot 'build-manifest.json'
 if (Test-Path -LiteralPath $ExistingManifestPath -PathType Leaf) {
@@ -294,5 +325,5 @@ try {
     throw $InstallFailure
 }
 
-Write-Host 'Installed 神经小狼毫（实验） without changing the default input method.'
-Write-Host 'Run 启动神经小狼毫.cmd to start the model service and activate it for this desktop session.'
+Write-Host 'Installed the Neural Weasel experimental profile without changing the default input method.'
+Write-Host "Run $LauncherCmdName to start the model service and activate it for this desktop session."
