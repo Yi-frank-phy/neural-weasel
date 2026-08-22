@@ -49,6 +49,7 @@ $RuntimeNamespace = if ($ServiceProfile -eq 'wisdom') {
 }
 $RuntimeRoot = Join-Path $env:LOCALAPPDATA (Join-Path 'NeuralWeasel' $RuntimeNamespace)
 $StatePath = Join-Path $RuntimeRoot 'model-service.json'
+$ProcessStartUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
 
 function Write-Utf8NoBom {
@@ -78,6 +79,7 @@ function Write-ServiceState {
         gpu_layers = 'all'
         index = $Index
         pid = $PID
+        process_start_utc = $ProcessStartUtc
         exit_code = $ExitCode
         safety_profile = 'crash-contained-4b-q8-gguf-cuda'
         updated_utc = [DateTime]::UtcNow.ToString('o')
@@ -100,6 +102,15 @@ $PythonExe = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
     Write-ServiceState -State 'failed' -ExitCode 1
     throw "The synchronized Python runtime is missing: $PythonExe"
+}
+
+# torch ships CUDA DLLs in a private directory that Windows does not search by
+# default. Extend PATH only in this dedicated model-service process, so both
+# the install check and the child runtime can resolve those DLLs without
+# changing the user's persistent environment.
+$TorchLibDirectory = Join-Path $ProjectRoot '.venv\Lib\site-packages\torch\lib'
+if (Test-Path -LiteralPath $TorchLibDirectory -PathType Container) {
+    $env:PATH = "$TorchLibDirectory;$env:PATH"
 }
 
 & $PythonExe -m neural_weasel.llama_install_check *> $null
