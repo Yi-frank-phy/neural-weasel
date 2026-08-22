@@ -2,6 +2,9 @@
 #include <msctf.h>
 #include <objbase.h>
 
+#include <cwchar>
+#include <cwctype>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -10,8 +13,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <cwchar>
-#include <cwctype>
 
 #include "tsf/experimental_profile_ids.h"
 
@@ -82,9 +83,12 @@ bool IsExpectedIdentity(const Options& options) {
              ToUpper(kNeuralWeaselZhCnProfileGuidString);
 }
 
+std::wstring ClsidRegistryRootPath() {
+  return std::wstring(kClassesRoot) + kNeuralWeaselTextServiceClsidString;
+}
+
 std::wstring ClsidRegistryPath() {
-  return std::wstring(kClassesRoot) +
-         kNeuralWeaselTextServiceClsidString + L"\\" + kInprocServer;
+  return ClsidRegistryRootPath() + L"\\" + kInprocServer;
 }
 
 std::wstring JsonEscape(std::wstring_view value) {
@@ -99,12 +103,12 @@ std::wstring JsonEscape(std::wstring_view value) {
   return escaped;
 }
 
-std::optional<std::wstring> ReadRegisteredDll() {
+std::optional<std::wstring> ReadRegisteredDll(HKEY root) {
   wchar_t value[32768] = {};
   DWORD bytes = sizeof(value);
   const LSTATUS status =
-      RegGetValueW(HKEY_CURRENT_USER, ClsidRegistryPath().c_str(), nullptr,
-                   RRF_RT_REG_SZ, nullptr, value, &bytes);
+      RegGetValueW(root, ClsidRegistryPath().c_str(), nullptr, RRF_RT_REG_SZ,
+                   nullptr, value, &bytes);
   if (status == ERROR_FILE_NOT_FOUND) {
     return std::nullopt;
   }
@@ -112,6 +116,33 @@ std::optional<std::wstring> ReadRegisteredDll() {
     throw std::runtime_error("failed to read experimental COM registration");
   }
   return std::wstring(value);
+}
+
+void DeleteComRegistration(HKEY root) {
+  const LSTATUS status =
+      RegDeleteTreeW(root, ClsidRegistryRootPath().c_str());
+  if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
+    throw std::runtime_error("failed to remove experimental COM registration");
+  }
+}
+
+void DeleteAllComRegistrations() {
+  std::exception_ptr first_error;
+  try {
+    DeleteComRegistration(HKEY_LOCAL_MACHINE);
+  } catch (...) {
+    first_error = std::current_exception();
+  }
+  try {
+    DeleteComRegistration(HKEY_CURRENT_USER);
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+  }
+  if (first_error) {
+    std::rethrow_exception(first_error);
+  }
 }
 
 std::filesystem::path CanonicalExistingPath(
@@ -170,10 +201,11 @@ void SetRegistryString(HKEY key,
 void RegisterComServer(const std::filesystem::path& dll_path) {
   HKEY key = nullptr;
   DWORD disposition = 0;
-  if (RegCreateKeyExW(HKEY_CURRENT_USER, ClsidRegistryPath().c_str(), 0,
+  if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, ClsidRegistryPath().c_str(), 0,
                       nullptr, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE,
                       nullptr, &key, &disposition) != ERROR_SUCCESS) {
-    throw std::runtime_error("failed to create experimental COM registration");
+    throw std::runtime_error(
+        "failed to create machine-wide experimental COM registration");
   }
   try {
     SetRegistryString(key, nullptr, CanonicalExistingPath(dll_path).wstring());
@@ -304,8 +336,8 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
   try {
     WithTsfManagers(
         [&](ITfInputProcessorProfileMgr* profiles, ITfCategoryMgr* categories) {
-          const auto description_length =
-              static_cast<ULONG>(std::wstring_view(kNeuralWeaselDisplayName).size());
+          const auto description_length = static_cast<ULONG>(
+              std::wstring_view(kNeuralWeaselDisplayName).size());
           const auto icon_path = CanonicalExistingPath(dll_path).wstring();
           const HRESULT result = profiles->RegisterProfile(
               kNeuralWeaselTextServiceClsid, kZhCn,
@@ -318,6 +350,10 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
           }
           RegisterCategories(categories);
         });
+    // Older builds wrote the same reserved CLSID under HKCU. HKCR merges that
+    // key ahead of HKLM, so leave no stale per-user override after a successful
+    // machine-wide registration.
+    DeleteComRegistration(HKEY_CURRENT_USER);
   } catch (...) {
     try {
       WithTsfManagers(
@@ -329,13 +365,14 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
             UnregisterCategories(categories);
           });
     } catch (...) {
-      // Preserve the original registration failure. The COM key is still
-      // removed below and a later idempotent uninstall retries cleanup.
+      // Preserve the original registration failure.
     }
-    RegDeleteTreeW(HKEY_CURRENT_USER,
-                   (std::wstring(kClassesRoot) +
-                    kNeuralWeaselTextServiceClsidString)
-                       .c_str());
+    try {
+      DeleteAllComRegistrations();
+    } catch (...) {
+      // Preserve the original registration failure; idempotent uninstall will
+      // retry cleanup with the same reserved identity.
+    }
     throw;
   }
 }
@@ -347,14 +384,7 @@ void UnregisterProfile() {
                                     kNeuralWeaselZhCnProfileGuid, 0);
         UnregisterCategories(categories);
       });
-  const LSTATUS status =
-      RegDeleteTreeW(HKEY_CURRENT_USER,
-                     (std::wstring(kClassesRoot) +
-                      kNeuralWeaselTextServiceClsidString)
-                         .c_str());
-  if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
-    throw std::runtime_error("failed to remove experimental COM registration");
-  }
+  DeleteAllComRegistrations();
 }
 
 void PrintUsage() {
@@ -383,7 +413,7 @@ int wmain(int argc, wchar_t** argv) {
       VerifyTsfIdentity(options.dll_path);
       return 0;
     }
-    const auto registered = ReadRegisteredDll();
+    const auto registered = ReadRegisteredDll(HKEY_LOCAL_MACHINE);
     const ProfileState profile_state = ReadProfileState();
 
     if (options.command == L"status") {
