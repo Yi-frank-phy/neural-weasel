@@ -34,9 +34,7 @@ def test_static_rime_module_is_loaded_by_initialize_traits() -> None:
     assert "rime_api->initialize(&neural_weasel_initialize_traits);" in overlay
 
     call = overlay.index("rime_require_module_ai_translator();")
-    initialize = overlay.index(
-        "rime_api->initialize(&neural_weasel_initialize_traits);"
-    )
+    initialize = overlay.index("rime_api->initialize(&neural_weasel_initialize_traits);")
     assert call < initialize
 
 
