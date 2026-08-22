@@ -24,7 +24,7 @@ def test_static_rime_module_has_explicit_registration_before_setup() -> None:
     overlay = _read("scripts/prepare-weasel-overlay.ps1")
 
     assert "rime_register_module_ai_translator_explicit" in module
-    assert "RimeFindModule(\"ai_translator\")" in module
+    assert 'RimeFindModule("ai_translator")' in module
     assert "rime_register_module_ai_translator_explicit();" in overlay
 
     setup_marker = "void RimeWithWeaselHandler::_Setup() {"
