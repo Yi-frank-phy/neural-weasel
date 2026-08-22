@@ -378,6 +378,9 @@ foreach ($ResourcePath in @(
     (Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServer.rc')
 )) {
     $Resource = Read-SourceFile -Path $ResourcePath
+    if (-not $Resource.StartsWith('#pragma code_page(65001)')) {
+        $Resource = "#pragma code_page(65001)`r`n" + $Resource
+    }
     $Resource = $Resource.Replace('weaselx64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM.dll', 'NeuralWeaselExperimentalTSF.dll')
