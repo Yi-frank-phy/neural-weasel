@@ -300,12 +300,26 @@ Replace-RegexOnce -Path $RimeWithWeasel `
     -Pattern 'void RimeWithWeaselHandler::_Setup\(\) \{\s+RIME_STRUCT\(RimeTraits, weasel_traits\);' `
     -Replacement @'
 void rime_require_module_ai_translator();
+void rime_initialize_module_ai_translator_explicit();
+void rime_finalize_module_ai_translator_explicit();
 
 void RimeWithWeaselHandler::_Setup() {
   rime_require_module_ai_translator();
   RIME_STRUCT(RimeTraits, weasel_traits);
-  RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator");
-  weasel_traits.modules = neural_weasel_modules;
+'@
+
+Replace-Literal -Path $RimeWithWeasel `
+    -Old '  rime_api->initialize(NULL);' `
+    -New @'
+  rime_initialize_module_ai_translator_explicit();
+  rime_api->initialize(NULL);
+'@
+
+Replace-Literal -Path $RimeWithWeasel `
+    -Old '  rime_api->finalize();' `
+    -New @'
+  rime_api->finalize();
+  rime_finalize_module_ai_translator_explicit();
 '@
 
 $TextExtensions = @('.cpp', '.h', '.rc', '.lua', '.def')
@@ -378,6 +392,9 @@ foreach ($ResourcePath in @(
     (Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServer.rc')
 )) {
     $Resource = Read-SourceFile -Path $ResourcePath
+    if (-not $Resource.StartsWith('#pragma code_page(65001)')) {
+        $Resource = "#pragma code_page(65001)`r`n" + $Resource
+    }
     $Resource = $Resource.Replace('weaselx64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM.dll', 'NeuralWeaselExperimentalTSF.dll')
@@ -391,3 +408,4 @@ foreach ($ResourcePath in @(
 }
 
 Write-Host "Prepared crash-contained Neural Weasel overlay on Weasel $ActualRevision"
+

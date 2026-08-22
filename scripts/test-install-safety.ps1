@@ -24,6 +24,36 @@ function Invoke-ExpectedFailure {
     throw "Expected failure did not occur: $Description"
 }
 
+function Invoke-WindowsPowerShellInstallDryRun {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [switch]$ExplicitBuildDirectory
+    )
+    $PowerShell51 = Join-Path $env:WINDIR `
+        'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $PowerShell51 -PathType Leaf)) {
+        throw "Windows PowerShell 5.1 was not found: $PowerShell51"
+    }
+    $Installer = Join-Path $Root 'install-dev-profile.ps1'
+    $Arguments = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        $Installer
+    )
+    if ($ExplicitBuildDirectory) {
+        $Arguments += @('-BuildDirectory', $Root)
+    }
+    $Arguments += '-DryRun'
+    & $PowerShell51 @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows PowerShell 5.1 install dry-run failed with exit code $LASTEXITCODE."
+    }
+}
+
 $BundleRoot = (Resolve-Path -LiteralPath $BundleRoot).Path
 $TestRoot = Join-Path $env:RUNNER_TEMP (
     "neural-weasel-install-safety-$([guid]::NewGuid().ToString('N'))"
@@ -33,8 +63,9 @@ try {
     New-Item -ItemType Directory -Path $TestRoot -Force | Out-Null
     $env:LOCALAPPDATA = Join-Path $TestRoot 'LocalAppData'
 
-    & (Join-Path $BundleRoot 'install-dev-profile.ps1') -DryRun
-    & (Join-Path $BundleRoot 'install-dev-profile.ps1') -DryRun
+    Invoke-WindowsPowerShellInstallDryRun -Root $BundleRoot
+    Invoke-WindowsPowerShellInstallDryRun `
+        -Root $BundleRoot -ExplicitBuildDirectory
     & (Join-Path $BundleRoot 'uninstall-dev-profile.ps1') -DryRun
     & (Join-Path $BundleRoot 'uninstall-dev-profile.ps1') -DryRun
 

@@ -223,6 +223,8 @@ Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'pyproject.toml') `
     -Destination (Join-Path $PythonService 'pyproject.toml')
 Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'uv.lock') `
     -Destination (Join-Path $PythonService 'uv.lock')
+Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'README.md') `
+    -Destination (Join-Path $PythonService 'README.md')
 Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'src') `
     -Destination (Join-Path $PythonService 'src') -Recurse -Force
 

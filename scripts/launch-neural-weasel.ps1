@@ -14,6 +14,7 @@ $ModelFormat = 'gguf'
 $Quantization = 'Q8_0'
 $Runtime = 'llama.cpp'
 $ComputeBackend = 'CUDA'
+$SafetyProfile = 'crash-contained-4b-q8-gguf-cuda'
 $ExperimentalClsid = '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}'
 $ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
 $InstallRoot = Join-Path $env:LOCALAPPDATA (
@@ -53,11 +54,36 @@ function Get-LiveModelServiceProcess {
         return $null
     }
     try {
-        $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-        if (-not $State.pid) {
+        $State = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        if (
+            -not $State.pid -or
+            -not $State.process_start_utc -or
+            $State.service_profile -ne 'experimental' -or
+            $State.transport -ne 'pipe' -or
+            $State.model -ne $Model -or
+            $State.format -ne $ModelFormat -or
+            $State.quantization -ne $Quantization -or
+            $State.runtime -ne $Runtime -or
+            $State.compute_backend -ne $ComputeBackend -or
+            $State.safety_profile -ne $SafetyProfile
+        ) {
             return $null
         }
-        return Get-Process -Id ([int]$State.pid) -ErrorAction SilentlyContinue
+        $Process = Get-Process -Id ([int]$State.pid) -ErrorAction SilentlyContinue
+        if (-not $Process) {
+            return $null
+        }
+        $RecordedStart = [DateTime]::Parse(
+            [string]$State.process_start_utc,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind
+        ).ToUniversalTime()
+        $ActualStart = $Process.StartTime.ToUniversalTime()
+        if ([Math]::Abs(($RecordedStart - $ActualStart).TotalMilliseconds) -gt 1) {
+            return $null
+        }
+        return $Process
     } catch {
         return $null
     }
@@ -82,7 +108,8 @@ function Wait-ModelPipe {
         }
         if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
             try {
-                $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+                $State = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 |
+                    ConvertFrom-Json
                 if ($State.state -eq 'failed') {
                     throw (
                         "The model service reported state '$($State.state)'. " +
@@ -109,7 +136,7 @@ function Quote-ProcessArgument {
 }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
-    throw '神经小狼毫 currently supports only 64-bit Windows.'
+    throw 'Neural Weasel currently supports only 64-bit Windows.'
 }
 if (-not $env:LOCALAPPDATA) {
     throw 'LOCALAPPDATA is required.'
@@ -158,8 +185,16 @@ foreach ($Path in @($ServiceScript, $Server, $Activator)) {
 New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 $PipePath = Get-ModelPipePath
 $ServiceProcess = Get-LiveModelServiceProcess
+$PipeExists = Test-ModelPipe -PipePath $PipePath
 
-if (-not (Test-ModelPipe -PipePath $PipePath)) {
+if ($PipeExists -and -not $ServiceProcess) {
+    throw (
+        'The experimental model pipe exists without a matching live service identity. ' +
+        'Refusing to trust stale, legacy, or squatted runtime state.'
+    )
+}
+
+if (-not $PipeExists) {
     if (-not $ServiceProcess) {
         $PowerShellExe = (Get-Process -Id $PID).Path
         $StdOut = Join-Path $LogRoot 'model-service.stdout.log'
@@ -170,7 +205,11 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
             '-ExecutionPolicy',
             'Bypass',
             '-File',
-            (Quote-ProcessArgument $ServiceScript)
+            (Quote-ProcessArgument $ServiceScript),
+            '-ServiceProfile',
+            'experimental',
+            '-Transport',
+            'pipe'
         ) -join ' '
         Write-Host (
             "Starting $Model $Quantization $ModelFormat through $Runtime $ComputeBackend. " +
@@ -185,7 +224,7 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
             -RedirectStandardError $StdErr `
             -PassThru
     } else {
-        Write-Host 'A model-service process already exists; waiting for it to become ready.'
+        Write-Host 'A matching model-service process already exists; waiting for it to become ready.'
     }
     Wait-ModelPipe `
         -PipePath $PipePath `
@@ -201,10 +240,10 @@ if (-not $NoActivate) {
     & $Activator activate `
         --clsid $ExperimentalClsid `
         --profile-guid $ExperimentalProfileGuid
-    Assert-LastExitCode -Operation 'Current-session 神经小狼毫 activation'
+    Assert-LastExitCode -Operation 'Current-session Neural Weasel activation'
 }
 
-Write-Host '神经小狼毫（安全版） is running and activated for the current Windows desktop session.'
+Write-Host 'Neural Weasel experimental profile is running for the current desktop session.'
 Write-Host (
     "$Model $Quantization $ModelFormat is required to run with full model-layer $ComputeBackend offload."
 )
