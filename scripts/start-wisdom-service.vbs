@@ -9,7 +9,7 @@ quantization = "Q8_0"
 runtime = "llama.cpp"
 backend = "CUDA"
 command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File """ _
-  & root & "\start-model-service.ps1"" -Transport http -Port 8000"
+  & root & "\start-model-service.ps1"" -ServiceProfile wisdom -Transport http -Port 8000"
 ' Identity constants above are intentionally kept beside the launcher so a
 ' packaged-script audit can prove Wisdom targets the same 4B Q8_0 GGUF CUDA runtime.
 shell.Run command, 0, False
