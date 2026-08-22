@@ -300,6 +300,8 @@ Replace-RegexOnce -Path $RimeWithWeasel `
     -Pattern 'void RimeWithWeaselHandler::_Setup\(\) \{\s+RIME_STRUCT\(RimeTraits, weasel_traits\);' `
     -Replacement @'
 void rime_require_module_ai_translator();
+void rime_initialize_module_ai_translator_explicit();
+void rime_finalize_module_ai_translator_explicit();
 
 void RimeWithWeaselHandler::_Setup() {
   rime_require_module_ai_translator();
@@ -309,10 +311,15 @@ void RimeWithWeaselHandler::_Setup() {
 Replace-Literal -Path $RimeWithWeasel `
     -Old '  rime_api->initialize(NULL);' `
     -New @'
-  RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator");
-  RIME_STRUCT(RimeTraits, neural_weasel_initialize_traits);
-  neural_weasel_initialize_traits.modules = neural_weasel_modules;
-  rime_api->initialize(&neural_weasel_initialize_traits);
+  rime_initialize_module_ai_translator_explicit();
+  rime_api->initialize(NULL);
+'@
+
+Replace-Literal -Path $RimeWithWeasel `
+    -Old '  rime_api->finalize();' `
+    -New @'
+  rime_api->finalize();
+  rime_finalize_module_ai_translator_explicit();
 '@
 
 $TextExtensions = @('.cpp', '.h', '.rc', '.lua', '.def')
@@ -401,3 +408,4 @@ foreach ($ResourcePath in @(
 }
 
 Write-Host "Prepared crash-contained Neural Weasel overlay on Weasel $ActualRevision"
+
