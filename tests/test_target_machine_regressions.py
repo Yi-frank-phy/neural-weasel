@@ -119,8 +119,8 @@ def test_experimental_launcher_rejects_stale_or_wrong_service_state() -> None:
 
 
 def test_ci_executes_install_dry_run_under_windows_powershell_51() -> None:
-    workflow = _read(".github/workflows/ci.yml")
+    driver = _read("scripts/test-install-safety.ps1")
 
-    assert "powershell.exe" in workflow
-    assert "install-dev-profile.ps1" in workflow
-    assert "-DryRun" in workflow
+    assert "powershell.exe" in driver
+    assert "install-dev-profile.ps1" in driver
+    assert "-DryRun" in driver
