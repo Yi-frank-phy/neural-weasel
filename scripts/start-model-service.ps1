@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('experimental', 'wisdom')]
+    [string]$ServiceProfile = 'experimental',
     [ValidateSet('pipe', 'http')]
     [string]$Transport = 'pipe',
     [ValidateRange(1, 65535)]
@@ -40,7 +42,12 @@ $ProjectRoot = if (Test-Path -LiteralPath $ArtifactProject -PathType Container) 
 } else {
     Split-Path -Parent $PSScriptRoot
 }
-$RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
+$RuntimeNamespace = if ($ServiceProfile -eq 'wisdom') {
+    'WisdomIntegration'
+} else {
+    'Experimental'
+}
+$RuntimeRoot = Join-Path $env:LOCALAPPDATA (Join-Path 'NeuralWeasel' $RuntimeNamespace)
 $StatePath = Join-Path $RuntimeRoot 'model-service.json'
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
 
@@ -61,6 +68,7 @@ function Write-ServiceState {
     $TemporaryState = "$StatePath.tmp-$PID"
     $Json = [ordered]@{
         state = $State
+        service_profile = $ServiceProfile
         transport = $Transport
         model = $Model
         format = $ModelFormat
