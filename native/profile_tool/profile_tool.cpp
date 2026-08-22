@@ -29,6 +29,7 @@ constexpr LANGID kZhCn =
     MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
 constexpr wchar_t kClassesRoot[] = L"Software\\Classes\\CLSID\\";
 constexpr wchar_t kInprocServer[] = L"InprocServer32";
+constexpr DWORD ILOT_UNINSTALL = 0x00000001;
 
 struct Options {
   std::wstring command;
@@ -142,6 +143,36 @@ void DeleteAllComRegistrations() {
   }
   if (first_error) {
     std::rethrow_exception(first_error);
+  }
+}
+
+std::wstring LayoutOrTipProfileString() {
+  return std::wstring(L"0x0804:") + kNeuralWeaselTextServiceClsidString +
+         kNeuralWeaselZhCnProfileGuidString + L";";
+}
+
+using InstallLayoutOrTipFunction = BOOL(CALLBACK*)(LPCWSTR, DWORD);
+
+void UpdateInputMethodTip(bool uninstall) {
+  HMODULE input_module = LoadLibraryExW(
+      L"input.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!input_module) {
+    throw std::runtime_error("failed to load system Input.dll");
+  }
+  const auto InstallLayoutOrTip = reinterpret_cast<InstallLayoutOrTipFunction>(
+      GetProcAddress(input_module, "InstallLayoutOrTip"));
+  if (!InstallLayoutOrTip) {
+    FreeLibrary(input_module);
+    throw std::runtime_error("InstallLayoutOrTip is unavailable");
+  }
+  const std::wstring profile = LayoutOrTipProfileString();
+  const DWORD flags = uninstall ? ILOT_UNINSTALL : 0;
+  const BOOL updated = InstallLayoutOrTip(profile.c_str(), flags);
+  FreeLibrary(input_module);
+  if (!updated) {
+    throw std::runtime_error(
+        uninstall ? "failed to remove experimental InputMethodTip"
+                  : "failed to install experimental InputMethodTip");
   }
 }
 
@@ -350,11 +381,17 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
           }
           RegisterCategories(categories);
         });
+    UpdateInputMethodTip(false);
     // Older builds wrote the same reserved CLSID under HKCU. HKCR merges that
     // key ahead of HKLM, so leave no stale per-user override after a successful
     // machine-wide registration.
     DeleteComRegistration(HKEY_CURRENT_USER);
   } catch (...) {
+    try {
+      UpdateInputMethodTip(true);
+    } catch (...) {
+      // Preserve the original registration failure.
+    }
     try {
       WithTsfManagers(
           [](ITfInputProcessorProfileMgr* profiles,
@@ -378,13 +415,34 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
 }
 
 void UnregisterProfile() {
-  WithTsfManagers(
-      [](ITfInputProcessorProfileMgr* profiles, ITfCategoryMgr* categories) {
-        profiles->UnregisterProfile(kNeuralWeaselTextServiceClsid, kZhCn,
-                                    kNeuralWeaselZhCnProfileGuid, 0);
-        UnregisterCategories(categories);
-      });
-  DeleteAllComRegistrations();
+  std::exception_ptr first_error;
+  try {
+    UpdateInputMethodTip(true);
+  } catch (...) {
+    first_error = std::current_exception();
+  }
+  try {
+    WithTsfManagers(
+        [](ITfInputProcessorProfileMgr* profiles, ITfCategoryMgr* categories) {
+          profiles->UnregisterProfile(kNeuralWeaselTextServiceClsid, kZhCn,
+                                      kNeuralWeaselZhCnProfileGuid, 0);
+          UnregisterCategories(categories);
+        });
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+  }
+  try {
+    DeleteAllComRegistrations();
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+  }
+  if (first_error) {
+    std::rethrow_exception(first_error);
+  }
 }
 
 void PrintUsage() {
