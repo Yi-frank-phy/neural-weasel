@@ -19,7 +19,7 @@ def test_wisdom_and_experimental_model_services_use_disjoint_state() -> None:
     assert "model-service.json" in service
 
 
-def test_static_rime_module_is_loaded_by_initialize_traits() -> None:
+def test_static_rime_components_are_explicitly_initialized_and_finalized() -> None:
     module = _read("native/rime/ai_translator_module.cc")
     overlay = _read("scripts/prepare-weasel-overlay.ps1")
 
@@ -27,15 +27,25 @@ def test_static_rime_module_is_loaded_by_initialize_traits() -> None:
     assert 'RimeFindModule("ai_translator")' in module
     assert "void rime_require_module_ai_translator()" in module
     assert "rime_register_module_ai_translator_explicit();" in module
+    assert "void rime_initialize_module_ai_translator_explicit()" in module
+    assert "void rime_finalize_module_ai_translator_explicit()" in module
 
-    assert 'RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator")' in overlay
-    assert "RIME_STRUCT(RimeTraits, neural_weasel_initialize_traits);" in overlay
-    assert "neural_weasel_initialize_traits.modules = neural_weasel_modules;" in overlay
-    assert "rime_api->initialize(&neural_weasel_initialize_traits);" in overlay
+    initialize_call = "rime_initialize_module_ai_translator_explicit();"
+    rime_initialize = "rime_api->initialize(NULL);"
+    finalize_call = "rime_finalize_module_ai_translator_explicit();"
+    rime_finalize = "rime_api->finalize();"
+    assert initialize_call in overlay
+    assert finalize_call in overlay
 
-    call = overlay.index("rime_require_module_ai_translator();")
-    initialize = overlay.index("rime_api->initialize(&neural_weasel_initialize_traits);")
-    assert call < initialize
+    initialize_patch = overlay.index("-Old '  rime_api->initialize(NULL);'")
+    initialize_call_pos = overlay.index(initialize_call, initialize_patch)
+    rime_initialize_pos = overlay.index(rime_initialize, initialize_call_pos)
+    assert initialize_call_pos < rime_initialize_pos
+
+    finalize_patch = overlay.index("-Old '  rime_api->finalize();'")
+    rime_finalize_pos = overlay.index(rime_finalize, finalize_patch)
+    finalize_call_pos = overlay.index(finalize_call, rime_finalize_pos)
+    assert rime_finalize_pos < finalize_call_pos
 
 
 def test_profile_tool_uses_machine_wide_com_and_cleans_legacy_user_key() -> None:
@@ -125,3 +135,4 @@ def test_ci_executes_install_dry_run_under_windows_powershell_51() -> None:
     assert "powershell.exe" in driver
     assert "install-dev-profile.ps1" in driver
     assert "-DryRun" in driver
+
