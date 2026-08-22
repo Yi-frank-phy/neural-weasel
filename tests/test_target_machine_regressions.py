@@ -19,7 +19,7 @@ def test_wisdom_and_experimental_model_services_use_disjoint_state() -> None:
     assert "model-service.json" in service
 
 
-def test_static_rime_module_has_explicit_registration_before_setup() -> None:
+def test_static_rime_module_is_loaded_by_initialize_traits() -> None:
     module = _read("native/rime/ai_translator_module.cc")
     overlay = _read("scripts/prepare-weasel-overlay.ps1")
 
@@ -28,13 +28,16 @@ def test_static_rime_module_has_explicit_registration_before_setup() -> None:
     assert "void rime_require_module_ai_translator()" in module
     assert "rime_register_module_ai_translator_explicit();" in module
 
-    setup_marker = "void RimeWithWeaselHandler::_Setup() {"
-    call_marker = "rime_require_module_ai_translator();"
-    traits_marker = "RIME_STRUCT(RimeTraits, weasel_traits);"
-    setup = overlay.index(setup_marker)
-    call = overlay.index(call_marker, setup)
-    traits = overlay.index(traits_marker, setup)
-    assert setup < call < traits
+    assert 'RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator")' in overlay
+    assert "RIME_STRUCT(RimeTraits, neural_weasel_initialize_traits);" in overlay
+    assert "neural_weasel_initialize_traits.modules = neural_weasel_modules;" in overlay
+    assert "rime_api->initialize(&neural_weasel_initialize_traits);" in overlay
+
+    call = overlay.index("rime_require_module_ai_translator();")
+    initialize = overlay.index(
+        "rime_api->initialize(&neural_weasel_initialize_traits);"
+    )
+    assert call < initialize
 
 
 def test_profile_tool_uses_machine_wide_com_and_cleans_legacy_user_key() -> None:

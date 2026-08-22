@@ -304,8 +304,15 @@ void rime_require_module_ai_translator();
 void RimeWithWeaselHandler::_Setup() {
   rime_require_module_ai_translator();
   RIME_STRUCT(RimeTraits, weasel_traits);
+'@
+
+Replace-Literal -Path $RimeWithWeasel `
+    -Old '  rime_api->initialize(NULL);' `
+    -New @'
   RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator");
-  weasel_traits.modules = neural_weasel_modules;
+  RIME_STRUCT(RimeTraits, neural_weasel_initialize_traits);
+  neural_weasel_initialize_traits.modules = neural_weasel_modules;
+  rime_api->initialize(&neural_weasel_initialize_traits);
 '@
 
 $TextExtensions = @('.cpp', '.h', '.rc', '.lua', '.def')
