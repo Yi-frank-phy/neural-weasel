@@ -135,4 +135,3 @@ def test_ci_executes_install_dry_run_under_windows_powershell_51() -> None:
     assert "powershell.exe" in driver
     assert "install-dev-profile.ps1" in driver
     assert "-DryRun" in driver
-
