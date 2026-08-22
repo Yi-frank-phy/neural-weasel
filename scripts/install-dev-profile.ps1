@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$BuildDirectory = $PSScriptRoot,
+    [string]$BuildDirectory,
     [string]$InstallRoot = (
         Join-Path $env:LOCALAPPDATA (
             'NeuralWeasel\Experimental\experimental-profile'
@@ -86,6 +86,12 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 }
 if (-not $env:LOCALAPPDATA) {
     throw 'LOCALAPPDATA is required.'
+}
+
+if (-not $BuildDirectory) {
+    # Windows PowerShell 5.1 does not populate $PSScriptRoot while evaluating
+    # parameter default expressions for a script launched with -File.
+    $BuildDirectory = $PSScriptRoot
 }
 
 $BuildDirectory = (Resolve-Path -LiteralPath $BuildDirectory).Path
