@@ -5,10 +5,29 @@ comes from a local **Qwen Base** causal language model. Pinyin and Latin prefixe
 hard legality constraints; the model never receives a chat prompt and the per-key path
 never runs a model forward.
 
+## Authoritative runtime and installation baseline
+
+**Q8 is allowed.** There is no current project rule banning Q8 or restricting future
+work to Q4/Q6. Q4, Q6, and Q8 are runtime/quantization choices; editor-context,
+candidate-generation, ranking, and privacy contracts are quantization-independent.
+The production artifact currently pinned by `main` is
+`Qwen3.5-4B-Base.Q8_0.gguf`.
+
+For real editor surrounding context, the preferred route is the repository's Neural
+experimental TSF pipeline (`native/tsf/*` plus `native/context/*`). An official Weasel
+shell that only remembers text committed by the IME is not equivalent to TSF
+surrounding-text capture. Do not fall back to an external UIA/file bridge merely
+because an older discussion said Q8 was disabled; that constraint is obsolete.
+
+The immediate target-machine priority is to install and smoke-test the Neural
+experimental profile. Engram, expanded English prediction, fuzzy pinyin, and typo
+correction are deferred until the profile installs and types correctly on the target
+Windows machine. See `AGENTS.md` for the repository-level agent baseline.
+
 The repository currently contains the independently testable core:
 
 - strict RTX 4060 Laptop GPU launcher and runtime guard;
-- Hugging Face text-only `Qwen3_5ForCausalLM` backend;
+- production Qwen3.5-4B Base GGUF/CUDA runtime plus independently testable model backends;
 - token-to-pinyin index with heteronym support;
 - continuous full-pinyin prefix matching and single-character coverage;
 - replaceable full-logits and sparse lm-head projection backends;
@@ -18,13 +37,15 @@ The repository currently contains the independently testable core:
 - literal-safe English `Space`, explicit-completion `Tab`, and `Escape` semantics;
 - bounded multi-token constrained-beam core for background expansion;
 - length-prefixed JSON protocol and Windows named-pipe service;
+- bounded, authenticated Neural TSF surrounding-context capture;
 - CLI commands for index building, prediction, serving, backend comparison, and replay.
 
-The repository also contains a source-level Weasel/librime/TSF integration boundary.
-It is **not yet a buildable independent Weasel profile**. The development install
-scripts fail closed unless an experimental TSF DLL and profile tool are supplied; this
-branch does not produce those binaries. Do not treat it as installable or production
-ready.
+Windows CI builds the isolated Neural experimental Weasel/librime/TSF profile and
+server bundle. The bundle is buildable and installable by the checked-in development
+scripts; what remains unproven until target-machine work is real Windows registration,
+`Win+Space` visibility, editor compatibility, latency, secure-field behavior, restart,
+and complete removal. Do not confuse that required local smoke test with an inability
+to build the profile.
 
 The repository is licensed under GPL-3.0-or-later because the eventual native build
 links into GPLv3-licensed Weasel. Qwen model weights keep their own upstream license and
@@ -40,6 +61,9 @@ are downloaded separately; they are never committed here.
 - Generated indexes, model caches, private context, and logs live under
   `%LOCALAPPDATA%\NeuralWeasel`, outside the repository.
 - Context text is never written to normal logs.
+- Password/PIN/protected fields must never send surrounding plaintext.
+- Raw editor context must not be persisted into Engram, logs, caches, telemetry, or
+  crash artifacts.
 
 ## Bootstrap
 
@@ -119,17 +143,19 @@ Supported:
 - multiple token pronunciation paths;
 - incomplete trailing syllables;
 - deletion/retyping (query is stateless in raw keys);
-- direct model-token candidates and last-resort single-character coverage.
+- direct model-token candidates and last-resort single-character coverage;
 - one-token Latin completions discovered directly from the Base tokenizer;
 - a shared bounded multi-token candidate representation and tested score normalization;
 - hard Han exclusion in decisive English context;
 - modest, overridable Latin penalty in Chinese context;
-- old immutable snapshots during background refresh.
+- old immutable snapshots during background refresh;
+- real bounded TSF surrounding-context capture in the Neural experimental profile.
 
-Not yet supported:
+Not yet supported or not yet target-machine-validated:
 
 - double pinyin, abbreviation, fuzzy pinyin, tones, or typo correction;
 - real conditional Base-model scoring for cross-token English completions in the live
   service (the current live tokenizer catalog is one-token);
-- a manually registered and smoke-tested independent Weasel TSF profile;
+- completed target-machine registration and smoke validation of the independent Neural
+  experimental TSF profile;
 - an activated automatic Microsoft Pinyin fallback.
