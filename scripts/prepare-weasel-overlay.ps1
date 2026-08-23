@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string]$WeaselRoot,
@@ -26,12 +26,30 @@ static const GUID c_guidProfile = {
     {0x80, 0xe8, 0xac, 0xd9, 0x88, 0xc5, 0x7b, 0x0d}};
 '@
 
+# Upstream resource files are UTF-16 while sources are UTF-8; remember the
+# encoding of each read so Write-SourceFile can restore it byte-for-byte.
+$Global:LastSourceEncoding = 'utf-8'
+
 function Read-SourceFile {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Required upstream file is missing: $Path"
     }
-    return [IO.File]::ReadAllText($Path)
+    $Bytes = [IO.File]::ReadAllBytes($Path)
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+        $Global:LastSourceEncoding = 'unicode'
+        return [Text.Encoding]::Unicode.GetString($Bytes, 2, $Bytes.Length - 2)
+    }
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+        $Global:LastSourceEncoding = 'bigendianunicode'
+        return [Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $Bytes.Length - 2)
+    }
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        $Global:LastSourceEncoding = 'utf-8'
+        return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes, 3, $Bytes.Length - 3)
+    }
+    $Global:LastSourceEncoding = 'utf-8'
+    return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
 }
 
 function Write-SourceFile {
@@ -39,7 +57,11 @@ function Write-SourceFile {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Content
     )
-    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+    switch ($Global:LastSourceEncoding) {
+        'unicode' { [IO.File]::WriteAllText($Path, $Content, [Text.Encoding]::Unicode) }
+        'bigendianunicode' { [IO.File]::WriteAllText($Path, $Content, [Text.Encoding]::BigEndianUnicode) }
+        default { [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false)) }
+    }
 }
 
 function Replace-Literal {

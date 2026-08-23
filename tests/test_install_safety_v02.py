@@ -202,3 +202,15 @@ def test_model_launcher_exposes_locked_torch_cuda_runtime() -> None:
     assert ".venv\\Lib\\site-packages\\torch\\lib" in launcher
     assert '$env:PATH = "$TorchLibraryRoot;$env:PATH"' in launcher
     assert "CPU fallback is forbidden" in launcher
+
+
+def test_overlay_script_survives_local_powershell_51_rebuild() -> None:
+    """The overlay must be re-runnable on Windows PowerShell 5.1, not just pwsh 7."""
+    raw = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_bytes()
+    # Non-ASCII seam literals (mutex/window names with ō/ū) are misread as GBK
+    # by Windows PowerShell 5.1 unless the script carries a UTF-8 BOM.
+    assert raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig")
+    # Upstream resource files are UTF-16; blind UTF-8 rewrite corrupts them.
+    assert "LastSourceEncoding" in text
+    assert "'unicode'" in text
