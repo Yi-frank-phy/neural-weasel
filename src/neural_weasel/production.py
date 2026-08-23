@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .acquire_model import AcquiredGguf, ensure_production_gguf
+from .gguf_artifact import PRODUCTION_GGUF, ProductionGgufArtifact
 from .gguf_index import GgufPinyinIndexBuilder, default_gguf_index_path
 from .index import PinyinIndex
 from .llama_runtime import LlamaCppBackend
@@ -35,8 +36,13 @@ def ensure_production_index(runtime: LlamaCppBackend, explicit: Path | None = No
     return PinyinIndex(path)
 
 
-def build_production_runtime(index_path: Path | None = None) -> ProductionRuntime:
-    acquired = ensure_production_gguf()
+def build_production_runtime(
+    index_path: Path | None = None,
+    *,
+    artifact: ProductionGgufArtifact | None = None,
+    gguf_path: Path | str | None = None,
+) -> ProductionRuntime:
+    acquired = ensure_production_gguf(artifact or PRODUCTION_GGUF, gguf_path)
     runtime = LlamaCppBackend(acquired)
     index = ensure_production_index(runtime, index_path)
     return ProductionRuntime(

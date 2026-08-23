@@ -4,6 +4,9 @@ param(
     [string]$Transport = 'pipe',
     [ValidateRange(1, 65535)]
     [int]$Port = 8000,
+    [ValidateSet('Q4_K_M', 'Q8_0')]
+    [string]$Quantization = 'Q8_0',
+    [string]$GgufPath,
     [string]$Index
 )
 
@@ -12,11 +15,18 @@ Set-StrictMode -Version Latest
 
 $Model = 'Qwen/Qwen3.5-4B-Base'
 $ModelFormat = 'gguf'
-$Quantization = 'Q8_0'
 $Runtime = 'llama.cpp'
 $ComputeBackend = 'CUDA'
 $LlamaCppPythonVersion = '0.3.23'
 $LlamaCudaWheelIndex = 'https://abetlen.github.io/llama-cpp-python/whl/cu124'
+
+# The crash-contained safety profile is quantization-aware so a live service
+# can never be silently reused under a different model artifact.
+$SafetyProfile = if ($Quantization -eq 'Q4_K_M') {
+    'crash-contained-4b-q4-gguf-cuda'
+} else {
+    'crash-contained-4b-q8-gguf-cuda'
+}
 
 $BundledUv = Join-Path $PSScriptRoot 'tools\uv.exe'
 if (Test-Path -LiteralPath $BundledUv -PathType Leaf) {
@@ -71,7 +81,8 @@ function Write-ServiceState {
         index = $Index
         pid = $PID
         exit_code = $ExitCode
-        safety_profile = 'crash-contained-4b-q8-gguf-cuda'
+        gguf_path = $GgufPath
+        safety_profile = $SafetyProfile
         updated_utc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json
     Write-Utf8NoBom -Path $TemporaryState -Content $Json
@@ -135,6 +146,14 @@ try {
     $Arguments = @(
         'run', '--project', $ProjectRoot, '--no-sync', 'neural-weasel', $ServeCommand
     )
+    $Arguments += @('--quantization', $Quantization)
+    if ($GgufPath) {
+        if (-not (Test-Path -LiteralPath $GgufPath -PathType Leaf)) {
+            Write-ServiceState -State 'failed' -ExitCode 1
+            throw "The provided GGUF artifact does not exist: $GgufPath"
+        }
+        $Arguments += @('--gguf-path', $GgufPath)
+    }
     if ($Index) {
         $Arguments += @('--index', $Index)
     }

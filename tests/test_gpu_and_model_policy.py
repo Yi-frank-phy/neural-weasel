@@ -124,3 +124,10 @@ def test_model_device_map_accepts_only_explicit_cuda_zero() -> None:
 def test_model_policy_rejects_instruct_checkpoint_before_loading_ml_stack() -> None:
     with pytest.raises(ModelPolicyError, match="Base-only"):
         QwenBaseBackend("Qwen/Qwen3.5-0.8B-Instruct")
+
+
+def test_hardware_vram_guards_survive_quant_selector_work() -> None:
+    # The quant runtime selector must never weaken the measured hardware
+    # safety guards: full-offload proof and post-load VRAM headroom.
+    assert gpu_module.MIN_RUNTIME_FREE_MIB == 2048
+    assert gpu_module.MIN_FULL_GGUF_OFFLOAD_DELTA_MIB == 3000

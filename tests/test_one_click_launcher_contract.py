@@ -111,7 +111,7 @@ def test_bundle_verifier_rejects_neural_runtime_inside_tsf() -> None:
     assert "in-process TSF contains neural runtime" in verifier
 
 
-def test_safe_release_locks_runtime_to_4b_base_q8_gguf() -> None:
+def test_release_defaults_to_4b_base_q8_with_selectable_pinned_quants() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
     service = _read("scripts/start-model-service.ps1")
 
@@ -120,6 +120,57 @@ def test_safe_release_locks_runtime_to_4b_base_q8_gguf() -> None:
         assert "Qwen/Qwen3.5-0.8B-Base" not in script
     assert "Q8_0" in service
     assert "gguf" in service.lower()
+
+
+def _script_function(script: str, name: str) -> str:
+    start = script.index(f"function {name}")
+    following = script.find("\nfunction ", start + 1)
+    return script[start:] if following == -1 else script[start:following]
+
+
+def test_scripts_expose_supported_quant_selector_passthrough() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    service = _read("scripts/start-model-service.ps1")
+
+    for script in (launcher, service):
+        assert "[ValidateSet('Q4_K_M', 'Q8_0')]" in script
+        assert "[string]$Quantization = 'Q8_0'" in script
+    assert "@('--quantization', $Quantization)" in service
+    assert "@('--gguf-path', $GgufPath)" in service
+    assert "provided GGUF artifact does not exist" in service
+    assert "'-Quantization', $Quantization" in launcher
+    assert "'-GgufPath'" in launcher
+
+
+def test_safety_profile_tracks_selected_quantization() -> None:
+    service = _read("scripts/start-model-service.ps1")
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+
+    for script in (service, launcher):
+        assert "$SafetyProfile = if ($Quantization -eq 'Q4_K_M')" in script
+        assert "crash-contained-4b-q4-gguf-cuda" in script
+        assert "crash-contained-4b-q8-gguf-cuda" in script
+    assert "safety_profile = $SafetyProfile" in service
+    assert "$State.safety_profile -ne $SafetyProfile" in launcher
+
+
+def test_live_service_guard_refuses_quantization_swap_outside_swallowed_catch() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    body = _script_function(launcher, "Get-LiveModelServiceProcess")
+
+    # The compatibility throw must sit after the parse-failure catch so a live
+    # incompatible service can never be silently treated as "no service".
+    markers = [
+        "} catch {",
+        "$State.transport -ne 'pipe'",
+        "$State.model -ne $Model",
+        "$State.quantization -ne $Quantization",
+        "$State.safety_profile -ne $SafetyProfile",
+        "return $Process",
+    ]
+    positions = [body.index(marker) for marker in markers]
+    assert positions == sorted(positions)
+    assert "A live incompatible Neural Weasel model service owns the shared state." in body
 
 
 def test_model_service_prefers_bundled_uv_before_path_lookup() -> None:

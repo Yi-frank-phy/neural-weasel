@@ -5,9 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-from .gguf_artifact import PRODUCTION_GGUF
+from .gguf_artifact import PRODUCTION_GGUF, resolve_quantization_artifact
 from .gpu import discover_target_gpu, verify_expected_nvidia_binding
 from .paths import configure_hf_cache
+
+QUANT_SELECTOR_CHOICES = ("Q4_K_M", "Q8_0")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -30,12 +32,16 @@ def _parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser("serve", help="start the production Windows named-pipe server")
     serve.add_argument("--index", type=Path)
+    serve.add_argument("--quantization", choices=QUANT_SELECTOR_CHOICES, default="Q8_0")
+    serve.add_argument("--gguf-path", type=Path)
 
     serve_http = subparsers.add_parser(
         "serve-http",
         help="start the loopback Wisdom Weasel HTTP compatibility server",
     )
     serve_http.add_argument("--index", type=Path)
+    serve_http.add_argument("--quantization", choices=QUANT_SELECTOR_CHOICES, default="Q8_0")
+    serve_http.add_argument("--gguf-path", type=Path)
     serve_http.add_argument("--host", default="127.0.0.1")
     serve_http.add_argument("--port", type=int, default=8000)
 
@@ -85,10 +91,18 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_production(index_path: Path | None):
+def _build_production(
+    index_path: Path | None,
+    quantization: str = "Q8_0",
+    gguf_path: Path | None = None,
+):
     from .production import build_production_runtime
 
-    return build_production_runtime(index_path)
+    return build_production_runtime(
+        index_path,
+        artifact=resolve_quantization_artifact(quantization),
+        gguf_path=gguf_path,
+    )
 
 
 def _print_json(payload: object) -> None:
@@ -273,7 +287,11 @@ def main() -> int:
     if args.command in {"predict", "serve", "serve-http", "simulate", "benchmark"}:
         from .engine import NeuralPinyinEngine
 
-        bundle = _build_production(args.index)
+        bundle = _build_production(
+            args.index,
+            getattr(args, "quantization", "Q8_0"),
+            getattr(args, "gguf_path", None),
+        )
         runtime = bundle.runtime
 
         if args.command in {"serve", "serve-http"}:
