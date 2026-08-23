@@ -243,3 +243,16 @@ def test_model_service_does_not_use_model_name_only_index_cache_key() -> None:
 
     assert "$ModelHash.sqlite3" not in service
     assert "$ModelHash" not in service
+
+
+def test_llama_install_probe_survives_native_stderr_under_strict_eap() -> None:
+    service = _read("scripts/start-model-service.ps1")
+
+    # The probe prints its "not installed" verdict to stderr. Windows PowerShell
+    # 5.1 promotes that to a terminating NativeCommandError when
+    # $ErrorActionPreference = 'Stop', so both probes must relax the
+    # preference around the native call and branch on $LASTEXITCODE.
+    assert service.count("$ErrorActionPreference = 'Continue'") >= 2
+    assert "*> $null" in service  # only safe under the relaxed blocks above
+    assert "$ProbeExit = $LASTEXITCODE" in service
+    assert "$CheckExit = $LASTEXITCODE" in service

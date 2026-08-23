@@ -115,8 +115,15 @@ if (-not (Test-Path -LiteralPath $TorchLibraryRoot -PathType Container)) {
 }
 $env:PATH = "$TorchLibraryRoot;$env:PATH"
 
+# The probe prints its "not installed" verdict on stderr. Windows PowerShell
+# 5.1 promotes native stderr to a terminating NativeCommandError while the
+# preference is strict, so probe with a relaxed preference and branch on the
+# real exit code instead of a null redirect.
+$ErrorActionPreference = 'Continue'
 & $PythonExe -m neural_weasel.llama_install_check *> $null
-if ($LASTEXITCODE -ne 0) {
+$ProbeExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($ProbeExit -ne 0) {
     Write-Host (
         "Installing pinned llama-cpp-python $LlamaCppPythonVersion from the official CUDA 12.4 wheel index."
     )
@@ -131,8 +138,13 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
+# Same relaxed-probe rule for the verification pass: surface its output
+# for diagnosis, but never let a native stderr line kill the launcher.
+$ErrorActionPreference = 'Continue'
 & $PythonExe -m neural_weasel.llama_install_check
-if ($LASTEXITCODE -ne 0) {
+$CheckExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($CheckExit -ne 0) {
     Write-ServiceState -State 'failed' -ExitCode $LASTEXITCODE
     throw (
         'llama-cpp-python did not prove a CUDA-enabled llama.cpp build. ' +
