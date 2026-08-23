@@ -44,6 +44,15 @@ def test_launcher_installs_idempotently_starts_services_and_activates_session() 
     assert "regsvr32" not in launcher.lower()
 
 
+def test_launcher_rejects_live_legacy_service_state_without_waiting() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+
+    assert "$State.transport -ne 'pipe'" in launcher
+    assert "$State.model -ne $Model" in launcher
+    assert "live incompatible Neural Weasel model service" in launcher
+    assert "$Process.StartTime.ToUniversalTime()" in launcher
+
+
 def test_session_activator_is_current_session_only_and_never_enables_profile() -> None:
     activator = _read("native/session_activator/session_activator.cpp")
 

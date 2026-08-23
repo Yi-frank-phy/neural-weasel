@@ -94,6 +94,16 @@ if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
     throw "The synchronized Python runtime is missing: $PythonExe"
 }
 
+# The pinned llama.cpp CUDA wheel dynamically links the CUDA 12 runtime DLLs
+# shipped with the locked PyTorch wheel. Make that private runtime directory
+# visible to both the install check and the service child process.
+$TorchLibraryRoot = Join-Path $ProjectRoot '.venv\Lib\site-packages\torch\lib'
+if (-not (Test-Path -LiteralPath $TorchLibraryRoot -PathType Container)) {
+    Write-ServiceState -State 'failed' -ExitCode 1
+    throw "The locked PyTorch CUDA runtime directory is missing: $TorchLibraryRoot"
+}
+$env:PATH = "$TorchLibraryRoot;$env:PATH"
+
 & $PythonExe -m neural_weasel.llama_install_check *> $null
 if ($LASTEXITCODE -ne 0) {
     Write-Host (

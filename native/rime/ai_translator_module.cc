@@ -22,4 +22,15 @@ static void rime_ai_translator_finalize() {
   neural_weasel::rime_plugin::EditorContextEpoch::Instance().Reset();
 }
 
+void rime_register_module_ai_translator_explicit() {
+  static RimeModule module = {0};
+  if (!module.data_size) {
+    RIME_STRUCT_INIT(RimeModule, module);
+    module.module_name = "ai_translator";
+    module.initialize = rime_ai_translator_initialize;
+    module.finalize = rime_ai_translator_finalize;
+  }
+  RimeRegisterModule(&module);
+}
+
 RIME_REGISTER_MODULE(ai_translator)

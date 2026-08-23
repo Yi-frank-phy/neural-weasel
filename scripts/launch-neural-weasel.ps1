@@ -57,7 +57,25 @@ function Get-LiveModelServiceProcess {
         if (-not $State.pid) {
             return $null
         }
-        return Get-Process -Id ([int]$State.pid) -ErrorAction SilentlyContinue
+        $Process = Get-Process -Id ([int]$State.pid) -ErrorAction SilentlyContinue
+        if (-not $Process) {
+            return $null
+        }
+        if (
+            $State.transport -ne 'pipe' -or
+            $State.model -ne $Model -or
+            $State.safety_profile -ne 'crash-contained-4b-q8-gguf-cuda'
+        ) {
+            throw (
+                'A live incompatible Neural Weasel model service owns the shared state. ' +
+                'Stop that legacy service before launching the experimental pipe service.'
+            )
+        }
+        $UpdatedUtc = [DateTime]::Parse([string]$State.updated_utc).ToUniversalTime()
+        if ($Process.StartTime.ToUniversalTime() -gt $UpdatedUtc.AddSeconds(2)) {
+            return $null
+        }
+        return $Process
     } catch {
         return $null
     }

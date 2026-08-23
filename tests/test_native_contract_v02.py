@@ -82,6 +82,27 @@ def test_plugin_build_generates_librime_build_config_header() -> None:
     assert "${RIME_ROOT}/include" in cmake
 
 
+def test_weasel_resource_overlay_declares_utf8_code_page() -> None:
+    """Localized resource strings compile on non-UTF-8 Windows hosts."""
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+
+    assert '#pragma code_page(65001)' in overlay
+    assert "StartsWith('#pragma code_page(65001)')" in overlay
+
+
+def test_weasel_runtime_explicitly_registers_the_neural_rime_module() -> None:
+    """The static module must be registered before setup loads its module list."""
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    module = (ROOT / "native/rime/ai_translator_module.cc").read_text(encoding="utf-8")
+
+    assert "rime_register_module_ai_translator_explicit();" in overlay
+    assert "void rime_register_module_ai_translator_explicit()" in module
+    setup = overlay[overlay.index("void RimeWithWeaselHandler::_Setup()") :]
+    assert setup.index("rime_register_module_ai_translator_explicit();") < setup.index(
+        "RIME_STRUCT(RimeTraits, weasel_traits);"
+    )
+
+
 def test_safe_tsf_shell_contains_capture_but_no_backend_runtime() -> None:
     """The TSF may capture/send bounded context but never own backend work."""
     overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")

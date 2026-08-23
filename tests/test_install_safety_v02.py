@@ -94,6 +94,8 @@ def test_required_powershell_scripts_are_fail_closed() -> None:
     assert "--dry-run" in combined
     assert "build-manifest.json" in install
     assert "Get-FileHash" in install
+    assert "Assert-Administrator" in install
+    assert "Administrator elevation is required" in install
     assert OFFICIAL_WEASEL_FIXTURE_CLSID not in combined
     assert OFFICIAL_WEASEL_FIXTURE_PROFILE not in combined
     assert MICROSOFT_PINYIN_FIXTURE_PROFILE not in combined
@@ -127,8 +129,30 @@ def test_experimental_identity_is_consistent_across_all_mutation_boundaries() ->
     assert EXPERIMENTAL_PROFILE_GUID in header
     assert "IsExpectedIdentity" in profile_tool
     assert "Refusing non-experimental identifier" in profile_tool
+    assert "EnableLanguageProfile" in profile_tool
+    assert "EnableProfileForCurrentUser(profiles)" in profile_tool
+    assert 'GetProcAddress(input, "InstallLayoutOrTip")' in profile_tool
+    assert "UpdateUserInputMethodTip(kInstallLayoutOrTipUninstall)" in profile_tool
     assert EXPERIMENTAL_CLSID in bundle
     assert EXPERIMENTAL_PROFILE_GUID in bundle
+
+
+def test_profile_tool_uses_machine_wide_com_registration_for_tsf_loading() -> None:
+    source = (ROOT / "native/profile_tool/profile_tool.cpp").read_text(encoding="utf-8")
+
+    assert "RegGetValueW(HKEY_LOCAL_MACHINE" in source
+    assert "RegCreateKeyExW(HKEY_LOCAL_MACHINE" in source
+    assert "RegDeleteTreeW(HKEY_LOCAL_MACHINE" in source
+    assert "RegCreateKeyExW(HKEY_CURRENT_USER" not in source
+
+
+def test_installer_constructs_unicode_launcher_name_without_source_encoding_dependency() -> None:
+    install = (ROOT / "scripts/install-dev-profile.ps1").read_text(encoding="utf-8")
+
+    assert "$LauncherCmdName = [string]::Concat([char[]]@(" in install
+    assert "0x542F, 0x52A8, 0x795E, 0x7ECF, 0x5C0F, 0x72FC, 0x6BEB" in install
+    assert "    '启动神经小狼毫.cmd'," not in install
+    assert "Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8" in install
 
 
 def test_pinned_overlay_rewrites_all_official_runtime_identities() -> None:
@@ -160,3 +184,21 @@ def test_ci_runs_disposable_install_safety_suite_without_global_registration() -
     assert "identifier conflict" in safety
     assert "non-experimental GUID" in safety
     assert "SetDefault" not in safety
+
+
+def test_bundle_copies_declared_python_readme() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    bundle = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts/verify-windows-bundle.py").read_text(encoding="utf-8")
+
+    assert 'readme = "README.md"' in pyproject
+    assert "Join-Path $PythonService 'README.md'" in bundle
+    assert '"python-service/README.md"' in verifier
+
+
+def test_model_launcher_exposes_locked_torch_cuda_runtime() -> None:
+    launcher = (ROOT / "scripts/start-model-service.ps1").read_text(encoding="utf-8")
+
+    assert ".venv\\Lib\\site-packages\\torch\\lib" in launcher
+    assert '$env:PATH = "$TorchLibraryRoot;$env:PATH"' in launcher
+    assert "CPU fallback is forbidden" in launcher

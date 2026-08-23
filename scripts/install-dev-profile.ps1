@@ -19,11 +19,27 @@ $ProfileToolName = 'NeuralWeaselProfileTool.exe'
 $ActivatorName = 'NeuralWeaselSessionActivator.exe'
 $TsfDllName = 'NeuralWeaselExperimentalTSF.dll'
 $ServerName = 'NeuralWeaselServer.exe'
+$LauncherCmdName = [string]::Concat([char[]]@(
+    0x542F, 0x52A8, 0x795E, 0x7ECF, 0x5C0F, 0x72FC, 0x6BEB
+)) + '.cmd'
 
 function Assert-LastExitCode {
     param([Parameter(Mandatory)][string]$Operation)
     if ($LASTEXITCODE -ne 0) {
         throw "$Operation failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Assert-Administrator {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $Principal = [Security.Principal.WindowsPrincipal]::new($Identity)
+    if (-not $Principal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )) {
+        throw (
+            'Administrator elevation is required to register the Windows TSF profile. ' +
+            'Restart PowerShell as administrator and run the installer again.'
+        )
     }
 }
 
@@ -78,7 +94,8 @@ $ManifestPath = Join-Path $BuildDirectory 'build-manifest.json'
 if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
     throw "Missing build manifest: $ManifestPath"
 }
-$Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+$Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 |
+    ConvertFrom-Json
 if (
     $Manifest.experimental_clsid -ne $ExperimentalClsid -or
     $Manifest.experimental_profile_guid -ne $ExperimentalProfileGuid -or
@@ -101,7 +118,7 @@ $Required = @(
     'start-model-service.ps1',
     'launch-neural-weasel.ps1',
     'Start-Neural-Weasel.cmd',
-    '启动神经小狼毫.cmd',
+    $LauncherCmdName,
     'tools\uv.exe',
     'README-INSTALL-TEST.md',
     'data\neural_weasel.schema.yaml',
@@ -197,6 +214,7 @@ if (Test-Path -LiteralPath $ExistingManifestPath -PathType Leaf) {
             -Tool $InstalledTool `
             -ExpectedDll $InstalledDll
         if (-not $ProfileStatus.registered) {
+            Assert-Administrator
             & $InstalledTool register `
                 --clsid $ExperimentalClsid `
                 --profile-guid $ExperimentalProfileGuid `
@@ -210,6 +228,7 @@ if (Test-Path -LiteralPath $ExistingManifestPath -PathType Leaf) {
     }
 }
 
+Assert-Administrator
 $InstallParent = Split-Path -Parent $InstallRoot
 New-Item -ItemType Directory -Path $InstallParent -Force | Out-Null
 $StagingRoot = "$InstallRoot.staging-$([guid]::NewGuid().ToString('N'))"
@@ -294,5 +313,5 @@ try {
     throw $InstallFailure
 }
 
-Write-Host 'Installed 神经小狼毫（实验） without changing the default input method.'
-Write-Host 'Run 启动神经小狼毫.cmd to start the model service and activate it for this desktop session.'
+Write-Host 'Installed the Neural Weasel experimental profile without changing the default input method.'
+Write-Host "Run $LauncherCmdName to start the model service and activate it for this desktop session."

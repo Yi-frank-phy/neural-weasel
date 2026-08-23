@@ -300,9 +300,11 @@ Replace-RegexOnce -Path $RimeWithWeasel `
     -Pattern 'void RimeWithWeaselHandler::_Setup\(\) \{\s+RIME_STRUCT\(RimeTraits, weasel_traits\);' `
     -Replacement @'
 void rime_require_module_ai_translator();
+void rime_register_module_ai_translator_explicit();
 
 void RimeWithWeaselHandler::_Setup() {
   rime_require_module_ai_translator();
+  rime_register_module_ai_translator_explicit();
   RIME_STRUCT(RimeTraits, weasel_traits);
   RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator");
   weasel_traits.modules = neural_weasel_modules;
@@ -378,6 +380,9 @@ foreach ($ResourcePath in @(
     (Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServer.rc')
 )) {
     $Resource = Read-SourceFile -Path $ResourcePath
+    if (-not $Resource.StartsWith('#pragma code_page(65001)')) {
+        $Resource = "#pragma code_page(65001)`r`n$Resource"
+    }
     $Resource = $Resource.Replace('weaselx64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM.dll', 'NeuralWeaselExperimentalTSF.dll')
