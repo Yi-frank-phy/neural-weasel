@@ -331,6 +331,23 @@ void RimeWithWeaselHandler::_Setup() {
   RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator");
   weasel_traits.modules = neural_weasel_modules;
 '@
+Replace-RegexOnce -Path $RimeWithWeasel `
+    -Pattern 'LOG\(INFO\) << "Initializing la rime\.";\s+rime_api->initialize\(NULL\);' `
+    -Replacement @'
+LOG(INFO) << "Initializing la rime.";
+  RIME_MODULE_LIST(neural_weasel_init_modules, "default", "ai_translator");
+  std::string init_shared_dir = wtou8(WeaselSharedDataPath().wstring());
+  std::string init_user_dir = wtou8(WeaselUserDataPath().wstring());
+  std::string init_log_dir = WeaselLogPath().u8string();
+  RIME_STRUCT(RimeTraits, init_traits);
+  init_traits.shared_data_dir = init_shared_dir.c_str();
+  init_traits.user_data_dir = init_user_dir.c_str();
+  init_traits.prebuilt_data_dir = init_shared_dir.c_str();
+  init_traits.app_name = "rime.neural_weasel_experimental";
+  init_traits.log_dir = init_log_dir.c_str();
+  init_traits.modules = neural_weasel_init_modules;
+  rime_api->initialize(&init_traits);
+'@
 
 $TextExtensions = @('.cpp', '.h', '.rc', '.lua', '.def')
 $SourceDirectories = @(

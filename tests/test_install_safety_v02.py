@@ -214,3 +214,5 @@ def test_overlay_script_survives_local_powershell_51_rebuild() -> None:
     # Upstream resource files are UTF-16; blind UTF-8 rewrite corrupts them.
     assert "LastSourceEncoding" in text
     assert "'unicode'" in text
+    assert "expected one regex match" in text
+    assert "rime_api->initialize(&init_traits);" in text

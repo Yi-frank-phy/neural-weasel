@@ -103,6 +103,24 @@ def test_weasel_runtime_explicitly_registers_the_neural_rime_module() -> None:
     )
 
 
+def test_weasel_runtime_initializes_librime_with_neural_modules_and_paths() -> None:
+    """Every overlay rebuild must preserve the librime initialize seam."""
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+
+    assert r"rime_api->initialize\(NULL\);" in overlay
+    assert "rime_api->initialize(&init_traits);" in overlay
+    assert 'RIME_MODULE_LIST(neural_weasel_init_modules, "default", "ai_translator")' in overlay
+    for field in (
+        "init_traits.shared_data_dir",
+        "init_traits.user_data_dir",
+        "init_traits.prebuilt_data_dir",
+        "init_traits.app_name",
+        "init_traits.log_dir",
+        "init_traits.modules",
+    ):
+        assert field in overlay
+
+
 def test_safe_tsf_shell_contains_capture_but_no_backend_runtime() -> None:
     """The TSF may capture/send bounded context but never own backend work."""
     overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
