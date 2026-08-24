@@ -2,6 +2,9 @@
 #include <msctf.h>
 #include <objbase.h>
 
+#include <cwchar>
+#include <cwctype>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -10,8 +13,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <cwchar>
-#include <cwctype>
 
 #include "tsf/experimental_profile_ids.h"
 
@@ -28,6 +29,7 @@ constexpr LANGID kZhCn =
     MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
 constexpr wchar_t kClassesRoot[] = L"Software\\Classes\\CLSID\\";
 constexpr wchar_t kInprocServer[] = L"InprocServer32";
+constexpr DWORD ILOT_UNINSTALL = 0x00000001;
 
 struct Options {
   std::wstring command;
@@ -82,9 +84,12 @@ bool IsExpectedIdentity(const Options& options) {
              ToUpper(kNeuralWeaselZhCnProfileGuidString);
 }
 
+std::wstring ClsidRegistryRootPath() {
+  return std::wstring(kClassesRoot) + kNeuralWeaselTextServiceClsidString;
+}
+
 std::wstring ClsidRegistryPath() {
-  return std::wstring(kClassesRoot) +
-         kNeuralWeaselTextServiceClsidString + L"\\" + kInprocServer;
+  return ClsidRegistryRootPath() + L"\\" + kInprocServer;
 }
 
 std::wstring JsonEscape(std::wstring_view value) {
@@ -99,12 +104,12 @@ std::wstring JsonEscape(std::wstring_view value) {
   return escaped;
 }
 
-std::optional<std::wstring> ReadRegisteredDll() {
+std::optional<std::wstring> ReadRegisteredDll(HKEY root) {
   wchar_t value[32768] = {};
   DWORD bytes = sizeof(value);
   const LSTATUS status =
-      RegGetValueW(HKEY_CURRENT_USER, ClsidRegistryPath().c_str(), nullptr,
-                   RRF_RT_REG_SZ, nullptr, value, &bytes);
+      RegGetValueW(root, ClsidRegistryPath().c_str(), nullptr, RRF_RT_REG_SZ,
+                   nullptr, value, &bytes);
   if (status == ERROR_FILE_NOT_FOUND) {
     return std::nullopt;
   }
@@ -112,6 +117,63 @@ std::optional<std::wstring> ReadRegisteredDll() {
     throw std::runtime_error("failed to read experimental COM registration");
   }
   return std::wstring(value);
+}
+
+void DeleteComRegistration(HKEY root) {
+  const LSTATUS status =
+      RegDeleteTreeW(root, ClsidRegistryRootPath().c_str());
+  if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
+    throw std::runtime_error("failed to remove experimental COM registration");
+  }
+}
+
+void DeleteAllComRegistrations() {
+  std::exception_ptr first_error;
+  try {
+    DeleteComRegistration(HKEY_LOCAL_MACHINE);
+  } catch (...) {
+    first_error = std::current_exception();
+  }
+  try {
+    DeleteComRegistration(HKEY_CURRENT_USER);
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+  }
+  if (first_error) {
+    std::rethrow_exception(first_error);
+  }
+}
+
+std::wstring LayoutOrTipProfileString() {
+  return std::wstring(L"0x0804:") + kNeuralWeaselTextServiceClsidString +
+         kNeuralWeaselZhCnProfileGuidString + L";";
+}
+
+using InstallLayoutOrTipFunction = BOOL(CALLBACK*)(LPCWSTR, DWORD);
+
+void UpdateInputMethodTip(bool uninstall) {
+  HMODULE input_module = LoadLibraryExW(
+      L"input.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!input_module) {
+    throw std::runtime_error("failed to load system Input.dll");
+  }
+  const auto InstallLayoutOrTip = reinterpret_cast<InstallLayoutOrTipFunction>(
+      GetProcAddress(input_module, "InstallLayoutOrTip"));
+  if (!InstallLayoutOrTip) {
+    FreeLibrary(input_module);
+    throw std::runtime_error("InstallLayoutOrTip is unavailable");
+  }
+  const std::wstring profile = LayoutOrTipProfileString();
+  const DWORD flags = uninstall ? ILOT_UNINSTALL : 0;
+  const BOOL updated = InstallLayoutOrTip(profile.c_str(), flags);
+  FreeLibrary(input_module);
+  if (!updated) {
+    throw std::runtime_error(
+        uninstall ? "failed to remove experimental InputMethodTip"
+                  : "failed to install experimental InputMethodTip");
+  }
 }
 
 std::filesystem::path CanonicalExistingPath(
@@ -170,10 +232,11 @@ void SetRegistryString(HKEY key,
 void RegisterComServer(const std::filesystem::path& dll_path) {
   HKEY key = nullptr;
   DWORD disposition = 0;
-  if (RegCreateKeyExW(HKEY_CURRENT_USER, ClsidRegistryPath().c_str(), 0,
+  if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, ClsidRegistryPath().c_str(), 0,
                       nullptr, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE,
                       nullptr, &key, &disposition) != ERROR_SUCCESS) {
-    throw std::runtime_error("failed to create experimental COM registration");
+    throw std::runtime_error(
+        "failed to create machine-wide experimental COM registration");
   }
   try {
     SetRegistryString(key, nullptr, CanonicalExistingPath(dll_path).wstring());
@@ -304,8 +367,8 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
   try {
     WithTsfManagers(
         [&](ITfInputProcessorProfileMgr* profiles, ITfCategoryMgr* categories) {
-          const auto description_length =
-              static_cast<ULONG>(std::wstring_view(kNeuralWeaselDisplayName).size());
+          const auto description_length = static_cast<ULONG>(
+              std::wstring_view(kNeuralWeaselDisplayName).size());
           const auto icon_path = CanonicalExistingPath(dll_path).wstring();
           const HRESULT result = profiles->RegisterProfile(
               kNeuralWeaselTextServiceClsid, kZhCn,
@@ -318,7 +381,17 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
           }
           RegisterCategories(categories);
         });
+    UpdateInputMethodTip(false);
+    // Older builds wrote the same reserved CLSID under HKCU. HKCR merges that
+    // key ahead of HKLM, so leave no stale per-user override after a successful
+    // machine-wide registration.
+    DeleteComRegistration(HKEY_CURRENT_USER);
   } catch (...) {
+    try {
+      UpdateInputMethodTip(true);
+    } catch (...) {
+      // Preserve the original registration failure.
+    }
     try {
       WithTsfManagers(
           [](ITfInputProcessorProfileMgr* profiles,
@@ -329,31 +402,46 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
             UnregisterCategories(categories);
           });
     } catch (...) {
-      // Preserve the original registration failure. The COM key is still
-      // removed below and a later idempotent uninstall retries cleanup.
+      // Preserve the original registration failure.
     }
-    RegDeleteTreeW(HKEY_CURRENT_USER,
-                   (std::wstring(kClassesRoot) +
-                    kNeuralWeaselTextServiceClsidString)
-                       .c_str());
+    try {
+      DeleteAllComRegistrations();
+    } catch (...) {
+      // Preserve the original registration failure; idempotent uninstall will
+      // retry cleanup with the same reserved identity.
+    }
     throw;
   }
 }
 
 void UnregisterProfile() {
-  WithTsfManagers(
-      [](ITfInputProcessorProfileMgr* profiles, ITfCategoryMgr* categories) {
-        profiles->UnregisterProfile(kNeuralWeaselTextServiceClsid, kZhCn,
-                                    kNeuralWeaselZhCnProfileGuid, 0);
-        UnregisterCategories(categories);
-      });
-  const LSTATUS status =
-      RegDeleteTreeW(HKEY_CURRENT_USER,
-                     (std::wstring(kClassesRoot) +
-                      kNeuralWeaselTextServiceClsidString)
-                         .c_str());
-  if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
-    throw std::runtime_error("failed to remove experimental COM registration");
+  std::exception_ptr first_error;
+  try {
+    UpdateInputMethodTip(true);
+  } catch (...) {
+    first_error = std::current_exception();
+  }
+  try {
+    WithTsfManagers(
+        [](ITfInputProcessorProfileMgr* profiles, ITfCategoryMgr* categories) {
+          profiles->UnregisterProfile(kNeuralWeaselTextServiceClsid, kZhCn,
+                                      kNeuralWeaselZhCnProfileGuid, 0);
+          UnregisterCategories(categories);
+        });
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+  }
+  try {
+    DeleteAllComRegistrations();
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+  }
+  if (first_error) {
+    std::rethrow_exception(first_error);
   }
 }
 
@@ -383,7 +471,7 @@ int wmain(int argc, wchar_t** argv) {
       VerifyTsfIdentity(options.dll_path);
       return 0;
     }
-    const auto registered = ReadRegisteredDll();
+    const auto registered = ReadRegisteredDll(HKEY_LOCAL_MACHINE);
     const ProfileState profile_state = ReadProfileState();
 
     if (options.command == L"status") {
