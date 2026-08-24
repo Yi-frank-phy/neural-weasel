@@ -112,6 +112,11 @@ int Fail(const char* message) {
 }  // namespace
 
 int main() {
+  if (ContextUpdateBridgeOptions{}.readiness_timeout !=
+      std::chrono::milliseconds(3000)) {
+    return Fail("default readiness timeout was not 3000 ms");
+  }
+
   // A restarted service can legitimately assign epoch one after the previous
   // process published a much larger local epoch.
   EditorContextEpoch::Instance().Publish(100);

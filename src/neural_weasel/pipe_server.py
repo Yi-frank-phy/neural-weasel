@@ -239,6 +239,7 @@ class NamedPipeServer:
         self._requested_context_epoch = 0
         self._last_context_error: str | None = None
         self._context_bindings: OrderedDict[int, ContextBinding] = OrderedDict()
+        self._latest_source_revisions: OrderedDict[str, int] = OrderedDict()
 
     def start(self, timeout: float = 5.0) -> None:
         if self._server_thread and self._server_thread.is_alive():
@@ -411,6 +412,29 @@ class NamedPipeServer:
             while len(self._context_bindings) > MAX_CONTEXT_BINDINGS:
                 self._context_bindings.popitem(last=False)
 
+    def _is_stale_context_update(
+        self,
+        client_epoch: int,
+        binding: ContextBinding | None,
+    ) -> bool:
+        if binding is None:
+            return client_epoch <= self._latest_client_context_epoch
+        latest_revision = self._latest_source_revisions.get(binding.context_session)
+        return latest_revision is not None and binding.source_revision <= latest_revision
+
+    def _remember_context_update(
+        self,
+        client_epoch: int,
+        binding: ContextBinding | None,
+    ) -> None:
+        if binding is None:
+            self._latest_client_context_epoch = client_epoch
+            return
+        self._latest_source_revisions[binding.context_session] = binding.source_revision
+        self._latest_source_revisions.move_to_end(binding.context_session)
+        while len(self._latest_source_revisions) > MAX_CONTEXT_BINDINGS:
+            self._latest_source_revisions.popitem(last=False)
+
     def _binding_error(
         self,
         message: dict[str, Any],
@@ -449,7 +473,7 @@ class NamedPipeServer:
             raise ProtocolError("before and after must be strings")
 
         with self._context_forward_lock:
-            if epoch <= self._latest_client_context_epoch:
+            if self._is_stale_context_update(epoch, binding):
                 with self._state_lock:
                     requested_epoch = self._requested_context_epoch
                 return {
@@ -464,7 +488,7 @@ class NamedPipeServer:
             assigned_epoch = self.engine.request_context_update(before, after)
             if isinstance(assigned_epoch, bool) or not isinstance(assigned_epoch, int):
                 raise RuntimeError("engine returned an invalid context epoch")
-            self._latest_client_context_epoch = epoch
+            self._remember_context_update(epoch, binding)
             with self._state_lock:
                 self._requested_context_epoch = assigned_epoch
                 self._last_context_error = None

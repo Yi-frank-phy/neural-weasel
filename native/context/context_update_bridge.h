@@ -67,7 +67,7 @@ enum class ContextUpdateResult {
 
 struct ContextUpdateBridgeOptions {
   std::chrono::milliseconds pipe_query_timeout{25};
-  std::chrono::milliseconds readiness_timeout{200};
+  std::chrono::milliseconds readiness_timeout{3000};
   std::chrono::milliseconds health_poll_interval{5};
 };
 
