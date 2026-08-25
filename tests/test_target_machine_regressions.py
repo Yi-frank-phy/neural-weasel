@@ -21,7 +21,7 @@ def test_wisdom_and_experimental_model_services_use_disjoint_state() -> None:
 
 def test_static_rime_components_are_explicitly_initialized_and_finalized() -> None:
     module = _read("native/rime/ai_translator_module.cc")
-    overlay = _read("scripts/prepare-weasel-overlay.ps1")
+    overlay = _read("scripts/prepare-weasel-overlay-pinned.ps1")
 
     assert "rime_register_module_ai_translator_explicit" in module
     assert 'RimeFindModule("ai_translator")' in module
@@ -95,7 +95,7 @@ def test_profile_install_updates_user_input_method_tip_without_setting_default()
 
 
 def test_generated_weasel_resources_force_utf8_code_page() -> None:
-    overlay = _read("scripts/prepare-weasel-overlay.ps1")
+    overlay = _read("scripts/prepare-weasel-overlay-pinned.ps1")
 
     assert "#pragma code_page(65001)" in overlay
 
