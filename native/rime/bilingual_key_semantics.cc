@@ -7,6 +7,9 @@ KeyOutcome ResolveKeyOutcome(InputMode mode,
                             bool has_completion,
                             bool candidate_fresh,
                             bool service_available) noexcept {
+  if (!candidate_fresh) {
+    mode = InputMode::kAmbiguous;
+  }
   has_completion =
       has_completion && candidate_fresh && service_available;
   if (mode != InputMode::kEnglish && !has_completion) {

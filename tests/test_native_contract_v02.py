@@ -84,7 +84,7 @@ def test_plugin_build_generates_librime_build_config_header() -> None:
 
 def test_safe_tsf_shell_contains_capture_but_no_backend_runtime() -> None:
     """The TSF may capture/send bounded context but never own backend work."""
-    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    overlay = (ROOT / "scripts/prepare-weasel-overlay-pinned.ps1").read_text(encoding="utf-8")
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")
     tsf_block = overlay[tsf_start:server_start]
