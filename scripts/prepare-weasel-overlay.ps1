@@ -50,14 +50,8 @@ $PinnedOverlay = Join-Path $PSScriptRoot 'prepare-weasel-overlay-pinned.ps1'
 
 $ResolvedWeaselRoot = (Resolve-Path -LiteralPath $WeaselRoot).Path
 
-# Keep the pinned Weasel baseline while applying two later upstream TSF
-# lifecycle fixes below. Separately, make Neural Weasel's IsShown contract
-# report actual HWND visibility rather than the internal Show-request state.
-$WeaselUiSource = Join-Path $ResolvedWeaselRoot 'WeaselUI/WeaselUI.cpp'
-Replace-Literal -Path $WeaselUiSource `
-    -Old '  bool IsShown() const { return shown; }' `
-    -New '  bool IsShown() const { return panel.IsWindowVisible() != FALSE; }'
-
+# Keep the pinned Weasel baseline while applying later upstream CandidateList
+# fixes that are narrowly relevant to TSF UI update and lifecycle handling.
 $CandidateListSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/CandidateList.cpp'
 Replace-Literal -Path $CandidateListSource -Old @'
   _ui->Update(ctx, status);
@@ -125,4 +119,4 @@ Replace-Literal -Path $CandidateListHeader -Old @'
   weasel::UIStyle _style;
 '@
 
-Write-Host 'Applied candidate UI visibility truth and lifecycle fixes.'
+Write-Host 'Applied upstream CandidateList UI update/lifecycle fixes.'
