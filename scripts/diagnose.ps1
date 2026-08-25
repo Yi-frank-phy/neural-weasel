@@ -109,6 +109,7 @@ try {
 }
 
 $ComPathConflict = $false
+$ContextBrokerPathMismatch = $false
 $Registered = [bool](Get-OptionalProperty $Registration 'registered' $false)
 $ComRegistered = [bool](
     Get-OptionalProperty $Registration 'com_registered' $false
@@ -122,8 +123,17 @@ $IdentityConflict = [bool](
 $RegisteredComPath = Get-OptionalProperty $Registration 'com_path'
 if ($ComRegistered -and $RegisteredComPath) {
     $RegisteredPath = [IO.Path]::GetFullPath([string]$RegisteredComPath)
+    $RegisteredDllDirectory = [IO.Path]::GetDirectoryName($RegisteredPath)
+    $ServerDirectory = [IO.Path]::GetDirectoryName(
+        [IO.Path]::GetFullPath($ServerPath)
+    )
     $ComPathConflict = -not $RegisteredPath.StartsWith(
         $InstallRoot + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    $ContextBrokerPathMismatch = -not [string]::Equals(
+        $RegisteredDllDirectory,
+        $ServerDirectory,
         [StringComparison]::OrdinalIgnoreCase
     )
 }
@@ -149,6 +159,7 @@ $Report = [ordered]@{
     upstream_weasel_revision = Get-OptionalProperty `
         $Manifest 'upstream_weasel_revision'
     official_weasel_path_conflict = $ComPathConflict
+    context_broker_path_mismatch = $ContextBrokerPathMismatch
     missing_required_files = $Missing
     recent_safe_log_location = $LogRoot
 }

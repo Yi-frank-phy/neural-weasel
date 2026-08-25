@@ -19,6 +19,14 @@ def test_native_translator_uses_unified_protocol_and_mode() -> None:
     assert "IsResponseEpochAcceptable" in source
 
 
+def test_native_candidate_query_deadline_covers_measured_steady_state() -> None:
+    """The measured 10.6-11.2 ms candidate path must fit the native deadline."""
+    header = (ROOT / "native/rime/ai_translator.h").read_text(encoding="utf-8")
+
+    assert "query_timeout_{50}" in header
+    assert "query_timeout_{6}" not in header
+
+
 def test_native_build_includes_bilingual_processor_and_test() -> None:
     """AT-KS-01..06: compiled integration includes the tested processor."""
     cmake = (ROOT / "native/CMakeLists.txt").read_text(encoding="utf-8")

@@ -86,6 +86,62 @@ def test_stale_completion_cannot_overwrite_newer_requested_epoch() -> None:
     assert coordinator.latest_state.before_hash == "newest"
 
 
+def test_background_refresh_prewarms_candidate_path_before_publication() -> None:
+    """Candidate cold-path work completes before a refreshed epoch is visible."""
+
+    class RecordingEngine:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, int, str, int]] = []
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def query(
+            self,
+            before: str,
+            raw_keys: str,
+            *,
+            state: BackendState,
+            after_text: str,
+            limit: int,
+        ) -> list[object]:
+            self.calls.append((before, raw_keys, state.epoch, after_text, limit))
+            if len(self.calls) == 1:
+                self.started.set()
+                assert self.release.wait(1.0)
+            return []
+
+    runtime = BlockingRuntime(threading.Event(), threading.Event())
+    backend = FullLogitsSnapshotBackend(runtime)
+    engine = RecordingEngine()
+    coordinator = SnapshotCoordinator(backend=backend, engine=engine)
+
+    epoch = coordinator.request_context_update("中文上下文", "右侧文本")
+
+    assert engine.started.wait(1.0)
+    assert coordinator.context_epoch == 0
+    engine.release.set()
+    assert coordinator.wait_for_epoch(epoch, timeout_seconds=1.0)
+    assert engine.calls == [
+        ("中文上下文", "n", epoch, "右侧文本", 5),
+        ("中文上下文", "ni", epoch, "右侧文本", 5),
+    ]
+
+
+def test_background_prewarm_failure_does_not_block_snapshot_publication() -> None:
+    class FailingEngine:
+        def query(self, *args: object, **kwargs: object) -> list[object]:
+            raise RuntimeError("synthetic prewarm failure")
+
+    runtime = BlockingRuntime(threading.Event(), threading.Event())
+    backend = FullLogitsSnapshotBackend(runtime)
+    coordinator = SnapshotCoordinator(backend=backend, engine=FailingEngine())
+
+    epoch = coordinator.request_context_update("context")
+
+    assert coordinator.wait_for_epoch(epoch, timeout_seconds=1.0)
+    assert coordinator.diagnostics()["last_prewarm_error"] == "RuntimeError"
+
+
 def test_snapshot_age_over_100ms_is_reported_but_queryable() -> None:
     """AT-RT-04: stale age is a metric, not a query rejection."""
     runtime = BlockingRuntime(threading.Event(), threading.Event())

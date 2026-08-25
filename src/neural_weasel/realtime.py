@@ -10,6 +10,8 @@ from .backends import BackendState, ModelBackend
 from .candidate import Candidate
 from .unified import UnifiedConstraintEngine
 
+_CANDIDATE_PREWARM_KEYS = ("n", "ni")
+
 
 class SnapshotCoordinator:
     """Publish only the newest requested backend state.
@@ -24,11 +26,13 @@ class SnapshotCoordinator:
         backend: ModelBackend,
         engine: UnifiedConstraintEngine,
         retained_states: int = 4,
+        candidate_query: Callable[..., list[Candidate]] | None = None,
     ) -> None:
         if retained_states < 1:
             raise ValueError("retained_states must be positive")
         self.backend = backend
         self.engine = engine
+        self._candidate_query = candidate_query or engine.query
         self.retained_states = retained_states
         self._request_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -38,6 +42,7 @@ class SnapshotCoordinator:
         self._state: BackendState | None = None
         self._states: dict[int, BackendState] = {}
         self._last_refresh_error: str | None = None
+        self._last_prewarm_error: str | None = None
 
     def _next_request_epoch(self) -> int:
         self._requested_epoch += 1
@@ -54,6 +59,7 @@ class SnapshotCoordinator:
         )
         with self._request_lock:
             if requested_epoch == self._requested_epoch:
+                self._last_prewarm_error = None
                 self._publish(state)
         return state
 
@@ -92,9 +98,47 @@ class SnapshotCoordinator:
                         self._last_refresh_error = type(error).__name__
                 continue
             with self._request_lock:
+                if requested_epoch != self._requested_epoch:
+                    continue
+            prewarm_error = self._prewarm_candidate_path(
+                before,
+                after,
+                state,
+            )
+            with self._request_lock:
                 if requested_epoch == self._requested_epoch:
                     self._last_refresh_error = None
+                    self._last_prewarm_error = prewarm_error
                     self._publish(state)
+
+    def _prewarm_candidate_path(
+        self,
+        before: str,
+        after: str,
+        state: BackendState,
+    ) -> str | None:
+        """Touch cold query structures on the background context worker.
+
+        The fixed keys contain no editor text. Candidate objects are discarded
+        before the new epoch is published, so the foreground query path sees a
+        warmed immutable snapshot without persisting generated text.
+        """
+
+        try:
+            for raw_keys in _CANDIDATE_PREWARM_KEYS:
+                self._candidate_query(
+                    before,
+                    raw_keys,
+                    state=state,
+                    after_text=after,
+                    limit=5,
+                )
+        except Exception as error:
+            # Prewarming is an optimization and must not make a valid context
+            # snapshot unavailable. Keep only the exception type for bounded,
+            # context-free diagnostics.
+            return type(error).__name__
+        return None
 
     def _publish(self, state: BackendState) -> None:
         with self._state_lock:
@@ -146,6 +190,7 @@ class SnapshotCoordinator:
         with self._request_lock:
             self._next_request_epoch()
             self._pending = None
+            self._last_prewarm_error = None
             self.backend.invalidate_private_state()
         with self._state_lock:
             self._state = None
@@ -156,6 +201,7 @@ class SnapshotCoordinator:
         with self._request_lock:
             requested_epoch = self._requested_epoch
             last_error = self._last_refresh_error
+            last_prewarm_error = self._last_prewarm_error
         diagnostics = self.backend.diagnostics()
         diagnostics.update(
             {
@@ -167,6 +213,7 @@ class SnapshotCoordinator:
                     else None
                 ),
                 "last_refresh_error": last_error,
+                "last_prewarm_error": last_prewarm_error,
             }
         )
         return diagnostics

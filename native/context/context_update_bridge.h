@@ -66,7 +66,10 @@ enum class ContextUpdateResult {
 };
 
 struct ContextUpdateBridgeOptions {
-  std::chrono::milliseconds pipe_query_timeout{25};
+  // This runs only on the bridge worker. A cold native pipe connection can
+  // exceed the foreground candidate budget even though the model accepts the
+  // context update promptly, so keep a separate bounded transport allowance.
+  std::chrono::milliseconds pipe_query_timeout{1000};
   std::chrono::milliseconds readiness_timeout{3000};
   std::chrono::milliseconds health_poll_interval{5};
 };

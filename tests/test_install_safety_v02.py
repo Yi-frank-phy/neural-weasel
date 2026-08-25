@@ -102,6 +102,16 @@ def test_required_powershell_scripts_are_fail_closed() -> None:
     assert "Refusing" in uninstall
 
 
+def test_diagnose_reports_context_broker_path_mismatch() -> None:
+    """The TSF sender trusts only a broker beside its registered DLL."""
+    diagnose = (ROOT / "scripts" / "diagnose.ps1").read_text(encoding="utf-8")
+
+    assert "$RegisteredDllDirectory" in diagnose
+    assert "$ServerDirectory" in diagnose
+    assert "[StringComparison]::OrdinalIgnoreCase" in diagnose
+    assert "context_broker_path_mismatch" in diagnose
+
+
 def test_uninstall_has_no_identifier_override_parameters() -> None:
     """AT-WIN-04/05: callers cannot redirect uninstall at another profile."""
     uninstall = (ROOT / "scripts" / "uninstall-dev-profile.ps1").read_text(encoding="utf-8")

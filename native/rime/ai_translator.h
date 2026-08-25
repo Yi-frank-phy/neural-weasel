@@ -26,7 +26,7 @@ class AiTranslator final : public ::rime::Translator {
 
   std::uint64_t session_id_;
   std::uint64_t revision_ = 0;
-  std::chrono::milliseconds query_timeout_{6};
+  std::chrono::milliseconds query_timeout_{50};
   pipe::NamedPipeClient pipe_;
 };
 

@@ -6,6 +6,7 @@
 #include <system_error>
 #include <utility>
 
+#include "context/metadata_trace.h"
 #include "rime/editor_context_epoch.h"
 
 namespace neural_weasel::context {
@@ -362,7 +363,10 @@ std::uint64_t ContextUpdateBridge::Submit(
   const std::uint64_t sequence = ++next_sequence_;
   latest_sequence_.store(sequence, std::memory_order_release);
   PendingUpdate update{sequence, std::move(snapshot), std::move(metadata)};
-  if (RequiresImmediateCleanup(update.snapshot, update.metadata)) {
+  const bool immediate_cleanup =
+      RequiresImmediateCleanup(update.snapshot, update.metadata);
+  const std::uint64_t source_revision = update.metadata.source_revision;
+  if (immediate_cleanup) {
     rime_plugin::EditorContextEpoch::Instance().Reset();
     cleanup_pending_ = std::move(update);
     pending_.reset();
@@ -370,6 +374,10 @@ std::uint64_t ContextUpdateBridge::Submit(
     pending_ = std::move(update);
   }
   SetResult(ContextUpdateResult::kQueued);
+  TraceContextPipeline(
+      L"bridge", L"event=submit sequence=%llu cleanup=%d revision=%llu",
+      static_cast<unsigned long long>(sequence), immediate_cleanup ? 1 : 0,
+      static_cast<unsigned long long>(source_revision));
   condition_.notify_one();
   return sequence;
 }
@@ -429,6 +437,9 @@ void ContextUpdateBridge::WorkerLoop() noexcept {
 }
 
 void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
+  TraceContextPipeline(
+      L"bridge", L"event=process begin sequence=%llu",
+      static_cast<unsigned long long>(update.sequence));
   const SerializedRequest request =
       BuildContextRequest(update.sequence, update.snapshot, update.metadata);
   if (!request.context_update) {
@@ -437,6 +448,9 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
   }
   if (transport_ == nullptr) {
     SetResult(ContextUpdateResult::kTransportError);
+    TraceContextPipeline(
+        L"bridge", L"event=process result=transport-null sequence=%llu",
+        static_cast<unsigned long long>(update.sequence));
     return;
   }
   if (request.context_update && !IsLatest(update.sequence)) {
@@ -453,6 +467,11 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
   const pipe::QueryResult response = transport_->TryQuery(request.payload, timeout);
   if (!response) {
     SetResult(ContextUpdateResult::kTransportError);
+    TraceContextPipeline(
+        L"bridge",
+        L"event=process result=update-transport-error sequence=%llu status=%d error=%lu",
+        static_cast<unsigned long long>(update.sequence),
+        static_cast<int>(response.status), response.win32_error);
     return;
   }
 
@@ -470,6 +489,9 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
   if (!ParseContextUpdateAcknowledgement(
           response.payload, update.sequence, &assigned_epoch)) {
     SetResult(ContextUpdateResult::kProtocolError);
+    TraceContextPipeline(
+        L"bridge", L"event=process result=update-protocol-error sequence=%llu",
+        static_cast<unsigned long long>(update.sequence));
     return;
   }
   if (!IsLatest(update.sequence)) {
@@ -488,6 +510,11 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
         transport_->TryQuery(health_request, timeout);
     if (!health) {
       SetResult(ContextUpdateResult::kTransportError);
+      TraceContextPipeline(
+          L"bridge",
+          L"event=process result=health-transport-error sequence=%llu status=%d error=%lu",
+          static_cast<unsigned long long>(update.sequence),
+          static_cast<int>(health.status), health.win32_error);
       return;
     }
 
@@ -514,6 +541,11 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
         rime_plugin::EditorContextEpoch::Instance().Publish(assigned_epoch);
       }
       SetResult(ContextUpdateResult::kPublished);
+      TraceContextPipeline(
+          L"bridge", L"event=process result=published sequence=%llu epoch=%llu revision=%llu",
+          static_cast<unsigned long long>(update.sequence),
+          static_cast<unsigned long long>(assigned_epoch),
+          static_cast<unsigned long long>(update.metadata.source_revision));
       return;
     }
     if (ready_epoch > assigned_epoch) {

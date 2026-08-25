@@ -166,7 +166,174 @@ Replace-Literal -Path $TsfXmake `
     -Old '  add_shflags("/DEBUG /OPT:REF /OPT:ICF")' `
     -New '  add_shflags("/DEBUG /OPT:REF /OPT:ICF /LTCG")'
 
+$WeaselUiSource = Join-Path $ResolvedWeaselRoot 'WeaselUI/WeaselUI.cpp'
+$RobustCandidateWindowCreate = @'
+bool UI::Create(HWND parent) {
+  if (!pimpl_) {
+    pimpl_ = new UIImpl(*this);
+    if (!pimpl_)
+      return false;
+  } else if (pimpl_->panel.IsWindow()) {
+    return true;
+  }
+
+  HWND created = pimpl_->panel.Create(
+      parent, 0, 0, WS_POPUP,
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+      0U, 0);
+  if (created == nullptr && parent != nullptr) {
+    // Some modern editor hosts expose a transient TSF view HWND that cannot
+    // own a popup. Keep the candidate panel process-local and retry unowned.
+    created = pimpl_->panel.Create(
+        nullptr, 0, 0, WS_POPUP,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE |
+            WS_EX_TRANSPARENT,
+        0U, 0);
+  }
+  return created != nullptr;
+}
+'@
+Replace-RegexOnce -Path $WeaselUiSource `
+    -Pattern 'bool UI::Create\(HWND parent\) \{.*?\}\s+(?=void UI::Destroy)' `
+    -Replacement $RobustCandidateWindowCreate
+
+$CandidateUiSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/CandidateList.cpp'
+Copy-Item -LiteralPath (
+    Join-Path $ResolvedRepositoryRoot 'native/tsf/ui_lifecycle_trace.h'
+) -Destination (
+    Join-Path $ResolvedWeaselRoot 'WeaselTSF/UiLifecycleTrace.h'
+) -Force
+Replace-Literal -Path $CandidateUiSource `
+    -Old '#include "CandidateList.h"' `
+    -New @'
+#include "CandidateList.h"
+#include "UiLifecycleTrace.h"
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^STDMETHODIMP CCandidateList::Show\(BOOL showCandidateWindow\) \{.*?^\}' `
+    -Replacement @'
+STDMETHODIMP CCandidateList::Show(BOOL showCandidateWindow) {
+  if (showCandidateWindow)
+    _ui->Show();
+  else
+    _ui->Hide();
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-window-visibility requested=%d actual=%d",
+      showCandidateWindow ? 1 : 0, _ui->IsShown() ? 1 : 0);
+  return S_OK;
+}
+'@
+Replace-Literal -Path $CandidateUiSource `
+    -Old 'void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {' `
+    -New @'
+void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-update candidates=%llu composing=%d pbShow=%d",
+      static_cast<unsigned long long>(ctx.cinfo.candies.size()),
+      status.composing ? 1 : 0, _pbShow ? 1 : 0);
+'@
+$TracedStartUi = @'
+void CCandidateList::StartUI() {
+  neural_weasel::tsf::TraceUiLifecycle(L"event=candidate-ui-start begin");
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  if (!pThreadMgr) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=no-thread-manager");
+    return;
+  }
+
+  com_ptr<ITfUIElementMgr> pUIElementMgr;
+  auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  if (FAILED(hr)) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=query-failed hr=%ld", hr);
+    return;
+  }
+
+  if (pUIElementMgr == NULL) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=null-ui-manager");
+    return;
+  }
+
+  if (!_ui->uiCallback())
+    _ui->SetUICallBack([this](size_t* const sel, size_t* const hov,
+                              bool* const next, bool* const scroll_next) {
+      _tsf->HandleUICallback(sel, hov, next, scroll_next);
+    });
+  hr = pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-start result=registered hr=%ld pbShow=%d uiid=%lu",
+      hr, _pbShow ? 1 : 0, uiid);
+  // pUIElementMgr->UpdateUIElement(uiid);
+  if (_pbShow) {
+    _ui->style() = _style;
+    _MakeUIWindow();
+  }
+}
+
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^void CCandidateList::StartUI\(\) \{.*?^\}\r?\n\r?\n(?=void CCandidateList::EndUI)' `
+    -Replacement $TracedStartUi
+Replace-Literal -Path $CandidateUiSource `
+    -Old 'void CCandidateList::EndUI() {' `
+    -New @'
+void CCandidateList::EndUI() {
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-end uiid-valid=%d",
+      uiid == TF_INVALID_UIELEMENTID ? 0 : 1);
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^void CCandidateList::_MakeUIWindow\(\) \{.*?^\}' `
+    -Replacement @'
+void CCandidateList::_MakeUIWindow() {
+  HWND p = _GetActiveWnd();
+  const bool created = _ui->Create(p);
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-window-create result=%d owner=%d", created ? 1 : 0,
+      p ? 1 : 0);
+}
+'@
+
+$WeaselTsfHeader = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.h'
+Replace-RegexOnce -Path $WeaselTsfHeader `
+    -Pattern '(?m)^(\s*weasel::Client m_client;\r?\n)(\s*DWORD _activateFlags;)' `
+    -Replacement @'
+$1  ULONGLONG _nextReconnectTick = 0;
+$2
+'@
+
 $WeaselTsfSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.cpp'
+$BoundedReconnect = @'
+bool WeaselTSF::_EnsureServerConnected() {
+  if (m_client.Echo()) {
+    _nextReconnectTick = 0;
+    return true;
+  }
+
+  // The launcher owns server lifetime. Never launch or wait from an
+  // application-hosted TSF DLL; return promptly and retry at a bounded rate.
+  const ULONGLONG now = GetTickCount64();
+  if (now < _nextReconnectTick) {
+    return false;
+  }
+  _nextReconnectTick = now + 1000;
+  _Reconnect();
+  if (!m_client.Echo()) {
+    return false;
+  }
+  _nextReconnectTick = 0;
+  return true;
+}
+'@
+# WeaselTSF.cpp bounded reconnect rewrite count is enforced once against the
+# pinned upstream revision. This removes process launch, sleeping and detached
+# callbacks from every editor process that loads the experimental TSF.
+Replace-RegexOnce -Path $WeaselTsfSource `
+    -Pattern '(?ms)^static unsigned int retry = 0;\r?\n\r?\nbool WeaselTSF::_EnsureServerConnected\(\) \{.*?^\}\s*\z' `
+    -Replacement $BoundedReconnect
+
 Replace-Literal -Path $WeaselTsfSource -Old '#include "WeaselTSF.h"' -New @'
 #include "WeaselTSF.h"
 #include "tsf/weasel_context_adapter.h"
