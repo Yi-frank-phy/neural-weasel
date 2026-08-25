@@ -117,5 +117,14 @@ int main() {
     std::cerr << "shared key fixture did not cover all required vectors\n";
     return 1;
   }
+
+  const auto stale_english_space =
+      neural_weasel::rime_plugin::ResolveKeyOutcome(
+          InputMode::kEnglish, KeyIntent::kSpace, true, false, true);
+  if (stale_english_space != KeyOutcome::kUseRimeDefault) {
+    std::cerr << "stale English mode must not force literal-space semantics\n";
+    return 1;
+  }
+
   return 0;
 }
