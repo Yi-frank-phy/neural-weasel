@@ -49,9 +49,7 @@ def test_unknown_context_oracle_operations_do_not_echo_secret() -> None:
 
 
 def test_restored_tsf_path_does_not_use_wisdom_or_persistence_bridges() -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay-pinned.ps1").read_text(
-        encoding="utf-8"
-    )
+    overlay = (ROOT / "scripts/prepare-weasel-overlay-pinned.ps1").read_text(encoding="utf-8")
     client = (ROOT / "native/tsf/context_capture_client.cc").read_text(encoding="utf-8")
     broker = (ROOT / "native/context/context_capture_broker.cc").read_text(encoding="utf-8")
 
