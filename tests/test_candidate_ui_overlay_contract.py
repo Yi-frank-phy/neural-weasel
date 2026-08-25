@@ -10,12 +10,11 @@ def _overlay() -> str:
     return OVERLAY.read_text(encoding="utf-8")
 
 
-def test_candidate_ui_visibility_uses_real_hwnd_state() -> None:
+def test_candidate_ui_overlay_does_not_patch_panel_visibility_semantics() -> None:
     overlay = _overlay()
 
-    assert "WeaselUI/WeaselUI.cpp" in overlay
-    assert "panel.IsWindowVisible()" in overlay
-    assert "bool IsShown() const { return shown; }" in overlay
+    assert "WeaselUI/WeaselUI.cpp" not in overlay
+    assert "panel.IsWindowVisible()" not in overlay
 
 
 def test_candidate_ui_element_updates_are_not_gated_by_pbshow() -> None:
