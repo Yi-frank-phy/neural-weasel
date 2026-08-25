@@ -31,10 +31,18 @@ function Replace-Literal {
         [Parameter(Mandatory)][string]$New
     )
     $Content = Read-SourceFile -Path $Path
-    if (-not $Content.Contains($Old)) {
+    $UsesCrLf = $Content.Contains("`r`n")
+    $NormalizedContent = $Content.Replace("`r`n", "`n")
+    $NormalizedOld = $Old.Replace("`r`n", "`n")
+    $NormalizedNew = $New.Replace("`r`n", "`n")
+    if (-not $NormalizedContent.Contains($NormalizedOld)) {
         throw "Pinned upstream seam changed in $Path; missing expected text: $Old"
     }
-    Write-SourceFile -Path $Path -Content $Content.Replace($Old, $New)
+    $Updated = $NormalizedContent.Replace($NormalizedOld, $NormalizedNew)
+    if ($UsesCrLf) {
+        $Updated = $Updated.Replace("`n", "`r`n")
+    }
+    Write-SourceFile -Path $Path -Content $Updated
 }
 
 $PinnedOverlay = Join-Path $PSScriptRoot 'prepare-weasel-overlay-pinned.ps1'
