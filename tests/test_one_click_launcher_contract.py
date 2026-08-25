@@ -58,7 +58,7 @@ def test_session_activator_is_current_session_only_and_never_enables_profile() -
 
 
 def test_safe_tsf_shell_contains_only_crash_contained_context_capture() -> None:
-    overlay = _read("scripts/prepare-weasel-overlay.ps1")
+    overlay = _read("scripts/prepare-weasel-overlay-pinned.ps1")
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")
     tsf_block = overlay[tsf_start:server_start]
