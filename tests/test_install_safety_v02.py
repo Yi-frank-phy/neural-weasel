@@ -132,9 +132,7 @@ def test_experimental_identity_is_consistent_across_all_mutation_boundaries() ->
 
 
 def test_pinned_overlay_rewrites_all_official_runtime_identities() -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay-pinned.ps1").read_text(
-        encoding="utf-8"
-    )
+    overlay = (ROOT / "scripts/prepare-weasel-overlay-pinned.ps1").read_text(encoding="utf-8")
 
     assert "9cc96e20dc71b80876b12f689bb5863c76c2a7ed" in overlay
     assert OFFICIAL_WEASEL_FIXTURE_CLSID.strip("{}") in overlay
