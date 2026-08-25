@@ -28,7 +28,9 @@ def test_tsf_context_sender_is_authenticated_one_way_and_nonblocking() -> None:
 
 
 def test_server_owns_context_broker_and_tsf_does_not_own_backend() -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    overlay = (ROOT / "scripts/prepare-weasel-overlay-pinned.ps1").read_text(
+        encoding="utf-8"
+    )
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")
     tsf_block = overlay[tsf_start:server_start]
