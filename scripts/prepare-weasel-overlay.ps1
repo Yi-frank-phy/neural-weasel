@@ -341,4 +341,7 @@ Replace-Literal -Path $CandidateListHeader -Old @'
   weasel::UIStyle _style;
 '@
 
+$CompositionDiagnostics = Join-Path $PSScriptRoot 'apply-composition-diagnostics.ps1'
+& $CompositionDiagnostics -WeaselRoot $ResolvedWeaselRoot
+
 Write-Host 'Applied candidate UI lifecycle backports and text-free state trace.'
