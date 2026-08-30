@@ -341,4 +341,7 @@ Replace-Literal -Path $CandidateListHeader -Old @'
   weasel::UIStyle _style;
 '@
 
-Write-Host 'Applied candidate UI lifecycle backports and text-free state trace.'
+$Pr1462Overlay = Join-Path $PSScriptRoot 'apply-weasel-pr1462-composition.ps1'
+& $Pr1462Overlay -WeaselRoot $ResolvedWeaselRoot
+
+Write-Host 'Applied candidate UI diagnostics plus coherent PR #1462 composition backport.'
