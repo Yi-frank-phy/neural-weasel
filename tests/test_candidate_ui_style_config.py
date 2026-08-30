@@ -2,48 +2,86 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 WEASEL_CONFIG = ROOT / "assets" / "rime" / "weasel.yaml"
 BUNDLE_BUILDER = ROOT / "scripts" / "build-windows-bundle.ps1"
 
 
-def _config() -> str:
+def _config_text() -> str:
     return WEASEL_CONFIG.read_text(encoding="utf-8")
 
 
-def test_base_weasel_config_selects_an_explicit_color_scheme() -> None:
+def _config() -> dict[str, object]:
+    loaded = yaml.safe_load(_config_text())
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def _selected_scheme() -> dict[str, object]:
+    config = _config()
+    style = config["style"]
+    presets = config["preset_color_schemes"]
+    assert isinstance(style, dict)
+    assert isinstance(presets, dict)
+
+    scheme_name = style["color_scheme"]
+    assert isinstance(scheme_name, str)
+    scheme = presets[scheme_name]
+    assert isinstance(scheme, dict)
+    return scheme
+
+
+def _weasel_alpha_for_abgr_scalar(value: object) -> int:
+    assert isinstance(value, int)
+    assert 0 <= value <= 0xFFFFFFFF
+    # Pinned Weasel's _RimeGetColor() makes <=6-digit RGB/BGR scalars opaque.
+    if value <= 0xFFFFFF:
+        return 0xFF
+    return (value >> 24) & 0xFF
+
+
+def test_base_weasel_config_selects_an_existing_color_scheme() -> None:
     config = _config()
 
-    assert 'config_version: "0.2"' in config
-    assert "color_scheme: neural_weasel_default" in config
-    assert "preset_color_schemes:" in config
-    assert "neural_weasel_default:" in config
+    assert config["config_version"] == "0.2"
+    style = config["style"]
+    presets = config["preset_color_schemes"]
+    assert isinstance(style, dict)
+    assert isinstance(presets, dict)
+
+    scheme_name = style["color_scheme"]
+    assert scheme_name == "neural_weasel_default"
+    assert scheme_name in presets
 
 
 def test_base_candidate_style_has_opaque_paint_inputs() -> None:
-    config = _config()
+    scheme = _selected_scheme()
 
-    # Pinned Weasel 0.17.4 leaves all UIStyle colors at 0x00000000 unless
-    # style/color_scheme exists and _UpdateUIStyleColor() runs. Keep explicit
-    # visible text/background/highlight values in the managed base config.
-    for marker in (
-        "back_color: 0xffffff",
-        "text_color: 0x000000",
-        "candidate_text_color: 0x000000",
-        "candidate_back_color: 0xffffff",
-        "border_color: 0xd0d0d0",
-        "hilited_candidate_text_color: 0xffffff",
-        "hilited_candidate_back_color: 0x3a6ea5",
-    ):
-        assert marker in config
-
-    assert "back_color: 0x00000000" not in config
-    assert "candidate_text_color: 0x00000000" not in config
-    assert "hilited_candidate_back_color: 0x00000000" not in config
+    # These are the fields that make the ordinary and highlighted candidate
+    # paths visible. Under pinned Weasel 0.17.4, a missing color scheme leaves
+    # the corresponding UIStyle fields at 0x00000000 instead.
+    critical_fields = (
+        "back_color",
+        "text_color",
+        "candidate_text_color",
+        "candidate_back_color",
+        "border_color",
+        "hilited_text_color",
+        "hilited_back_color",
+        "hilited_candidate_text_color",
+        "hilited_candidate_back_color",
+        "label_color",
+        "comment_text_color",
+    )
+    for field in critical_fields:
+        assert field in scheme
+        assert _weasel_alpha_for_abgr_scalar(scheme[field]) == 0xFF
 
 
 def test_visibility_fix_does_not_change_geometry_or_font_defaults() -> None:
-    config = _config()
+    config = _config_text()
 
     for unrelated_setting in (
         "font_point:",
