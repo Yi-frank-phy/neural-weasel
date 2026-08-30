@@ -21,10 +21,17 @@ def test_destroy_paths_end_started_ui_session_before_disposing_hwnd() -> None:
 def test_end_ui_cleanup_cannot_return_before_local_state_reset() -> None:
     fix = FIX.read_text(encoding="utf-8")
 
-    assert "if (SUCCEEDED(hr) && emgr != NULL)" in fix
-    assert '"end-ui-element-manager-unavailable"' in fix
-    assert "if (FAILED(hr))\n      return;" not in fix
-    assert fix.index("if (SUCCEEDED(hr) && emgr != NULL)") < fix.index("_uiStarted = false;")
+    # The failing `if (FAILED(hr)) return;` text is expected to remain inside
+    # the PowerShell patch's -Old seam. Inspect only the replacement block so
+    # this test describes the generated C++ rather than the patch source file.
+    replacement_start = fix.index("if (SUCCEEDED(hr) && emgr != NULL)")
+    replacement = fix[replacement_start:]
+
+    assert '"end-ui-element-manager-unavailable"' in replacement
+    assert "if (FAILED(hr))\n      return;" not in replacement
+    assert replacement.index("if (SUCCEEDED(hr) && emgr != NULL)") < replacement.index(
+        "_uiStarted = false;"
+    )
 
 
 def test_stale_ui_fix_is_in_the_applied_overlay_chain() -> None:
