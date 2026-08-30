@@ -15,6 +15,12 @@ def _launcher() -> str:
     return LAUNCHER.read_text(encoding="utf-8")
 
 
+def _repair_block(launcher: str) -> str:
+    start = launcher.index("function Repair-KnownTransparentWeaselStyle")
+    end = launcher.index("if (-not [Environment]::Is64BitOperatingSystem)")
+    return launcher[start:end]
+
+
 def test_base_weasel_config_selects_an_explicit_color_scheme() -> None:
     config = _config()
 
@@ -46,46 +52,43 @@ def test_base_candidate_style_has_opaque_paint_inputs() -> None:
     assert "hilited_candidate_back_color: 0x00000000" not in config
 
 
-def test_base_candidate_style_has_nonzero_geometry_defaults() -> None:
+def test_visibility_fix_does_not_change_geometry_or_font_defaults() -> None:
     config = _config()
 
-    for marker in (
-        "font_point: 12",
-        "min_width: 160",
-        "margin_x: 8",
-        "margin_y: 8",
-        "candidate_spacing: 4",
-        "hilite_padding: 2",
+    for unrelated_setting in (
+        "font_point:",
+        "label_font_point:",
+        "comment_font_point:",
+        "min_width:",
+        "margin_x:",
+        "margin_y:",
+        "candidate_spacing:",
+        "hilite_padding:",
     ):
-        assert marker in config
+        assert unrelated_setting not in config
 
 
 def test_launcher_repairs_only_the_exact_legacy_managed_config() -> None:
     launcher = _launcher()
+    repair = _repair_block(launcher)
 
-    assert "function Repair-KnownTransparentWeaselStyle" in launcher
-    assert 'config_version: "0.1"' in launcher
-    assert 'label_format: "%s."' in launcher
+    assert "function Repair-KnownTransparentWeaselStyle" in repair
+    assert 'config_version: "0.1"' in repair
+    assert 'label_format: "%s."' in repair
     assert "Normalize-ManagedYamlText" in launcher
-    assert "-ne" in launcher
-    assert "Copy-Item -LiteralPath $ManagedSource -Destination $RuntimeWeasel -Force" in launcher
+    assert "-ne" in repair
+    assert (
+        "Copy-Item -LiteralPath $ManagedSource -Destination $RuntimeWeasel -Force"
+        in repair
+    )
 
     # Do not turn the migration into a generic overwrite of RimeUser YAML.
-    assert "Get-ChildItem" not in launcher[
-        launcher.index("function Repair-KnownTransparentWeaselStyle") : launcher.index(
-            "if (-not [Environment]::Is64BitOperatingSystem)"
-        )
-    ]
+    assert "Get-ChildItem" not in repair
 
 
 def test_style_migration_invalidates_only_deployed_weasel_config() -> None:
-    launcher = _launcher()
+    repair = _repair_block(_launcher())
 
-    repair = launcher[
-        launcher.index("function Repair-KnownTransparentWeaselStyle") : launcher.index(
-            "if (-not [Environment]::Is64BitOperatingSystem)"
-        )
-    ]
     assert "build\\weasel.yaml" in repair
     assert "Remove-Item -LiteralPath $DeployedWeasel -Force" in repair
     assert "Remove-Item -LiteralPath $RimeUserRoot -Recurse" not in repair
@@ -95,7 +98,9 @@ def test_style_migration_invalidates_only_deployed_weasel_config() -> None:
 def test_style_repair_happens_before_experimental_server_start() -> None:
     launcher = _launcher()
 
-    repair_call = launcher.index("$StyleWasMigrated = Repair-KnownTransparentWeaselStyle")
+    repair_call = launcher.index(
+        "$StyleWasMigrated = Repair-KnownTransparentWeaselStyle"
+    )
     server_start = launcher.index("Start-Process -FilePath $Server")
     assert repair_call < server_start
     assert "Stop-Process -Force" in launcher[repair_call:server_start]
