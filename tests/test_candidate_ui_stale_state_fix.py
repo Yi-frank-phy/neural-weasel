@@ -24,9 +24,7 @@ def test_end_ui_cleanup_cannot_return_before_local_state_reset() -> None:
     assert "if (SUCCEEDED(hr) && emgr != NULL)" in fix
     assert '"end-ui-element-manager-unavailable"' in fix
     assert "if (FAILED(hr))\n      return;" not in fix
-    assert fix.index("if (SUCCEEDED(hr) && emgr != NULL)") < fix.index(
-        "_uiStarted = false;"
-    )
+    assert fix.index("if (SUCCEEDED(hr) && emgr != NULL)") < fix.index("_uiStarted = false;")
 
 
 def test_stale_ui_fix_is_in_the_applied_overlay_chain() -> None:
