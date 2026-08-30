@@ -5,19 +5,6 @@ style:
   inline_preedit: false
   label_format: "%s."
   color_scheme: neural_weasel_default
-  font_point: 12
-  label_font_point: 12
-  comment_font_point: 12
-  layout:
-    min_width: 160
-    border_width: 1
-    margin_x: 8
-    margin_y: 8
-    spacing: 6
-    candidate_spacing: 4
-    hilite_spacing: 4
-    hilite_padding: 2
-    corner_radius: 4
 
 preset_color_schemes:
   neural_weasel_default:
