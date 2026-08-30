@@ -19,10 +19,13 @@ $ManifestPath = Join-Path $InstallRoot 'build-manifest.json'
 if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
     $ManifestPath = Join-Path $PSScriptRoot 'build-manifest.json'
 }
-$StatePath = Join-Path $env:LOCALAPPDATA (
-    'NeuralWeasel\Experimental\model-service.json'
-)
-$LogRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental\Logs'
+$RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
+$StatePath = Join-Path $RuntimeRoot 'model-service.json'
+$LogRoot = Join-Path $RuntimeRoot 'Logs'
+$CandidateUiTracePath = Join-Path $LogRoot 'candidate-ui-events.log'
+$RuntimeWeaselConfigPath = Join-Path $RuntimeRoot 'RimeUser\weasel.yaml'
+$DeployedWeaselConfigPath = Join-Path $RuntimeRoot 'RimeUser\build\weasel.yaml'
+$SharedWeaselConfigPath = Join-Path $InstallRoot 'data\weasel.yaml'
 
 function Get-OptionalProperty {
     param(
@@ -108,6 +111,17 @@ try {
     $PipeProbeError = $_.Exception.GetType().Name
 }
 
+$CandidateUiTraceTail = @()
+if (Test-Path -LiteralPath $CandidateUiTracePath -PathType Leaf) {
+    try {
+        $CandidateUiTraceTail = @(
+            Get-Content -LiteralPath $CandidateUiTracePath -Tail 64
+        )
+    } catch {
+        $CandidateUiTraceReadError = $_.Exception.GetType().Name
+    }
+}
+
 $ComPathConflict = $false
 $Registered = [bool](Get-OptionalProperty $Registration 'registered' $false)
 $ComRegistered = [bool](
@@ -151,8 +165,23 @@ $Report = [ordered]@{
     official_weasel_path_conflict = $ComPathConflict
     missing_required_files = $Missing
     recent_safe_log_location = $LogRoot
+    candidate_ui_trace_present = Test-Path `
+        -LiteralPath $CandidateUiTracePath -PathType Leaf
+    candidate_ui_trace_path = $CandidateUiTracePath
+    candidate_ui_trace_tail = $CandidateUiTraceTail
+    rime_runtime_weasel_config_present = Test-Path `
+        -LiteralPath $RuntimeWeaselConfigPath -PathType Leaf
+    rime_deployed_weasel_config_present = Test-Path `
+        -LiteralPath $DeployedWeaselConfigPath -PathType Leaf
+    rime_shared_weasel_config_present = Test-Path `
+        -LiteralPath $SharedWeaselConfigPath -PathType Leaf
+    rime_deployed_weasel_precedes_shared = Test-Path `
+        -LiteralPath $DeployedWeaselConfigPath -PathType Leaf
 }
 if (Get-Variable PipeProbeError -ErrorAction SilentlyContinue) {
     $Report.named_pipe_probe_error = $PipeProbeError
+}
+if (Get-Variable CandidateUiTraceReadError -ErrorAction SilentlyContinue) {
+    $Report.candidate_ui_trace_read_error = $CandidateUiTraceReadError
 }
 $Report | ConvertTo-Json -Depth 5

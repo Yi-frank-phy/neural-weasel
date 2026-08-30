@@ -58,14 +58,129 @@ Replace-Literal -Path $WeaselUiSource `
     -Old '  bool IsShown() const { return shown; }' `
     -New '  bool IsShown() const { return panel.IsWindowVisible() != FALSE; }'
 
+# Expose only the native HWND identity for text-free diagnostics. No title,
+# candidate content, or editor text is read through this accessor.
+$WeaselUiHeader = Join-Path $ResolvedWeaselRoot 'include/WeaselUI.h'
+Replace-Literal -Path $WeaselUiHeader -Old @'
+  bool IsCountingDown() const;
+  bool IsShown() const;
+
+  // 重绘界面
+'@ -New @'
+  bool IsCountingDown() const;
+  bool IsShown() const;
+  HWND NativeWindowForDiagnostics() const;
+
+  // 重绘界面
+'@
+Replace-Literal -Path $WeaselUiSource -Old @'
+bool UI::IsShown() const {
+  return pimpl_ && pimpl_->IsShown();
+}
+
+void UI::Refresh() {
+'@ -New @'
+bool UI::IsShown() const {
+  return pimpl_ && pimpl_->IsShown();
+}
+
+HWND UI::NativeWindowForDiagnostics() const {
+  return pimpl_ && pimpl_->panel.IsWindow() ? pimpl_->panel.m_hWnd : nullptr;
+}
+
+void UI::Refresh() {
+'@
+
+# Preserve normal behavior while making UI::Create() return truthful HWND
+# creation status to the diagnostic caller. The pinned upstream function
+# previously returned true even when panel.Create() failed.
+Replace-Literal -Path $WeaselUiSource -Old @'
+  pimpl_->panel.Create(
+      parent, 0, 0, WS_POPUP,
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+      0U, 0);
+  return true;
+'@ -New @'
+  const HWND created = pimpl_->panel.Create(
+      parent, 0, 0, WS_POPUP,
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+      0U, 0);
+  return created != NULL && pimpl_->panel.IsWindow();
+'@
+
 $CandidateListSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/CandidateList.cpp'
+Replace-Literal -Path $CandidateListSource -Old @'
+#include "CandidateList.h"
+#include <KeyEvent.h>
+'@ -New @'
+#include "CandidateList.h"
+#include "tsf/candidate_ui_diagnostics.h"
+#include <KeyEvent.h>
+'@
+
 Replace-Literal -Path $CandidateListSource -Old @'
   _ui->Update(ctx, status);
   if (_pbShow == FALSE)
     _UpdateUIElement();
+
+  if (status.composing)
+    Show(_pbShow);
+  else
+    Show(FALSE);
+}
 '@ -New @'
   _ui->Update(ctx, status);
   _UpdateUIElement();
+
+  if (status.composing)
+    Show(_pbShow);
+  else
+    Show(FALSE);
+
+  // Avoid synchronous file I/O on every key. Emit only the first observed
+  // show state for a UI session and subsequent visibility transitions.
+  const bool uiShown = _ui->IsShown();
+  if (!_uiTraceHasShownState || uiShown != _uiTraceLastShown) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "update-ui-visibility-change", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, uiShown,
+        _ui->NativeWindowForDiagnostics());
+    _uiTraceHasShownState = true;
+    _uiTraceLastShown = uiShown;
+  }
+}
+'@
+
+Replace-Literal -Path $CandidateListSource -Old @'
+void CCandidateList::Destroy() {
+  // EndUI();
+  Show(FALSE);
+  _DisposeUIWindow();
+}
+
+void CCandidateList::DestroyAll() {
+  // EndUI();
+  Show(FALSE);
+  _DisposeUIWindowAll();
+}
+'@ -New @'
+void CCandidateList::Destroy() {
+  neural_weasel::tsf::WriteCandidateUiDiagnostic(
+      "destroy", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
+  // EndUI();
+  Show(FALSE);
+  _DisposeUIWindow();
+}
+
+void CCandidateList::DestroyAll() {
+  neural_weasel::tsf::WriteCandidateUiDiagnostic(
+      "destroy-all", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
+  // EndUI();
+  Show(FALSE);
+  _DisposeUIWindowAll();
+}
 '@
 
 Replace-Literal -Path $CandidateListSource -Old @'
@@ -73,20 +188,89 @@ void CCandidateList::StartUI() {
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
 '@ -New @'
 void CCandidateList::StartUI() {
-  if (_uiStarted)
+  if (_uiStarted) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "start-suppressed-already-started", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
+  }
 
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+'@
+
+Replace-Literal -Path $CandidateListSource -Old @'
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  if (!pThreadMgr) {
+    return;
+  }
+
+  com_ptr<ITfUIElementMgr> pUIElementMgr;
+  auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  if (FAILED(hr))
+    return;
+
+  if (pUIElementMgr == NULL) {
+    return;
+  }
+'@ -New @'
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  if (!pThreadMgr) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "start-no-thread-manager", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
+    return;
+  }
+
+  com_ptr<ITfUIElementMgr> pUIElementMgr;
+  auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  if (FAILED(hr)) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "query-ui-element-manager-failed", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
+    return;
+  }
+
+  if (pUIElementMgr == NULL) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "ui-element-manager-null", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
+    return;
+  }
 '@
 
 Replace-Literal -Path $CandidateListSource -Old @'
   pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
   // pUIElementMgr->UpdateUIElement(uiid);
+  if (_pbShow) {
+    _ui->style() = _style;
+    _MakeUIWindow();
+  }
 '@ -New @'
-  if (FAILED(pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid)))
+  _beginUiHr = pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
+  if (FAILED(_beginUiHr)) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "begin-ui-failed", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
+  }
   _uiStarted = true;
+  _uiCreateAttempted = false;
+  _uiCreateSuccess = false;
+  _uiTraceHasShownState = false;
   // pUIElementMgr->UpdateUIElement(uiid);
+  if (_pbShow) {
+    _ui->style() = _style;
+    _uiCreateAttempted = true;
+    _uiCreateSuccess = _MakeUIWindow();
+  }
+  neural_weasel::tsf::WriteCandidateUiDiagnostic(
+      "start-ui", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
 '@
 
 Replace-Literal -Path $CandidateListSource -Old @'
@@ -94,8 +278,13 @@ void CCandidateList::EndUI() {
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
 '@ -New @'
 void CCandidateList::EndUI() {
-  if (!_uiStarted)
+  if (!_uiStarted) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "end-suppressed-not-started", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
+  }
 
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
 '@
@@ -112,17 +301,47 @@ Replace-Literal -Path $CandidateListSource -Old @'
   }
   _uiStarted = false;
   _DisposeUIWindow();
+  neural_weasel::tsf::WriteCandidateUiDiagnostic(
+      "end-ui", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
+}
+'@
+
+Replace-Literal -Path $CandidateListSource -Old @'
+void CCandidateList::_MakeUIWindow() {
+  HWND p = _GetActiveWnd();
+  _ui->Create(p);
+}
+'@ -New @'
+bool CCandidateList::_MakeUIWindow() {
+  HWND p = _GetActiveWnd();
+  return _ui->Create(p);
 }
 '@
 
 $CandidateListHeader = Join-Path $ResolvedWeaselRoot 'WeaselTSF/CandidateList.h'
 Replace-Literal -Path $CandidateListHeader -Old @'
+  void _DisposeUIWindowAll();
+  void _MakeUIWindow();
+'@ -New @'
+  void _DisposeUIWindowAll();
+  bool _MakeUIWindow();
+'@
+Replace-Literal -Path $CandidateListHeader -Old @'
   BOOL _pbShow;
   weasel::UIStyle _style;
 '@ -New @'
   BOOL _pbShow;
+  HRESULT _beginUiHr = E_PENDING;
   bool _uiStarted = false;
+  bool _uiCreateAttempted = false;
+  bool _uiCreateSuccess = false;
+  bool _uiTraceHasShownState = false;
+  bool _uiTraceLastShown = false;
   weasel::UIStyle _style;
 '@
 
-Write-Host 'Applied narrow candidate UI visibility/lifecycle backports.'
+$CompositionDiagnostics = Join-Path $PSScriptRoot 'apply-composition-diagnostics.ps1'
+& $CompositionDiagnostics -WeaselRoot $ResolvedWeaselRoot
+
+Write-Host 'Applied candidate UI lifecycle backports and text-free state trace.'
