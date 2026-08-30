@@ -5,8 +5,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OVERLAY = ROOT / "scripts" / "prepare-weasel-overlay.ps1"
 TRACE_HEADER = ROOT / "native" / "tsf" / "candidate_ui_diagnostics.h"
+STYLE_TRACE_HEADER = ROOT / "native" / "tsf" / "candidate_style_diagnostics.h"
 DIAGNOSE = ROOT / "scripts" / "diagnose.ps1"
 COMPOSITION_DIAGNOSTICS = ROOT / "scripts" / "apply-composition-diagnostics.ps1"
+STYLE_DIAGNOSTICS = ROOT / "scripts" / "apply-candidate-style-diagnostics.ps1"
 
 
 def _overlay() -> str:
@@ -107,6 +109,42 @@ def test_candidate_ui_trace_covers_negotiation_create_show_and_stale_start() -> 
 
     assert "candidate-ui-events.log" in trace
     assert "candidate_ui_trace_tail" in diagnose
+
+
+def test_runtime_candidate_style_alpha_trace_is_applied_and_text_free() -> None:
+    composition = COMPOSITION_DIAGNOSTICS.read_text(encoding="utf-8")
+    style_patch = STYLE_DIAGNOSTICS.read_text(encoding="utf-8")
+    trace = STYLE_TRACE_HEADER.read_text(encoding="utf-8")
+
+    assert "apply-candidate-style-diagnostics.ps1" in composition
+    assert "candidate_style_diagnostics.h" in style_patch
+    assert "WriteCandidateStyleDiagnostic" in style_patch
+    for marker in (
+        '"start-ui-source-style"',
+        '"start-ui-native-style"',
+        '"update-ui-source-style"',
+        '"update-ui-native-style"',
+    ):
+        assert marker in style_patch
+    for field in (
+        "text_alpha=",
+        "back_alpha=",
+        "candidate_text_alpha=",
+        "candidate_back_alpha=",
+        "border_alpha=",
+        "hilited_candidate_text_alpha=",
+        "hilited_candidate_back_alpha=",
+    ):
+        assert field in trace
+
+    for forbidden_api in (
+        "GetWindowText",
+        "GetClipboardData",
+        "ITfRange",
+        "GetSelection",
+        "GetText",
+    ):
+        assert forbidden_api not in trace
 
 
 def test_composition_lifecycle_trace_is_applied_and_text_free() -> None:
