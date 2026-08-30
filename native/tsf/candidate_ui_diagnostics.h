@@ -15,7 +15,7 @@ inline void WriteCandidateUiDiagnostic(const char* event,
                                        bool create_attempted,
                                        bool create_success,
                                        bool shown,
-                                       HWND hwnd) {
+                                       HWND hwnd = nullptr) {
   if (event == nullptr) {
     return;
   }
