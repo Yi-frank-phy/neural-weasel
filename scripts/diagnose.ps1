@@ -23,6 +23,7 @@ $StatePath = Join-Path $env:LOCALAPPDATA (
     'NeuralWeasel\Experimental\model-service.json'
 )
 $LogRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental\Logs'
+$CandidateUiTracePath = Join-Path $LogRoot 'candidate-ui-events.log'
 
 function Get-OptionalProperty {
     param(
@@ -108,6 +109,17 @@ try {
     $PipeProbeError = $_.Exception.GetType().Name
 }
 
+$CandidateUiTraceTail = @()
+if (Test-Path -LiteralPath $CandidateUiTracePath -PathType Leaf) {
+    try {
+        $CandidateUiTraceTail = @(
+            Get-Content -LiteralPath $CandidateUiTracePath -Tail 64
+        )
+    } catch {
+        $CandidateUiTraceReadError = $_.Exception.GetType().Name
+    }
+}
+
 $ComPathConflict = $false
 $Registered = [bool](Get-OptionalProperty $Registration 'registered' $false)
 $ComRegistered = [bool](
@@ -151,8 +163,15 @@ $Report = [ordered]@{
     official_weasel_path_conflict = $ComPathConflict
     missing_required_files = $Missing
     recent_safe_log_location = $LogRoot
+    candidate_ui_trace_present = Test-Path `
+        -LiteralPath $CandidateUiTracePath -PathType Leaf
+    candidate_ui_trace_path = $CandidateUiTracePath
+    candidate_ui_trace_tail = $CandidateUiTraceTail
 }
 if (Get-Variable PipeProbeError -ErrorAction SilentlyContinue) {
     $Report.named_pipe_probe_error = $PipeProbeError
+}
+if (Get-Variable CandidateUiTraceReadError -ErrorAction SilentlyContinue) {
+    $Report.candidate_ui_trace_read_error = $CandidateUiTraceReadError
 }
 $Report | ConvertTo-Json -Depth 5
