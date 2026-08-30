@@ -47,6 +47,8 @@ function Replace-Literal {
 $ResolvedWeaselRoot = (Resolve-Path -LiteralPath $WeaselRoot).Path
 $StaleUiFix = Join-Path $PSScriptRoot 'apply-candidate-ui-stale-state-fix.ps1'
 & $StaleUiFix -WeaselRoot $ResolvedWeaselRoot
+$StyleDiagnostics = Join-Path $PSScriptRoot 'apply-candidate-style-diagnostics.ps1'
+& $StyleDiagnostics -WeaselRoot $ResolvedWeaselRoot
 
 $CompositionSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/Composition.cpp'
 
@@ -112,4 +114,4 @@ void WeaselTSF::_SetComposition(com_ptr<ITfComposition> pComposition) {
 }
 '@
 
-Write-Host 'Applied stale UI-state repair plus text-free TSF composition lifecycle diagnostics.'
+Write-Host 'Applied stale UI-state repair plus text-free style and composition diagnostics.'
