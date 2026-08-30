@@ -58,6 +58,39 @@ Replace-Literal -Path $WeaselUiSource `
     -Old '  bool IsShown() const { return shown; }' `
     -New '  bool IsShown() const { return panel.IsWindowVisible() != FALSE; }'
 
+# Expose only the native HWND identity for text-free diagnostics. No title,
+# candidate content, or editor text is read through this accessor.
+$WeaselUiHeader = Join-Path $ResolvedWeaselRoot 'include/WeaselUI.h'
+Replace-Literal -Path $WeaselUiHeader -Old @'
+  bool IsCountingDown() const;
+  bool IsShown() const;
+
+  // 重绘界面
+'@ -New @'
+  bool IsCountingDown() const;
+  bool IsShown() const;
+  HWND NativeWindowForDiagnostics() const;
+
+  // 重绘界面
+'@
+Replace-Literal -Path $WeaselUiSource -Old @'
+bool UI::IsShown() const {
+  return pimpl_ && pimpl_->IsShown();
+}
+
+void UI::Refresh() {
+'@ -New @'
+bool UI::IsShown() const {
+  return pimpl_ && pimpl_->IsShown();
+}
+
+HWND UI::NativeWindowForDiagnostics() const {
+  return pimpl_ && pimpl_->panel.IsWindow() ? pimpl_->panel.m_hWnd : nullptr;
+}
+
+void UI::Refresh() {
+'@
+
 # Preserve normal behavior while making UI::Create() return truthful HWND
 # creation status to the diagnostic caller. The pinned upstream function
 # previously returned true even when panel.Create() failed.
@@ -110,7 +143,8 @@ Replace-Literal -Path $CandidateListSource -Old @'
   if (!_uiTraceHasShownState || uiShown != _uiTraceLastShown) {
     neural_weasel::tsf::WriteCandidateUiDiagnostic(
         "update-ui-visibility-change", _beginUiHr, _pbShow, _uiStarted,
-        _uiCreateAttempted, _uiCreateSuccess, uiShown);
+        _uiCreateAttempted, _uiCreateSuccess, uiShown,
+        _ui->NativeWindowForDiagnostics());
     _uiTraceHasShownState = true;
     _uiTraceLastShown = uiShown;
   }
@@ -133,7 +167,7 @@ void CCandidateList::DestroyAll() {
 void CCandidateList::Destroy() {
   neural_weasel::tsf::WriteCandidateUiDiagnostic(
       "destroy", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
-      _uiCreateSuccess, _ui->IsShown());
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
   // EndUI();
   Show(FALSE);
   _DisposeUIWindow();
@@ -142,7 +176,7 @@ void CCandidateList::Destroy() {
 void CCandidateList::DestroyAll() {
   neural_weasel::tsf::WriteCandidateUiDiagnostic(
       "destroy-all", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
-      _uiCreateSuccess, _ui->IsShown());
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
   // EndUI();
   Show(FALSE);
   _DisposeUIWindowAll();
@@ -157,7 +191,8 @@ void CCandidateList::StartUI() {
   if (_uiStarted) {
     neural_weasel::tsf::WriteCandidateUiDiagnostic(
         "start-suppressed-already-started", _beginUiHr, _pbShow, _uiStarted,
-        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
   }
 
@@ -183,7 +218,8 @@ Replace-Literal -Path $CandidateListSource -Old @'
   if (!pThreadMgr) {
     neural_weasel::tsf::WriteCandidateUiDiagnostic(
         "start-no-thread-manager", _beginUiHr, _pbShow, _uiStarted,
-        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
   }
 
@@ -192,14 +228,16 @@ Replace-Literal -Path $CandidateListSource -Old @'
   if (FAILED(hr)) {
     neural_weasel::tsf::WriteCandidateUiDiagnostic(
         "query-ui-element-manager-failed", _beginUiHr, _pbShow, _uiStarted,
-        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
   }
 
   if (pUIElementMgr == NULL) {
     neural_weasel::tsf::WriteCandidateUiDiagnostic(
         "ui-element-manager-null", _beginUiHr, _pbShow, _uiStarted,
-        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
   }
 '@
@@ -216,7 +254,8 @@ Replace-Literal -Path $CandidateListSource -Old @'
   if (FAILED(_beginUiHr)) {
     neural_weasel::tsf::WriteCandidateUiDiagnostic(
         "begin-ui-failed", _beginUiHr, _pbShow, _uiStarted,
-        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
   }
   _uiStarted = true;
@@ -231,7 +270,7 @@ Replace-Literal -Path $CandidateListSource -Old @'
   }
   neural_weasel::tsf::WriteCandidateUiDiagnostic(
       "start-ui", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
-      _uiCreateSuccess, _ui->IsShown());
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
 '@
 
 Replace-Literal -Path $CandidateListSource -Old @'
@@ -242,7 +281,8 @@ void CCandidateList::EndUI() {
   if (!_uiStarted) {
     neural_weasel::tsf::WriteCandidateUiDiagnostic(
         "end-suppressed-not-started", _beginUiHr, _pbShow, _uiStarted,
-        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown(),
+        _ui->NativeWindowForDiagnostics());
     return;
   }
 
@@ -263,7 +303,7 @@ Replace-Literal -Path $CandidateListSource -Old @'
   _DisposeUIWindow();
   neural_weasel::tsf::WriteCandidateUiDiagnostic(
       "end-ui", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
-      _uiCreateSuccess, _ui->IsShown());
+      _uiCreateSuccess, _ui->IsShown(), _ui->NativeWindowForDiagnostics());
 }
 '@
 
