@@ -45,7 +45,9 @@ def _weasel_alpha_for_abgr_scalar(value: object) -> int:
 def test_base_weasel_config_selects_an_existing_color_scheme() -> None:
     config = _config()
 
-    assert config["config_version"] == "0.2"
+    # Keep the pre-existing config version unchanged so this A/B changes only
+    # paint inputs, not any Rime deployment/version behavior.
+    assert config["config_version"] == "0.1"
     style = config["style"]
     presets = config["preset_color_schemes"]
     assert isinstance(style, dict)
