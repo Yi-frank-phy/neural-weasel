@@ -29,6 +29,15 @@ def test_candidate_ui_create_reports_real_hwnd_creation() -> None:
     assert "_uiCreateSuccess = _MakeUIWindow();" in overlay
 
 
+def test_candidate_ui_trace_is_connected_to_real_native_hwnd() -> None:
+    overlay = _overlay()
+
+    assert "HWND NativeWindowForDiagnostics() const;" in overlay
+    assert "HWND UI::NativeWindowForDiagnostics() const" in overlay
+    assert "pimpl_->panel.m_hWnd" in overlay
+    assert "_ui->NativeWindowForDiagnostics()" in overlay
+
+
 def test_candidate_ui_element_updates_are_not_gated_by_pbshow() -> None:
     overlay = _overlay()
 
@@ -57,7 +66,7 @@ def test_candidate_ui_trace_covers_negotiation_create_show_and_stale_start() -> 
     for marker in (
         "begin-ui-failed",
         "start-ui",
-        "update-ui",
+        "update-ui-visibility-change",
         "destroy",
         "destroy-all",
         "start-suppressed-already-started",
@@ -72,6 +81,13 @@ def test_candidate_ui_trace_covers_negotiation_create_show_and_stale_start() -> 
         "create_attempted=",
         "create_success=",
         "shown=",
+        "hwnd=",
+        "is_window=",
+        "has_rect=",
+        "rect=",
+        "style=",
+        "ex_style=",
+        "monitor=",
     ):
         assert field in trace
 
