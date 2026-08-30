@@ -1,4 +1,4 @@
-config_version: "0.2"
+config_version: "0.1"
 
 style:
   display_tray_icon: true
