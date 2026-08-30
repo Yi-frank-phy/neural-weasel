@@ -145,3 +145,18 @@ def test_candidate_ui_trace_does_not_read_editor_or_window_text() -> None:
         "GetText",
     ):
         assert forbidden_api not in trace
+
+
+def test_diagnose_reports_deployed_weasel_config_precedence() -> None:
+    diagnose = DIAGNOSE.read_text(encoding="utf-8")
+
+    for marker in (
+        "RimeUser\\weasel.yaml",
+        "RimeUser\\build\\weasel.yaml",
+        "data\\weasel.yaml",
+        "rime_runtime_weasel_config_present",
+        "rime_deployed_weasel_config_present",
+        "rime_shared_weasel_config_present",
+        "rime_deployed_weasel_precedes_shared",
+    ):
+        assert marker in diagnose
