@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OVERLAY = ROOT / "scripts" / "prepare-weasel-overlay.ps1"
 TRACE_HEADER = ROOT / "native" / "tsf" / "candidate_ui_diagnostics.h"
 DIAGNOSE = ROOT / "scripts" / "diagnose.ps1"
+COMPOSITION_DIAGNOSTICS = ROOT / "scripts" / "apply-composition-diagnostics.ps1"
 
 
 def _overlay() -> str:
@@ -106,6 +107,31 @@ def test_candidate_ui_trace_covers_negotiation_create_show_and_stale_start() -> 
 
     assert "candidate-ui-events.log" in trace
     assert "candidate_ui_trace_tail" in diagnose
+
+
+def test_composition_lifecycle_trace_is_applied_and_text_free() -> None:
+    overlay = _overlay()
+    trace = TRACE_HEADER.read_text(encoding="utf-8")
+    composition = COMPOSITION_DIAGNOSTICS.read_text(encoding="utf-8")
+
+    assert "apply-composition-diagnostics.ps1" in overlay
+    assert "WriteCompositionDiagnostic" in trace
+    for marker in (
+        '"start-request"',
+        '"terminated"',
+        '"abort"',
+        '"finalize"',
+        '"set"',
+    ):
+        assert marker in composition
+    for field in (
+        "tsf_composition_active=",
+        "rime_composing=",
+        "current_composition=",
+        "callback_composition=",
+        "same_composition=",
+    ):
+        assert field in trace
 
 
 def test_candidate_ui_trace_does_not_read_editor_or_window_text() -> None:
