@@ -108,59 +108,6 @@ function Quote-ProcessArgument {
     return '"' + $Value.Replace('"', '\"') + '"'
 }
 
-function Normalize-ManagedYamlText {
-    param([Parameter(Mandatory)][string]$Text)
-    return $Text.Replace("`r`n", "`n").Trim()
-}
-
-function Repair-KnownTransparentWeaselStyle {
-    $ManagedSource = Join-Path $InstallRoot 'rime-user\weasel.yaml'
-    $RimeUserRoot = Join-Path $RuntimeRoot 'RimeUser'
-    $RuntimeWeasel = Join-Path $RimeUserRoot 'weasel.yaml'
-
-    if (
-        -not (Test-Path -LiteralPath $ManagedSource -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $RuntimeWeasel -PathType Leaf)
-    ) {
-        return $false
-    }
-
-    # This is the exact managed file shipped before config_version 0.2. It
-    # omitted style/color_scheme, leaving every UIStyle color at alpha zero in
-    # pinned Weasel 0.17.4. Only this exact known-bad file is migrated; any
-    # user-edited YAML is preserved verbatim.
-    $LegacyManagedWeasel = @'
-config_version: "0.1"
-
-style:
-  display_tray_icon: true
-  inline_preedit: false
-  label_format: "%s."
-'@
-
-    $Existing = Get-Content -LiteralPath $RuntimeWeasel -Raw -Encoding UTF8
-    if (
-        (Normalize-ManagedYamlText -Text $Existing) -ne
-        (Normalize-ManagedYamlText -Text $LegacyManagedWeasel)
-    ) {
-        return $false
-    }
-
-    Copy-Item -LiteralPath $ManagedSource -Destination $RuntimeWeasel -Force
-
-    # RimeConfigOpen("weasel") reads the deployed resolver first, whose staging
-    # directory is RimeUser\build. Invalidate only this derived compiled config
-    # so the next server initialization falls back to the newly installed
-    # opaque shared data. Do not remove schemas, dictionaries, or user data.
-    $DeployedWeasel = Join-Path $RimeUserRoot 'build\weasel.yaml'
-    if (Test-Path -LiteralPath $DeployedWeasel -PathType Leaf) {
-        Remove-Item -LiteralPath $DeployedWeasel -Force
-    }
-
-    Write-Host 'Repaired the legacy transparent candidate-UI style configuration.'
-    return $true
-}
-
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw '神经小狼毫 currently supports only 64-bit Windows.'
 }
@@ -174,9 +121,7 @@ $RequiredSourceFiles = @(
     'NeuralWeaselServer.exe',
     'NeuralWeaselSessionActivator.exe',
     'tools\uv.exe',
-    'build-manifest.json',
-    'data\weasel.yaml',
-    'rime-user\weasel.yaml'
+    'build-manifest.json'
 )
 foreach ($RelativePath in $RequiredSourceFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $RelativePath))) {
@@ -200,14 +145,6 @@ if ($DryRun) {
 
 & $Installer -BuildDirectory $PSScriptRoot -InstallRoot $InstallRoot
 Assert-LastExitCode -Operation 'One-click installation'
-
-$StyleWasMigrated = Repair-KnownTransparentWeaselStyle
-if ($StyleWasMigrated) {
-    # A running server has already loaded UIStyle into memory. Restart only the
-    # experimental server so the repaired config is observed immediately.
-    Get-Process -Name 'NeuralWeaselServer' -ErrorAction SilentlyContinue |
-        Stop-Process -Force -ErrorAction Stop
-}
 
 $ServiceScript = Join-Path $InstallRoot 'start-model-service.ps1'
 $Server = Join-Path $InstallRoot 'NeuralWeaselServer.exe'
