@@ -104,9 +104,16 @@ Replace-Literal -Path $CandidateListSource -Old @'
   else
     Show(FALSE);
 
-  neural_weasel::tsf::WriteCandidateUiDiagnostic(
-      "update-ui", _beginUiHr, _pbShow, _uiStarted, _uiCreateAttempted,
-      _uiCreateSuccess, _ui->IsShown());
+  // Avoid synchronous file I/O on every key. Emit only the first observed
+  // show state for a UI session and subsequent visibility transitions.
+  const bool uiShown = _ui->IsShown();
+  if (!_uiTraceHasShownState || uiShown != _uiTraceLastShown) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "update-ui-visibility-change", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, uiShown);
+    _uiTraceHasShownState = true;
+    _uiTraceLastShown = uiShown;
+  }
 }
 '@
 
@@ -158,6 +165,46 @@ void CCandidateList::StartUI() {
 '@
 
 Replace-Literal -Path $CandidateListSource -Old @'
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  if (!pThreadMgr) {
+    return;
+  }
+
+  com_ptr<ITfUIElementMgr> pUIElementMgr;
+  auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  if (FAILED(hr))
+    return;
+
+  if (pUIElementMgr == NULL) {
+    return;
+  }
+'@ -New @'
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  if (!pThreadMgr) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "start-no-thread-manager", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+    return;
+  }
+
+  com_ptr<ITfUIElementMgr> pUIElementMgr;
+  auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  if (FAILED(hr)) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "query-ui-element-manager-failed", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+    return;
+  }
+
+  if (pUIElementMgr == NULL) {
+    neural_weasel::tsf::WriteCandidateUiDiagnostic(
+        "ui-element-manager-null", _beginUiHr, _pbShow, _uiStarted,
+        _uiCreateAttempted, _uiCreateSuccess, _ui->IsShown());
+    return;
+  }
+'@
+
+Replace-Literal -Path $CandidateListSource -Old @'
   pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
   // pUIElementMgr->UpdateUIElement(uiid);
   if (_pbShow) {
@@ -175,6 +222,7 @@ Replace-Literal -Path $CandidateListSource -Old @'
   _uiStarted = true;
   _uiCreateAttempted = false;
   _uiCreateSuccess = false;
+  _uiTraceHasShownState = false;
   // pUIElementMgr->UpdateUIElement(uiid);
   if (_pbShow) {
     _ui->style() = _style;
@@ -248,6 +296,8 @@ Replace-Literal -Path $CandidateListHeader -Old @'
   bool _uiStarted = false;
   bool _uiCreateAttempted = false;
   bool _uiCreateSuccess = false;
+  bool _uiTraceHasShownState = false;
+  bool _uiTraceLastShown = false;
   weasel::UIStyle _style;
 '@
 
