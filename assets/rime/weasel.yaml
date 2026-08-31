@@ -1,5 +1,9 @@
 config_version: "0.1"
 
+app_options:
+  code.exe:
+    inline_preedit: true
+
 style:
   display_tray_icon: true
   inline_preedit: false
