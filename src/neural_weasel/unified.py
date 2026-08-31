@@ -374,11 +374,7 @@ class PinyinConstraint:
                     constraint_cost=structural_cost,
                     token_path=token_path,
                     ranking_tier=(
-                        2 + fuzzy_cost
-                        if fuzzy_cost
-                        else 0
-                        if entry.pinyin == raw
-                        else 1
+                        2 + fuzzy_cost if fuzzy_cost else 0 if entry.pinyin == raw else 1
                     ),
                 )
             )

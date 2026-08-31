@@ -94,7 +94,7 @@ def test_weasel_resource_overlay_declares_utf8_code_page() -> None:
     """Localized resource strings compile on non-UTF-8 Windows hosts."""
     overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
 
-    assert '#pragma code_page(65001)' in overlay
+    assert "#pragma code_page(65001)" in overlay
     assert "StartsWith('#pragma code_page(65001)')" in overlay
 
 

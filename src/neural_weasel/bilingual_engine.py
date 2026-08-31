@@ -32,9 +32,9 @@ class BilingualImeEngine:
         self._contexts_lock = threading.Lock()
         self._retained_contexts = retained_contexts
         self._diagnostic_identity = dict(diagnostic_identity or {})
-        self._query_cache: OrderedDict[
-            tuple[int, str, int, str | None], tuple[Candidate, ...]
-        ] = OrderedDict()
+        self._query_cache: OrderedDict[tuple[int, str, int, str | None], tuple[Candidate, ...]] = (
+            OrderedDict()
+        )
         self._query_cache_lock = threading.Lock()
         self.coordinator = SnapshotCoordinator(
             backend=backend,
