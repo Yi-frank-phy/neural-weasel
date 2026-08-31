@@ -178,6 +178,22 @@ def test_runtime_exposes_only_refresh_metadata_and_explicit_limits(tmp_path: Pat
     assert diagnostics["last_refresh_evaluated_tokens"] is None
     assert diagnostics["last_refresh_latency_ms"] is None
 
+    expected = {
+        "max_before_tokens": 2,
+        "n_ctx": 8,
+        "n_batch": 4,
+        "last_refresh_context_tokens": None,
+        "last_refresh_evaluated_tokens": None,
+        "last_refresh_latency_ms": None,
+    }
+    assert backend.performance_diagnostics() == expected
+
+    def fail_gpu_probe() -> NvidiaGpu:
+        raise AssertionError("performance diagnostics must not probe the GPU")
+
+    backend._gpu_probe = fail_gpu_probe
+    assert backend.performance_diagnostics() == expected
+
 
 @pytest.mark.parametrize(
     ("kwargs", "message"),

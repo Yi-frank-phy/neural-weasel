@@ -184,6 +184,16 @@ class BilingualImeEngine:
         self.script_policy.stable_script = None
         self._clear_query_cache()
 
+    def runtime_performance_diagnostics(self) -> dict[str, object]:
+        """Expose only cached runtime timing/count metadata for live diagnosis."""
+
+        runtime = getattr(self.coordinator.backend, "runtime", None)
+        provider = getattr(runtime, "performance_diagnostics", None)
+        if not callable(provider):
+            return {}
+        diagnostics = provider()
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
     def diagnostics(self) -> dict[str, object]:
         diagnostics = self.coordinator.diagnostics()
         diagnostics.update(self._diagnostic_identity)

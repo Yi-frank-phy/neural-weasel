@@ -102,9 +102,8 @@ class LlamaCppBackend:
         self._epoch = 0
         self._cached_token_ids: tuple[int, ...] | None = None
         self._cached_logits: np.ndarray | None = None
-        # Replaced atomically after a successful refresh. Diagnostics reads this
-        # metadata tuple without taking the model lock, so observing diagnostics
-        # cannot join the refresh/query critical path or retain raw context.
+        # Replaced atomically after a successful refresh. The immutable tuple
+        # contains only counts and elapsed time, never editor text or hashes.
         self._last_refresh_diagnostics: tuple[int, int, float] | None = None
 
         cuda_backend_probe = cuda_backend_probe or _default_cuda_backend_probe
@@ -252,12 +251,24 @@ class LlamaCppBackend:
             self._cached_logits = None
             self._last_refresh_diagnostics = None
 
+    def performance_diagnostics(self) -> dict[str, object]:
+        """Return cached timing/count metadata without probing GPU or model state."""
+
+        refresh = self._last_refresh_diagnostics
+        return {
+            "max_before_tokens": self.max_before_tokens,
+            "n_ctx": self.n_ctx,
+            "n_batch": self.n_batch,
+            "last_refresh_context_tokens": None if refresh is None else refresh[0],
+            "last_refresh_evaluated_tokens": None if refresh is None else refresh[1],
+            "last_refresh_latency_ms": None if refresh is None else refresh[2],
+        }
+
     def diagnostics(self) -> dict[str, object]:
         current_gpu = self._gpu_probe()
         if current_gpu.uuid != self.target_gpu.uuid or current_gpu.name != self.target_gpu.name:
             raise GpuBindingError("target GPU identity changed after GGUF startup")
-        refresh = self._last_refresh_diagnostics
-        return {
+        diagnostics = {
             "model": self.model_id,
             "format": self.format,
             "quantization": self.quantization,
@@ -272,10 +283,6 @@ class LlamaCppBackend:
             "gguf_sha256": self.gguf_sha256,
             "gguf_revision": self.model_revision,
             "vocab_fingerprint": self.vocab_fingerprint,
-            "max_before_tokens": self.max_before_tokens,
-            "n_ctx": self.n_ctx,
-            "n_batch": self.n_batch,
-            "last_refresh_context_tokens": None if refresh is None else refresh[0],
-            "last_refresh_evaluated_tokens": None if refresh is None else refresh[1],
-            "last_refresh_latency_ms": None if refresh is None else refresh[2],
         }
+        diagnostics.update(self.performance_diagnostics())
+        return diagnostics
