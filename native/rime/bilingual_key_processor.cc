@@ -36,7 +36,7 @@ KeyIntent IntentFor(const ::rime::KeyEvent& event) {
     case XK_BackSpace:
       return KeyIntent::kBackspace;
     default:
-      if (event.keycode() >= XK_1 && event.keycode() <= XK_9) {
+      if (event.keycode() >= XK_0 && event.keycode() <= XK_9) {
         return KeyIntent::kNumberedSelection;
       }
       return KeyIntent::kOther;
@@ -109,6 +109,11 @@ bool IsNeuralCandidate(const ::rime::an<::rime::Candidate>& candidate) {
       context->Clear();
       return ::rime::kRejected;
     case KeyOutcome::kKeepLiteral:
+      if (intent == KeyIntent::kNumberedSelection &&
+          key_event.keycode() >= XK_0 && key_event.keycode() <= XK_9) {
+        context->PushInput(static_cast<char>(key_event.keycode()));
+        context->BeginEditing();
+      }
       return ::rime::kAccepted;
     case KeyOutcome::kUseRimeDefault:
       return ::rime::kNoop;

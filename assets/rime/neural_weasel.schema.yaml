@@ -18,10 +18,10 @@ engine:
     - ascii_composer
     - recognizer
     - key_binder
-    - speller
     - bilingual_key_processor
-    - punctuator
     - selector
+    - speller
+    - punctuator
     - navigator
     - express_editor
   segmentors:

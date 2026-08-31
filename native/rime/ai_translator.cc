@@ -67,17 +67,10 @@ void TraceAiTranslator(const wchar_t* format, ...) {
 }
 
 std::string CandidateComment(const Json& item) {
-  std::string comment;
   if (item.contains("pinyin") && item["pinyin"].is_string()) {
-    comment = item["pinyin"].get<std::string>();
+    return item["pinyin"].get<std::string>();
   }
-  if (item.value("coverage", false)) {
-    if (!comment.empty()) {
-      comment += " ";
-    }
-    comment += "[coverage]";
-  }
-  return comment;
+  return {};
 }
 
 }  // namespace

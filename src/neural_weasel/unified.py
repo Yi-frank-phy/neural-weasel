@@ -311,6 +311,7 @@ class PinyinConstraint:
                     model_score=model_score,
                     constraint_cost=-0.12 * path.abbreviation_cost,
                     token_path=path.token_path,
+                    ranking_tier=1,
                 )
             )
         return candidates
@@ -346,8 +347,9 @@ class PinyinConstraint:
                 (legal_entries[int(position)], float(scores[int(position)]))
                 for position in positions
             )
-        # Pinyin establishes legality and key consumption only. Context logits
-        # remain the primary ranking signal; fuzzy readings get a small tie-break.
+        # Pinyin establishes a hard structural tier. Model logits rank only
+        # within the same tier, so a fuzzy or extended reading cannot outrank
+        # an exact reading merely because its next-token logit is larger.
         structural_cost = -0.08 * fuzzy_cost
         for entry, model_score in ranked:
             if after_text.startswith(entry.text):
@@ -371,6 +373,13 @@ class PinyinConstraint:
                     model_score=model_score,
                     constraint_cost=structural_cost,
                     token_path=token_path,
+                    ranking_tier=(
+                        2 + fuzzy_cost
+                        if fuzzy_cost
+                        else 0
+                        if entry.pinyin == raw
+                        else 1
+                    ),
                 )
             )
         return candidates
@@ -564,6 +573,7 @@ class LatinPrefixConstraint:
                     model_score=model_score,
                     constraint_cost=completion.constraint_cost,
                     token_path=completion.token_path,
+                    ranking_tier=0,
                 )
             )
         return candidates
@@ -586,6 +596,7 @@ def _literal_candidate(raw_keys: str, epoch: int) -> Candidate:
         # It is deliberately ranked after every model-scored candidate.
         constraint_cost=-1_000_000.0,
         token_path=(),
+        ranking_tier=1_000_000,
     )
 
 
@@ -612,10 +623,18 @@ def rank_unified_candidates(
             )
         )
 
+    def script_tier(candidate: Candidate) -> int:
+        script = Script(candidate.script)
+        if context_kind == "english":
+            return 0 if script == Script.LATIN else 1
+        return 0 if script == Script.HAN else 1
+
     ranked.sort(
         key=lambda candidate: (
-            -candidate.total_score,
             candidate.constraint_kind == "literal",
+            script_tier(candidate),
+            candidate.ranking_tier,
+            -candidate.total_score,
             -candidate.consumed_keys,
             candidate.text,
             candidate.token_path,
