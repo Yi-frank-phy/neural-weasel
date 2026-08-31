@@ -46,7 +46,7 @@ def test_production_runtime_defaults_are_explicit_and_testable() -> None:
     assert config.max_before_tokens == 3072
     assert config.n_ctx == 4096
     assert config.n_batch == 512
-    assert production.DEFAULT_PRODUCTION_RUNTIME_CONFIG == config
+    assert config == production.DEFAULT_PRODUCTION_RUNTIME_CONFIG
 
 
 def test_build_production_runtime_forwards_explicit_context_config(
