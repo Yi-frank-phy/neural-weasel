@@ -54,9 +54,7 @@ class FakeBackend:
 def test_engine_delegates_only_to_cached_runtime_performance_diagnostics() -> None:
     engine = BilingualImeEngine(backend=FakeBackend())
 
-    assert engine.runtime_performance_diagnostics() == {
-        "last_refresh_evaluated_tokens": 7
-    }
+    assert engine.runtime_performance_diagnostics() == {"last_refresh_evaluated_tokens": 7}
 
 
 def test_metadata_only_diagnostics_filters_engine_output() -> None:
