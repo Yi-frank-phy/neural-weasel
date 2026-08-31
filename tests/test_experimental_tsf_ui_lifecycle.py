@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 OVERLAY = ROOT / "scripts" / "prepare-weasel-overlay.ps1"
 TRACE_HEADER = ROOT / "native" / "tsf" / "ui_lifecycle_trace.h"

@@ -19,6 +19,7 @@ $ProfileToolName = 'NeuralWeaselProfileTool.exe'
 $ActivatorName = 'NeuralWeaselSessionActivator.exe'
 $TsfDllName = 'NeuralWeaselExperimentalTSF.dll'
 $ServerName = 'NeuralWeaselServer.exe'
+$ManagedSchemaName = 'neural_weasel.schema.yaml'
 $LauncherCmdName = [string]::Concat([char[]]@(
     0x542F, 0x52A8, 0x795E, 0x7ECF, 0x5C0F, 0x72FC, 0x6BEB
 )) + '.cmd'
@@ -72,6 +73,101 @@ function Get-ProfileStatus {
     return $ProfileStatus
 }
 
+function Sync-ManagedRimeSchema {
+    param([Parameter(Mandatory)][string]$InstalledBundleRoot)
+
+    $SourceSchema = Join-Path (
+        Join-Path $InstalledBundleRoot 'rime-user'
+    ) $ManagedSchemaName
+    if (-not (Test-Path -LiteralPath $SourceSchema -PathType Leaf)) {
+        throw "The installed bundle is missing its managed Rime schema: $SourceSchema"
+    }
+
+    $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
+    $RimeUserRoot = Join-Path $RuntimeRoot 'RimeUser'
+    $BuildRoot = Join-Path $RimeUserRoot 'build'
+    New-Item -ItemType Directory -Path $RimeUserRoot -Force | Out-Null
+
+    $DestinationSchema = Join-Path $RimeUserRoot $ManagedSchemaName
+    $GeneratedSchema = Join-Path $BuildRoot $ManagedSchemaName
+    $Nonce = [guid]::NewGuid().ToString('N')
+    $StagedSchema = Join-Path $RimeUserRoot ".${ManagedSchemaName}.staging-$Nonce"
+    $DestinationBackup = Join-Path $RimeUserRoot ".${ManagedSchemaName}.rollback-$Nonce"
+    $GeneratedBackup = $null
+    $HadDestination = Test-Path -LiteralPath $DestinationSchema -PathType Leaf
+    $HadGenerated = Test-Path -LiteralPath $GeneratedSchema -PathType Leaf
+    if ($HadGenerated) {
+        $GeneratedBackup = Join-Path $BuildRoot ".${ManagedSchemaName}.rollback-$Nonce"
+    }
+
+    try {
+        Copy-Item -LiteralPath $SourceSchema -Destination $StagedSchema -Force
+        if ($HadDestination) {
+            [IO.File]::Replace(
+                $StagedSchema,
+                $DestinationSchema,
+                $DestinationBackup,
+                $true
+            )
+        } else {
+            [IO.File]::Move($StagedSchema, $DestinationSchema)
+        }
+
+        if ($HadGenerated) {
+            Move-Item `
+                -LiteralPath $GeneratedSchema `
+                -Destination $GeneratedBackup
+        }
+    } catch {
+        $SchemaFailure = $_
+        if ($HadDestination -and (Test-Path -LiteralPath $DestinationBackup -PathType Leaf)) {
+            if (Test-Path -LiteralPath $DestinationSchema -PathType Leaf) {
+                [IO.File]::Replace(
+                    $DestinationBackup,
+                    $DestinationSchema,
+                    $null,
+                    $true
+                )
+            } else {
+                [IO.File]::Move($DestinationBackup, $DestinationSchema)
+            }
+        } elseif (
+            -not $HadDestination -and
+            (Test-Path -LiteralPath $DestinationSchema -PathType Leaf)
+        ) {
+            Remove-Item -LiteralPath $DestinationSchema -Force
+        }
+
+        if (
+            $HadGenerated -and
+            $GeneratedBackup -and
+            (Test-Path -LiteralPath $GeneratedBackup -PathType Leaf)
+        ) {
+            New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
+            if (Test-Path -LiteralPath $GeneratedSchema -PathType Leaf) {
+                Remove-Item -LiteralPath $GeneratedSchema -Force
+            }
+            Move-Item `
+                -LiteralPath $GeneratedBackup `
+                -Destination $GeneratedSchema
+        }
+        throw $SchemaFailure
+    } finally {
+        foreach ($TemporaryPath in @(
+            $StagedSchema,
+            $DestinationBackup,
+            $GeneratedBackup
+        )) {
+            if (
+                $TemporaryPath -and
+                (Test-Path -LiteralPath $TemporaryPath -PathType Leaf)
+            ) {
+                Remove-Item -LiteralPath $TemporaryPath -Force
+            }
+        }
+    }
+}
+
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'The experimental profile supports only 64-bit Windows.'
 }
@@ -123,6 +219,7 @@ $Required = @(
     'README-INSTALL-TEST.md',
     'data\neural_weasel.schema.yaml',
     'rime-user\default.custom.yaml',
+    'rime-user\neural_weasel.schema.yaml',
     'python-service\pyproject.toml',
     'python-service\uv.lock'
 )
@@ -224,6 +321,7 @@ if (Test-Path -LiteralPath $ExistingManifestPath -PathType Leaf) {
         } else {
             Write-Host 'The identical bundle is already installed and registered; registration was not repeated.'
         }
+        Sync-ManagedRimeSchema -InstalledBundleRoot $InstallRoot
         exit 0
     }
 }
@@ -265,6 +363,7 @@ try {
     $RimeUserRoot = Join-Path $RuntimeRoot 'RimeUser'
     New-Item -ItemType Directory -Path $RimeUserRoot -Force | Out-Null
     Get-ChildItem -LiteralPath (Join-Path $InstallRoot 'rime-user') -File |
+        Where-Object { $_.Name -ne $ManagedSchemaName } |
         ForEach-Object {
             $Destination = Join-Path $RimeUserRoot $_.Name
             if (-not (Test-Path -LiteralPath $Destination)) {
@@ -279,6 +378,8 @@ try {
         --profile-guid $ExperimentalProfileGuid `
         --dll $InstalledDll
     Assert-LastExitCode -Operation 'Experimental profile registration'
+
+    Sync-ManagedRimeSchema -InstalledBundleRoot $InstallRoot
 
     if (Test-Path -LiteralPath $BackupRoot) {
         try {
