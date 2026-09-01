@@ -86,8 +86,8 @@ def test_stale_completion_cannot_overwrite_newer_requested_epoch() -> None:
     assert coordinator.latest_state.before_hash == "newest"
 
 
-def test_background_refresh_prewarms_candidate_path_before_publication() -> None:
-    """Candidate cold-path work completes before a refreshed epoch is visible."""
+def test_background_refresh_publishes_before_legacy_candidate_prewarm() -> None:
+    """The compatibility prewarm may never hold an editor epoch unpublished."""
 
     class RecordingEngine:
         def __init__(self) -> None:
@@ -118,9 +118,12 @@ def test_background_refresh_prewarms_candidate_path_before_publication() -> None
     epoch = coordinator.request_context_update("中文上下文", "右侧文本")
 
     assert engine.started.wait(1.0)
-    assert coordinator.context_epoch == 0
+    assert coordinator.context_epoch == epoch
+    assert coordinator.latest_state.before_hash == "中文上下文"
     engine.release.set()
-    assert coordinator.wait_for_epoch(epoch, timeout_seconds=1.0)
+    deadline = time.monotonic() + 1.0
+    while len(engine.calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.002)
     assert engine.calls == [
         ("中文上下文", "n", epoch, "右侧文本", 5),
         ("中文上下文", "ni", epoch, "右侧文本", 5),
@@ -139,6 +142,12 @@ def test_background_prewarm_failure_does_not_block_snapshot_publication() -> Non
     epoch = coordinator.request_context_update("context")
 
     assert coordinator.wait_for_epoch(epoch, timeout_seconds=1.0)
+    deadline = time.monotonic() + 1.0
+    while (
+        coordinator.diagnostics()["last_prewarm_error"] is None
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.002)
     assert coordinator.diagnostics()["last_prewarm_error"] == "RuntimeError"
 
 

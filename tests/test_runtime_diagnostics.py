@@ -20,6 +20,12 @@ class FakeEngine:
             "last_refresh_context_tokens": 640,
             "last_refresh_evaluated_tokens": 12,
             "last_refresh_latency_ms": 18.75,
+            "last_candidate_page_index": 2,
+            "last_candidate_count": 9,
+            "last_candidate_search_depth": 4,
+            "last_candidate_length_bucket": 1,
+            "last_candidate_search_elapsed_ms": 37.5,
+            "candidate_page_timeout_count": 3,
             "secret": "PRIVATE-CONTEXT-MUST-NOT-LEAK",
         }
 
@@ -54,7 +60,15 @@ class FakeBackend:
 def test_engine_delegates_only_to_cached_runtime_performance_diagnostics() -> None:
     engine = BilingualImeEngine(backend=FakeBackend())
 
-    assert engine.runtime_performance_diagnostics() == {"last_refresh_evaluated_tokens": 7}
+    diagnostics = engine.runtime_performance_diagnostics()
+
+    assert diagnostics["last_refresh_evaluated_tokens"] == 7
+    assert diagnostics["last_candidate_page_index"] is None
+    assert diagnostics["last_candidate_count"] is None
+    assert diagnostics["last_candidate_search_depth"] is None
+    assert diagnostics["last_candidate_length_bucket"] is None
+    assert diagnostics["last_candidate_search_elapsed_ms"] is None
+    assert diagnostics["candidate_page_timeout_count"] == 0
 
 
 def test_metadata_only_diagnostics_filters_engine_output() -> None:
@@ -74,7 +88,13 @@ def test_metadata_only_diagnostics_filters_engine_output() -> None:
         "n_batch": 512,
         "last_refresh_context_tokens": 640,
         "last_refresh_evaluated_tokens": 12,
+        "last_candidate_page_index": 2,
+        "last_candidate_count": 9,
+        "last_candidate_search_depth": 4,
+        "last_candidate_length_bucket": 1,
+        "candidate_page_timeout_count": 3,
         "last_refresh_latency_ms": 18.75,
+        "last_candidate_search_elapsed_ms": 37.5,
         "request_id": "d1",
     }
     assert "PRIVATE-CONTEXT-MUST-NOT-LEAK" not in repr(response)
