@@ -115,7 +115,12 @@ def _latin_key(candidate: Candidate) -> tuple[object, ...]:
     )
 
 
-def _page_candidate_id(candidate_set_id: str, page_index: int, offset: int, candidate: Candidate) -> str:
+def _page_candidate_id(
+    candidate_set_id: str,
+    page_index: int,
+    offset: int,
+    candidate: Candidate,
+) -> str:
     digest = hashlib.sha256()
     digest.update(candidate_set_id.encode("ascii"))
     digest.update(page_index.to_bytes(4, "little", signed=False))
@@ -246,7 +251,11 @@ class NeuralCandidatePageManager:
     ) -> CandidatePage:
         started = self.clock()
         mode = NeuralLanguageMode(mode)
-        page_size = CHINESE_PAGE_SIZE if mode is NeuralLanguageMode.CHINESE_FIRST else LATIN_PAGE_SIZE
+        page_size = (
+            CHINESE_PAGE_SIZE
+            if mode is NeuralLanguageMode.CHINESE_FIRST
+            else LATIN_PAGE_SIZE
+        )
         deadline_ms = PAGE0_DEADLINE_MS if page_index == 0 else (
             NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
         )
@@ -286,7 +295,9 @@ class NeuralCandidatePageManager:
                 return frozen
             expected = max(session.frozen_pages, default=-1) + 1
             if page_index != expected:
-                raise CandidatePageError("new candidate pages must be requested in increasing order")
+                raise CandidatePageError(
+                    "new candidate pages must be requested in increasing order"
+                )
 
         absolute_deadline = started + deadline_ms / 1000.0
         page = self._freeze_next_page(session, page_index, page_size, absolute_deadline)
@@ -482,7 +493,10 @@ class NeuralCandidatePageManager:
             return np.empty(0, dtype=np.float32)
         if state is not None:
             try:
-                return np.asarray(self.backend.score_allowed_tokens(state, token_ids), dtype=np.float32)
+                return np.asarray(
+                    self.backend.score_allowed_tokens(state, token_ids),
+                    dtype=np.float32,
+                )
             except (RuntimeError, ValueError, IndexError):
                 pass
         if self._baseline_scores is None:
@@ -570,7 +584,12 @@ class NeuralCandidatePageManager:
         if not selected and page_index > 0 and session.exhausted:
             raise CandidatePageError("candidate search is exhausted")
         if not selected:
-            selected = [_literal_candidate(session.identity.raw_keys, session.identity.context_epoch)]
+            selected = [
+                _literal_candidate(
+                    session.identity.raw_keys,
+                    session.identity.context_epoch,
+                )
+            ]
 
         total_frozen = sum(len(page.candidates) for page in session.frozen_pages.values())
         remaining_capacity = max(0, MAX_FROZEN_CANDIDATES - total_frozen)
@@ -617,7 +636,11 @@ class NeuralCandidatePageManager:
 
         han = [candidate for candidate in session.pending if candidate.script == "han"]
         latin = [candidate for candidate in session.pending if candidate.script == "latin"]
-        literal = [candidate for candidate in session.pending if candidate.constraint_kind == "literal"]
+        literal = [
+            candidate
+            for candidate in session.pending
+            if candidate.constraint_kind == "literal"
+        ]
         if not han:
             combined = latin or literal
             return combined[:page_size], combined[page_size:]

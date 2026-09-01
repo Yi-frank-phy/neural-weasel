@@ -120,6 +120,18 @@ class BilingualImeEngine:
             self._query_cache.clear()
 
     def update_context(self, before: str, after: str = "") -> BackendState:
+        # The production launcher historically issued an empty update only to
+        # force the startup forward. Once the permanent baseline exists, keep
+        # that call outside the editor-context epoch lifecycle.
+        if (
+            not before
+            and not after
+            and self.candidate_pages.baseline_ready
+            and self.coordinator.context_epoch == 0
+        ):
+            state = self.coordinator.backend.latest_state()
+            if state is not None:
+                return state
         state = self.coordinator.update_context(before, after)
         self._remember_context(state.epoch, before, after)
         return state

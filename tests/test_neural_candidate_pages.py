@@ -9,10 +9,7 @@ import pytest
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
-from neural_weasel.neural_candidates import (
-    CandidatePageError,
-    NeuralLanguageMode,
-)
+from neural_weasel.neural_candidates import CandidatePageError
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
 
