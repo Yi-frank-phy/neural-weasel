@@ -9,7 +9,7 @@ import pytest
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
-from neural_weasel.neural_candidates import CandidatePageError
+from neural_weasel.neural_candidates import CandidatePageError, CandidatePageTimeout
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
 
@@ -43,6 +43,27 @@ class BlockingRuntime(FakeRuntime):
             self.refresh_started.set()
             assert self.release_refresh.wait(2.0)
         return RuntimeSnapshot(self.logits, before, after, 0.1)
+
+
+class ToggleContinuationRuntime(FakeRuntime):
+    blocked = True
+    continuation_calls = 0
+
+    def continue_from_empty(
+        self,
+        token_paths,
+        allowed_token_sets,
+        *,
+        deadline_ms: float,
+    ):
+        del token_paths, deadline_ms
+        self.continuation_calls += 1
+        if self.blocked:
+            return None
+        return [
+            np.asarray([-float(token_id) for token_id in allowed], dtype=np.float32)
+            for allowed in allowed_token_sets
+        ]
 
 
 class FakeTokenizer:
@@ -93,6 +114,28 @@ def _engine(make_index, runtime_cls=FakeRuntime):
         backend=FullLogitsSnapshotBackend(runtime),
         pinyin_constraint=PinyinConstraint(index),
         latin_prefix_constraint=LatinPrefixConstraint.from_tokenizer(FakeTokenizer()),
+    )
+    engine.initialize_neural_baseline()
+    return engine, runtime
+
+
+def _continuation_engine(make_index):
+    index = make_index(
+        [
+            (1, "你", "ni", "ni", 1, 0),
+            (2, "你好世界", "nihaoshijie", "ni'hao'shi'jie", 4, 0),
+        ]
+    )
+    logits = np.full(8, -20.0, dtype=np.float32)
+    logits[1] = 5.0
+    logits[2] = 100.0
+    runtime = ToggleContinuationRuntime(logits)
+    runtime.blocked = True
+    runtime.continuation_calls = 0
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
     )
     engine.initialize_neural_baseline()
     return engine, runtime
@@ -192,7 +235,7 @@ def test_full_input_can_offer_prefix_consumption_without_beating_full_cover(make
     assert han.index(full) < han.index(prefix)
 
 
-def test_latin_first_is_latin_only_and_bounded_to_five(make_index) -> None:
+def test_latin_first_is_latin_only_single_page_and_bounded_to_five(make_index) -> None:
     engine, _ = _engine(make_index)
 
     page = _page(engine, "n", "latin_first")
@@ -200,6 +243,7 @@ def test_latin_first_is_latin_only_and_bounded_to_five(make_index) -> None:
     assert len(page.candidates) <= 5
     assert page.candidates
     assert all(candidate.script == "latin" for candidate in page.candidates)
+    assert page.has_more is False
 
 
 def test_context_refresh_in_flight_falls_back_to_baseline_without_waiting(make_index) -> None:
@@ -259,6 +303,85 @@ def test_returned_pages_are_frozen_and_candidate_ids_stable(make_index) -> None:
     assert repeated.candidates == second.candidates
     assert repeated.candidate_ids == second.candidate_ids
     assert set(first.candidate_ids).isdisjoint(second.candidate_ids)
+
+
+def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> None:
+    rows = [
+        (token_id, chr(0x4E00 + token_id), "ni", "ni", 1, 0)
+        for token_id in range(1, 46)
+    ]
+    index = make_index(rows)
+    logits = np.arange(64, dtype=np.float32)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(FakeRuntime(logits)),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    pages = [_page(engine, "ni")]
+    for page_index in range(1, 5):
+        pages.append(
+            _page(
+                engine,
+                "ni",
+                page_index=page_index,
+                candidate_set_id=pages[0].candidate_set_id,
+            )
+        )
+
+    assert [len(page.candidates) for page in pages] == [9, 9, 9, 9, 9]
+    assert pages[-1].has_more is False
+    ids = [candidate_id for page in pages for candidate_id in page.candidate_ids]
+    assert len(ids) == len(set(ids)) == 45
+
+    replay = _page(
+        engine,
+        "ni",
+        page_index=2,
+        candidate_set_id=pages[0].candidate_set_id,
+    )
+    assert replay.candidates == pages[2].candidates
+    assert replay.candidate_ids == pages[2].candidate_ids
+
+
+def test_page_zero_never_waits_for_continuation_and_long_root_stays_unfrozen(make_index) -> None:
+    engine, runtime = _continuation_engine(make_index)
+
+    first = _page(engine, "n")
+
+    assert runtime.continuation_calls == 0
+    assert [candidate.text for candidate in first.candidates] == ["你"]
+    assert first.has_more is True
+
+
+def test_next_page_timeout_keeps_session_retryable(make_index) -> None:
+    engine, runtime = _continuation_engine(make_index)
+    first = _page(engine, "n")
+
+    with pytest.raises(CandidatePageTimeout):
+        _page(
+            engine,
+            "n",
+            page_index=1,
+            candidate_set_id=first.candidate_set_id,
+            deadline_ms=120.0,
+        )
+
+    assert runtime.continuation_calls == 1
+    replay = _page(engine, "n", candidate_set_id=None)
+    assert replay.candidates == first.candidates
+
+    runtime.blocked = False
+    second = _page(
+        engine,
+        "n",
+        page_index=1,
+        candidate_set_id=replay.candidate_set_id,
+        deadline_ms=120.0,
+    )
+    assert second.candidates
+    assert all(candidate.predicted_syllables >= 1 for candidate in second.candidates)
 
 
 def test_candidate_set_rejects_new_composition_identity(make_index) -> None:
