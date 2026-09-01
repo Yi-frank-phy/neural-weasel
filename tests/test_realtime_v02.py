@@ -143,10 +143,7 @@ def test_background_prewarm_failure_does_not_block_snapshot_publication() -> Non
 
     assert coordinator.wait_for_epoch(epoch, timeout_seconds=1.0)
     deadline = time.monotonic() + 1.0
-    while (
-        coordinator.diagnostics()["last_prewarm_error"] is None
-        and time.monotonic() < deadline
-    ):
+    while coordinator.diagnostics()["last_prewarm_error"] is None and time.monotonic() < deadline:
         time.sleep(0.002)
     assert coordinator.diagnostics()["last_prewarm_error"] == "RuntimeError"
 
