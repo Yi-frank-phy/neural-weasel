@@ -22,6 +22,7 @@ class Candidate:
     total_score: float = 0.0
     token_path: tuple[int, ...] = ()
     ranking_tier: int = 0
+    predicted_syllables: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
