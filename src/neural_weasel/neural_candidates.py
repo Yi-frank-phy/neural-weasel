@@ -159,6 +159,11 @@ class NeuralCandidatePageManager:
     against either the latest immutable editor snapshot or the permanent empty-
     context baseline. Multi-token continuation is optional and deadline bounded;
     once a page is returned it is never mutated.
+
+    A Han page is frozen only from length buckets that are already proven closed:
+    if an unexpanded frontier can still produce bucket ``k``, a bucket ``k`` or
+    longer candidate stays pending. This preserves strict short-before-long order
+    without making page 0 wait for continuation work.
     """
 
     def __init__(
@@ -329,6 +334,9 @@ class NeuralCandidatePageManager:
             state=state,
             response_epoch=identity.context_epoch,
         )
+        if identity.mode is NeuralLanguageMode.LATIN_FIRST:
+            root_candidates = root_candidates[:LATIN_PAGE_SIZE]
+            frontier = []
         candidate_set_id = uuid.uuid4().hex
         continuation = getattr(self.backend, "continue_from_empty", None)
         session = _SearchSession(
@@ -345,7 +353,11 @@ class NeuralCandidatePageManager:
             },
             expanded_paths=set(),
             last_used=self.clock(),
-            exhausted=not frontier or not callable(continuation),
+            exhausted=(
+                identity.mode is NeuralLanguageMode.LATIN_FIRST
+                or not frontier
+                or not callable(continuation)
+            ),
         )
         self._sessions[candidate_set_id] = session
         self._sessions.move_to_end(candidate_set_id)
@@ -567,6 +579,29 @@ class NeuralCandidatePageManager:
             )
         return frontier
 
+    @staticmethod
+    def _minimum_future_bucket(session: _SearchSession) -> int | None:
+        buckets = [
+            path.predicted_syllables + 1
+            for path in session.frontier
+            if path.token_path not in session.expanded_paths
+        ]
+        return min(buckets, default=None)
+
+    def _freezable_candidates(self, session: _SearchSession) -> list[Candidate]:
+        if session.exhausted:
+            return list(session.pending)
+        minimum_future = self._minimum_future_bucket(session)
+        if minimum_future is None:
+            return list(session.pending)
+        return [
+            candidate
+            for candidate in session.pending
+            if candidate.script != "han"
+            or not candidate.completes_input
+            or candidate.predicted_syllables < minimum_future
+        ]
+
     def _freeze_next_page(
         self,
         session: _SearchSession,
@@ -575,18 +610,21 @@ class NeuralCandidatePageManager:
         absolute_deadline: float,
     ) -> CandidatePage:
         if page_index == 0:
-            selected, remaining = self._take_page0(session, page_size)
-            session.pending = remaining
+            selected = self._take_page0(session, page_size)
         else:
-            self._ensure_pending(session, page_size, absolute_deadline)
-            if len(session.pending) < page_size and not session.exhausted:
+            self._ensure_freezable(session, page_size, absolute_deadline)
+            freezable = self._freezable_candidates(session)
+            if len(freezable) < page_size and not session.exhausted:
                 session.timeout_count += 1
                 self._last_page_metrics["candidate_page_timeout_count"] = (
                     int(self._last_page_metrics["candidate_page_timeout_count"] or 0) + 1
                 )
                 raise CandidatePageTimeout("candidate page search exceeded its absolute deadline")
-            selected = session.pending[:page_size]
-            del session.pending[: len(selected)]
+            selected = freezable[:page_size]
+            selected_set = set(selected)
+            session.pending = [
+                candidate for candidate in session.pending if candidate not in selected_set
+            ]
 
         if not selected and page_index > 0 and session.exhausted:
             raise CandidatePageError("candidate search is exhausted")
@@ -629,27 +667,34 @@ class NeuralCandidatePageManager:
         session.frozen_pages[page_index] = page
         return page
 
-    @staticmethod
-    def _take_page0(
-        session: _SearchSession,
-        page_size: int,
-    ) -> tuple[list[Candidate], list[Candidate]]:
+    def _take_page0(self, session: _SearchSession, page_size: int) -> list[Candidate]:
+        freezable = self._freezable_candidates(session)
         if session.identity.mode is NeuralLanguageMode.LATIN_FIRST:
-            return session.pending[:page_size], session.pending[page_size:]
+            chosen = freezable[:page_size]
+            selected_set = set(chosen)
+            session.pending = [
+                candidate for candidate in session.pending if candidate not in selected_set
+            ]
+            return chosen
 
-        han = [candidate for candidate in session.pending if candidate.script == "han"]
-        latin = [candidate for candidate in session.pending if candidate.script == "latin"]
+        han = [candidate for candidate in freezable if candidate.script == "han"]
+        latin = [candidate for candidate in freezable if candidate.script == "latin"]
         literal = [
-            candidate for candidate in session.pending if candidate.constraint_kind == "literal"
+            candidate for candidate in freezable if candidate.constraint_kind == "literal"
         ]
         if not han:
             combined = latin or literal
-            return combined[:page_size], combined[page_size:]
+            chosen = combined[:page_size]
+            selected_set = set(chosen)
+            session.pending = [
+                candidate for candidate in session.pending if candidate not in selected_set
+            ]
+            return chosen
 
         first = han[0]
         chosen = [first]
         used = {(first.text, first.consumed_keys, first.token_path)}
-        for candidate in session.pending:
+        for candidate in freezable:
             if len(chosen) >= page_size:
                 break
             key = (candidate.text, candidate.consumed_keys, candidate.token_path)
@@ -667,27 +712,49 @@ class NeuralCandidatePageManager:
                 chosen[-1] = replacement
             used.add((replacement.text, replacement.consumed_keys, replacement.token_path))
 
-        remaining = [
-            candidate
-            for candidate in session.pending
-            if (candidate.text, candidate.consumed_keys, candidate.token_path) not in used
+        selected_set = set(chosen)
+        session.pending = [
+            candidate for candidate in session.pending if candidate not in selected_set
         ]
-        return chosen, remaining
+        return chosen
 
-    def _ensure_pending(
+    def _ensure_freezable(
         self,
         session: _SearchSession,
         page_size: int,
         absolute_deadline: float,
     ) -> None:
-        while len(session.pending) < page_size and not session.exhausted:
+        while not session.exhausted:
+            if len(self._freezable_candidates(session)) >= page_size:
+                return
             if self.clock() >= absolute_deadline:
                 return
             produced = self._expand_one_frontier(session, absolute_deadline)
-            if produced == 0 and not session.frontier:
-                session.exhausted = True
-                return
             session.pending.sort(key=_candidate_key)
+            if produced == 0:
+                return
+
+    def _prune_frontier(self, session: _SearchSession) -> None:
+        session.frontier.sort(
+            key=lambda path: (
+                path.predicted_syllables,
+                -path.score,
+                len(path.token_path),
+                path.text,
+                path.token_path,
+            )
+        )
+        retained: list[_SearchPath] = []
+        counts: dict[int, int] = {}
+        for path in session.frontier:
+            if path.token_path in session.expanded_paths:
+                continue
+            count = counts.get(path.predicted_syllables, 0)
+            if count >= MAX_FRONTIER_PER_BUCKET:
+                continue
+            counts[path.predicted_syllables] = count + 1
+            retained.append(path)
+        session.frontier = retained
 
     def _expand_one_frontier(self, session: _SearchSession, absolute_deadline: float) -> int:
         if not session.frontier or not self._continuation_token_ids:
@@ -698,15 +765,7 @@ class NeuralCandidatePageManager:
             session.exhausted = True
             return 0
 
-        session.frontier.sort(
-            key=lambda path: (
-                path.predicted_syllables,
-                -path.score,
-                len(path.token_path),
-                path.text,
-                path.token_path,
-            )
-        )
+        self._prune_frontier(session)
         parent = None
         while session.frontier:
             candidate = session.frontier.pop(0)
@@ -795,6 +854,7 @@ class NeuralCandidatePageManager:
             if self.clock() >= absolute_deadline:
                 break
         session.search_depth = max(session.search_depth, len(parent.token_path) + 1)
+        self._prune_frontier(session)
         if not session.frontier:
             session.exhausted = True
         return produced
