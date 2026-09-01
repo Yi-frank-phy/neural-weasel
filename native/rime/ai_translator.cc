@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <limits>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -15,12 +16,13 @@
 namespace neural_weasel::rime_plugin {
 namespace {
 
-constexpr std::size_t kCandidateCount = 5;
+constexpr std::size_t kChinesePageSize = 9;
+constexpr std::size_t kLatinPageSize = 5;
 
 using Json = nlohmann::json;
 
-// Temporary metadata-only target-machine diagnostic. Never pass raw keys,
-// candidate text, surrounding text, window titles, or capability values here.
+// Metadata-only target-machine diagnostic. Never pass raw keys, candidate text,
+// surrounding text, window titles, context capabilities, or candidate ids here.
 void TraceAiTranslator(const wchar_t* format, ...) {
   wchar_t local_app_data[MAX_PATH] = {};
   const DWORD length = GetEnvironmentVariableW(
@@ -73,6 +75,43 @@ std::string CandidateComment(const Json& item) {
   return {};
 }
 
+std::string CurrentLanguageMode(::rime::Context* context) {
+  const std::string value = context->get_property("neural_language_mode");
+  if (value == "latin_first") {
+    return value;
+  }
+  if (value != "chinese_first") {
+    context->set_property("neural_language_mode", "chinese_first");
+  }
+  return "chinese_first";
+}
+
+std::uint32_t RequestedPage(::rime::Context* context) {
+  const std::string value = context->get_property("neural_requested_page");
+  if (value.empty()) {
+    return 0;
+  }
+  try {
+    const unsigned long parsed = std::stoul(value);
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+      return 0;
+    }
+    return static_cast<std::uint32_t>(parsed);
+  } catch (...) {
+    return 0;
+  }
+}
+
+bool IsSourceBoundaryChange(const std::string& captured_session,
+                            const AcceptedEditorContext& latest) {
+  if (captured_session.empty()) {
+    // An epoch-0 page is intentionally frozen even when ordinary editor context
+    // becomes available later. The next input revision may capture it.
+    return false;
+  }
+  return !latest.valid() || latest.source_capability != captured_session;
+}
+
 }  // namespace
 
 std::atomic<std::uint64_t> AiTranslator::next_session_id_{1};
@@ -95,83 +134,190 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
     TraceAiTranslator(L"event=query result=tag-or-empty");
     return nullptr;
   }
-  engine_->context()->set_property("neural_candidate_fresh", "0");
+
+  auto* context = engine_->context();
+  if (!context) {
+    return nullptr;
+  }
+  context->set_property("neural_candidate_fresh", "0");
 
   try {
-    const AcceptedEditorContext context_identity =
+    const std::string language_mode = CurrentLanguageMode(context);
+    const AcceptedEditorContext latest_context =
         EditorContextEpoch::Instance().LoadAccepted();
-    TraceAiTranslator(
-        L"event=query identity-valid=%d model-epoch=%llu source-revision=%llu",
-        context_identity.valid() ? 1 : 0,
-        static_cast<unsigned long long>(context_identity.model_epoch),
-        static_cast<unsigned long long>(context_identity.source_revision));
-    if (!context_identity.valid() || context_identity.model_epoch == 0) {
-      // Never let epoch 0 implicitly select a previous application's model
-      // snapshot. Ordinary Rime candidates remain available while editor
-      // context is absent or still refreshing.
-      return nullptr;
+    const bool source_boundary =
+        composition_revision_ > 0 &&
+        IsSourceBoundaryChange(context_session_, latest_context);
+    const bool new_revision = composition_revision_ == 0 ||
+                              composition_input_ != input ||
+                              composition_mode_ != language_mode ||
+                              source_boundary;
+    if (new_revision) {
+      ++composition_revision_;
+      composition_input_ = input;
+      composition_mode_ = language_mode;
+      if (latest_context.valid()) {
+        context_epoch_ = latest_context.model_epoch;
+        context_session_ = latest_context.source_capability;
+        source_revision_ = latest_context.source_revision;
+      } else {
+        context_epoch_ = 0;
+        context_session_.clear();
+        source_revision_ = 0;
+      }
+      candidate_set_id_.clear();
+      current_page_index_ = 0;
+      current_has_more_ = false;
+      frozen_pages_.clear();
+      context->set_property("neural_requested_page", "0");
+      context->set_property("neural_page_index", "0");
+      context->set_property("neural_has_more", "0");
+      TraceAiTranslator(
+          L"event=revision created revision=%llu context-epoch=%llu mode=%d",
+          static_cast<unsigned long long>(composition_revision_),
+          static_cast<unsigned long long>(context_epoch_),
+          language_mode == "latin_first" ? 1 : 0);
     }
 
-    const std::uint64_t request_revision = ++revision_;
-    const std::string request_session_id = std::to_string(session_id_);
-    const Json request = {
-        {"type", "query_candidates"},
-        {"session_id", request_session_id},
-        {"revision", request_revision},
-        {"context_epoch", context_identity.model_epoch},
-        {"context_session", context_identity.source_capability},
-        {"source_revision", context_identity.source_revision},
-        {"raw_keys", input},
-        {"candidate_count", kCandidateCount},
-    };
-
-    auto result = pipe_.TryQuery(request.dump(), query_timeout_);
-    if (!result) {
-      TraceAiTranslator(L"event=query result=pipe-failure status=%d error=%lu",
-                        static_cast<int>(result.status), result.win32_error);
-      return nullptr;
+    std::uint32_t requested_page = RequestedPage(context);
+    if (language_mode == "latin_first") {
+      requested_page = 0;
+      context->set_property("neural_requested_page", "0");
+    }
+    if (requested_page > current_page_index_ + 1U) {
+      requested_page = current_page_index_;
+      context->set_property("neural_requested_page",
+                            std::to_string(requested_page));
     }
 
-    const Json response = Json::parse(result.payload);
-    if (response.value("type", "") != "candidates" ||
-        response.value("session_id", std::string{}) != request_session_id ||
-        response.value("revision", std::uint64_t{0}) != request_revision ||
-        !IsResponseEpochAcceptable(
-            context_identity.model_epoch,
-            response.value("context_epoch", std::uint64_t{0})) ||
-        !response.contains("candidates") ||
-        !response["candidates"].is_array()) {
-      TraceAiTranslator(L"event=query result=response-rejected");
-      return nullptr;
+    std::string page_payload;
+    const auto cached = frozen_pages_.find(requested_page);
+    if (cached != frozen_pages_.end()) {
+      page_payload = cached->second;
+    } else {
+      if (requested_page > 0 &&
+          (requested_page != current_page_index_ + 1U ||
+           !current_has_more_ || candidate_set_id_.empty())) {
+        const auto current = frozen_pages_.find(current_page_index_);
+        if (current == frozen_pages_.end()) {
+          return nullptr;
+        }
+        requested_page = current_page_index_;
+        context->set_property("neural_requested_page",
+                              std::to_string(requested_page));
+        page_payload = current->second;
+      } else {
+        const std::string request_session_id = std::to_string(session_id_);
+        Json request = {
+            {"type", "query_candidate_page"},
+            {"session_id", request_session_id},
+            {"composition_revision", composition_revision_},
+            {"context_epoch", context_epoch_},
+            {"language_mode", language_mode},
+            {"raw_keys", input},
+            {"page_index", requested_page},
+        };
+        if (context_epoch_ > 0) {
+          request["context_session"] = context_session_;
+          request["source_revision"] = source_revision_;
+        }
+        if (requested_page > 0) {
+          request["candidate_set_id"] = candidate_set_id_;
+        }
+
+        const auto timeout = requested_page == 0 ? query_timeout_
+                                                 : next_page_timeout_;
+        auto result = pipe_.TryQuery(request.dump(), timeout);
+        if (!result) {
+          TraceAiTranslator(
+              L"event=page result=pipe-failure page=%lu status=%d error=%lu",
+              static_cast<unsigned long>(requested_page),
+              static_cast<int>(result.status), result.win32_error);
+          const auto current = frozen_pages_.find(current_page_index_);
+          if (current == frozen_pages_.end()) {
+            return nullptr;
+          }
+          requested_page = current_page_index_;
+          context->set_property("neural_requested_page",
+                                std::to_string(requested_page));
+          page_payload = current->second;
+        } else {
+          const Json response = Json::parse(result.payload);
+          const std::string response_set =
+              response.value("candidate_set_id", std::string{});
+          const bool set_matches =
+              requested_page == 0 ? !response_set.empty()
+                                  : response_set == candidate_set_id_;
+          if (response.value("type", "") != "candidate_page" ||
+              !response.value("ok", false) ||
+              response.value("session_id", std::string{}) !=
+                  request_session_id ||
+              response.value("composition_revision", std::uint64_t{0}) !=
+                  composition_revision_ ||
+              response.value("context_epoch", std::uint64_t{0}) !=
+                  context_epoch_ ||
+              response.value("language_mode", std::string{}) !=
+                  language_mode ||
+              response.value("page_index", std::uint32_t{0}) !=
+                  requested_page ||
+              !set_matches || !response.contains("candidates") ||
+              !response["candidates"].is_array()) {
+            TraceAiTranslator(L"event=page result=response-rejected page=%lu",
+                              static_cast<unsigned long>(requested_page));
+            const auto current = frozen_pages_.find(current_page_index_);
+            if (current == frozen_pages_.end()) {
+              return nullptr;
+            }
+            requested_page = current_page_index_;
+            context->set_property("neural_requested_page",
+                                  std::to_string(requested_page));
+            page_payload = current->second;
+          } else {
+            if (requested_page == 0) {
+              candidate_set_id_ = response_set;
+            }
+            current_page_index_ = requested_page;
+            current_has_more_ = response.value("has_more", false);
+            page_payload = response.dump();
+            frozen_pages_[requested_page] = page_payload;
+            TraceAiTranslator(
+                L"event=page frozen page=%lu count=%llu has-more=%d",
+                static_cast<unsigned long>(requested_page),
+                static_cast<unsigned long long>(response["candidates"].size()),
+                current_has_more_ ? 1 : 0);
+          }
+        }
+      }
     }
-    TraceAiTranslator(
-        L"event=query response-candidates=%llu suppressed=%d",
-        static_cast<unsigned long long>(response["candidates"].size()),
-        engine_->context()->get_option("_neural_completion_suppressed") ? 1
-                                                                         : 0);
-    const std::string input_mode =
-        response.value("input_mode", std::string{"ambiguous"});
-    engine_->context()->set_property("neural_input_mode", input_mode);
-    if (engine_->context()->get_option("_neural_completion_suppressed")) {
-      TraceAiTranslator(L"event=query result=suppressed");
-      return nullptr;
+
+    const Json page = Json::parse(page_payload);
+    current_page_index_ = page.value("page_index", current_page_index_);
+    current_has_more_ = page.value("has_more", false);
+    if (page.contains("candidate_set_id") &&
+        page["candidate_set_id"].is_string()) {
+      const std::string response_set = page["candidate_set_id"].get<std::string>();
+      if (candidate_set_id_.empty()) {
+        candidate_set_id_ = response_set;
+      }
     }
+    context->set_property("neural_page_index",
+                          std::to_string(current_page_index_));
+    context->set_property("neural_requested_page",
+                          std::to_string(current_page_index_));
+    context->set_property("neural_has_more", current_has_more_ ? "1" : "0");
 
     auto translation = ::rime::New<::rime::FifoTranslation>();
+    const std::size_t page_limit = language_mode == "latin_first"
+                                       ? kLatinPageSize
+                                       : kChinesePageSize;
     std::size_t accepted = 0;
-    for (const auto& item : response["candidates"]) {
-      if (accepted >= kCandidateCount || !item.is_object() ||
+    for (const auto& item : page["candidates"]) {
+      if (accepted >= page_limit || !item.is_object() ||
           !item.contains("text") || !item["text"].is_string()) {
         continue;
       }
       const std::size_t consumed = item.value("consumed_keys", std::size_t{0});
       const std::size_t segment_size = segment.end - segment.start;
-      TraceAiTranslator(
-          L"event=query candidate consumed=%llu input-len=%llu "
-          L"segment-size=%llu",
-          static_cast<unsigned long long>(consumed),
-          static_cast<unsigned long long>(input.size()),
-          static_cast<unsigned long long>(segment_size));
       if (consumed == 0 || consumed > input.size() ||
           consumed > segment_size) {
         continue;
@@ -179,6 +325,10 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
 
       const std::string constraint_kind =
           item.value("constraint_kind", std::string{});
+      const std::string script = item.value("script", std::string{});
+      if (language_mode == "latin_first" && script != "latin") {
+        continue;
+      }
       const std::string candidate_type =
           constraint_kind == "literal"
               ? "neural_literal"
@@ -194,12 +344,14 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
       ++accepted;
     }
     if (accepted == 0) {
-      TraceAiTranslator(L"event=query result=no-accepted-candidates");
+      TraceAiTranslator(L"event=query result=no-accepted-candidates page=%lu",
+                        static_cast<unsigned long>(current_page_index_));
       return nullptr;
     }
-    TraceAiTranslator(L"event=query result=accepted count=%llu",
+    context->set_property("neural_candidate_fresh", "1");
+    TraceAiTranslator(L"event=query result=accepted page=%lu count=%llu",
+                      static_cast<unsigned long>(current_page_index_),
                       static_cast<unsigned long long>(accepted));
-    engine_->context()->set_property("neural_candidate_fresh", "1");
     return translation;
   } catch (...) {
     TraceAiTranslator(L"event=query result=exception");
