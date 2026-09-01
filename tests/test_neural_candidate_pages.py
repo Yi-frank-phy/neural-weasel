@@ -306,10 +306,7 @@ def test_returned_pages_are_frozen_and_candidate_ids_stable(make_index) -> None:
 
 
 def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> None:
-    rows = [
-        (token_id, chr(0x4E00 + token_id), "ni", "ni", 1, 0)
-        for token_id in range(1, 46)
-    ]
+    rows = [(token_id, chr(0x4E00 + token_id), "ni", "ni", 1, 0) for token_id in range(1, 46)]
     index = make_index(rows)
     logits = np.arange(64, dtype=np.float32)
     engine = BilingualImeEngine(
@@ -355,7 +352,7 @@ def test_page_zero_never_waits_for_continuation_and_long_root_stays_unfrozen(mak
     assert first.has_more is True
 
 
-def test_next_page_timeout_keeps_session_retryable(make_index) -> None:
+def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> None:
     engine, runtime = _continuation_engine(make_index)
     first = _page(engine, "n")
 
@@ -369,17 +366,15 @@ def test_next_page_timeout_keeps_session_retryable(make_index) -> None:
         )
 
     assert runtime.continuation_calls == 1
-    replay = _page(engine, "n", candidate_set_id=None)
-    assert replay.candidates == first.candidates
-
     runtime.blocked = False
     second = _page(
         engine,
         "n",
         page_index=1,
-        candidate_set_id=replay.candidate_set_id,
+        candidate_set_id=first.candidate_set_id,
         deadline_ms=120.0,
     )
+    assert second.candidate_set_id == first.candidate_set_id
     assert second.candidates
     assert all(candidate.predicted_syllables >= 1 for candidate in second.candidates)
 
