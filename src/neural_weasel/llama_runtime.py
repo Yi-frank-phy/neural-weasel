@@ -293,7 +293,9 @@ class LlamaCppBackend:
                 if allowed.size and (
                     int(allowed.min()) < 0 or int(allowed.max()) >= vocabulary_size
                 ):
-                    raise IndexError("allowed continuation token id is outside the model vocabulary")
+                    raise IndexError(
+                        "allowed continuation token id is outside the model vocabulary"
+                    )
 
                 self.llama.reset()
                 self.llama.eval([fallback, *path])
