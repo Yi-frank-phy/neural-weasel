@@ -174,7 +174,9 @@ class NeuralCandidatePageManager:
         self.latin_constraint = latin_constraint
         self.clock = clock
         self._baseline_scores: np.ndarray | None = None
-        self._baseline_page0: dict[tuple[str, NeuralLanguageMode], tuple[Candidate, ...]] = {}
+        self._baseline_single_letter: dict[
+            tuple[str, NeuralLanguageMode], tuple[Candidate, ...]
+        ] = {}
         self._sessions: OrderedDict[str, _SearchSession] = OrderedDict()
         self._last_page_metrics: dict[str, int | float | None] = {
             "last_candidate_page_index": None,
@@ -208,11 +210,11 @@ class NeuralCandidatePageManager:
 
     def install_baseline_scores(self, scores: Sequence[float]) -> None:
         values = np.asarray(scores, dtype=np.float32).reshape(-1).copy()
-        if values.size == 0 or not np.isfinite(values).all():
-            raise ValueError("empty-context baseline scores must be a finite vector")
+        if values.size == 0 or np.isnan(values).any():
+            raise ValueError("empty-context baseline scores must not contain NaN")
         values.flags.writeable = False
         self._baseline_scores = values
-        self._baseline_page0.clear()
+        self._baseline_single_letter.clear()
         self.clear_sessions()
 
     def prewarm_single_letter_pages(self) -> None:
@@ -225,8 +227,11 @@ class NeuralCandidatePageManager:
                     mode=mode,
                     state=None,
                     response_epoch=0,
+                    allow_prewarm_cache=False,
                 )
-                self._baseline_page0[(raw, mode)] = tuple(candidates)
+                self._baseline_single_letter[(raw, mode)] = tuple(
+                    candidates[:MAX_FROZEN_CANDIDATES]
+                )
 
     def clear_sessions(self) -> None:
         self._sessions.clear()
@@ -252,12 +257,12 @@ class NeuralCandidatePageManager:
         started = self.clock()
         mode = NeuralLanguageMode(mode)
         page_size = (
-            CHINESE_PAGE_SIZE
-            if mode is NeuralLanguageMode.CHINESE_FIRST
-            else LATIN_PAGE_SIZE
+            CHINESE_PAGE_SIZE if mode is NeuralLanguageMode.CHINESE_FIRST else LATIN_PAGE_SIZE
         )
-        deadline_ms = PAGE0_DEADLINE_MS if page_index == 0 else (
-            NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
+        deadline_ms = (
+            PAGE0_DEADLINE_MS
+            if page_index == 0
+            else (NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms))
         )
         if deadline_ms <= 0:
             raise CandidatePageTimeout("candidate page deadline expired")
@@ -314,7 +319,7 @@ class NeuralCandidatePageManager:
         for candidate_set_id, old in tuple(self._sessions.items()):
             if (
                 old.identity.client_session_id == identity.client_session_id
-                and old.identity.composition_revision != identity.composition_revision
+                and old.identity != identity
             ):
                 del self._sessions[candidate_set_id]
 
@@ -325,6 +330,7 @@ class NeuralCandidatePageManager:
             response_epoch=identity.context_epoch,
         )
         candidate_set_id = uuid.uuid4().hex
+        continuation = getattr(self.backend, "continue_from_empty", None)
         session = _SearchSession(
             candidate_set_id=candidate_set_id,
             identity=identity,
@@ -339,7 +345,7 @@ class NeuralCandidatePageManager:
             },
             expanded_paths=set(),
             last_used=self.clock(),
-            exhausted=not frontier,
+            exhausted=not frontier or not callable(continuation),
         )
         self._sessions[candidate_set_id] = session
         self._sessions.move_to_end(candidate_set_id)
@@ -354,16 +360,17 @@ class NeuralCandidatePageManager:
         mode: NeuralLanguageMode,
         state: BackendState | None,
         response_epoch: int,
+        allow_prewarm_cache: bool = True,
     ) -> tuple[list[Candidate], list[_SearchPath], str]:
         cached = (
-            self._baseline_page0.get((raw_keys, mode))
-            if state is None and response_epoch == 0
+            self._baseline_single_letter.get((raw_keys, mode))
+            if state is None and allow_prewarm_cache
             else None
         )
         if cached is not None:
             candidates = [replace(candidate, context_epoch=response_epoch) for candidate in cached]
-            frontier = self._frontier_from_candidates(candidates)
-            return candidates, frontier, "baseline"
+            han = [candidate for candidate in candidates if candidate.script == "han"]
+            return candidates, self._frontier_from_candidates(han), "baseline"
 
         han = self._root_han_candidates(raw_keys, state, response_epoch)
         latin = self._root_latin_candidates(raw_keys, state, response_epoch)
@@ -574,9 +581,9 @@ class NeuralCandidatePageManager:
             self._ensure_pending(session, page_size, absolute_deadline)
             if len(session.pending) < page_size and not session.exhausted:
                 session.timeout_count += 1
-                self._last_page_metrics["candidate_page_timeout_count"] = int(
-                    self._last_page_metrics["candidate_page_timeout_count"] or 0
-                ) + 1
+                self._last_page_metrics["candidate_page_timeout_count"] = (
+                    int(self._last_page_metrics["candidate_page_timeout_count"] or 0) + 1
+                )
                 raise CandidatePageTimeout("candidate page search exceeded its absolute deadline")
             selected = session.pending[:page_size]
             del session.pending[: len(selected)]
@@ -599,11 +606,7 @@ class NeuralCandidatePageManager:
 
         has_more = bool(session.pending) or not session.exhausted
         length_bucket = min(
-            (
-                candidate.predicted_syllables
-                for candidate in selected
-                if candidate.script == "han"
-            ),
+            (candidate.predicted_syllables for candidate in selected if candidate.script == "han"),
             default=None,
         )
         candidate_ids = tuple(
@@ -637,9 +640,7 @@ class NeuralCandidatePageManager:
         han = [candidate for candidate in session.pending if candidate.script == "han"]
         latin = [candidate for candidate in session.pending if candidate.script == "latin"]
         literal = [
-            candidate
-            for candidate in session.pending
-            if candidate.constraint_kind == "literal"
+            candidate for candidate in session.pending if candidate.constraint_kind == "literal"
         ]
         if not han:
             combined = latin or literal

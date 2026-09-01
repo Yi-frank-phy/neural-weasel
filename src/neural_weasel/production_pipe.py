@@ -100,6 +100,14 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 retryable=True,
             )
 
+    def _handle_focus(self, message: dict[str, Any]) -> dict[str, Any]:
+        response = super()._handle_focus(message)
+        if response.get("ok") is True:
+            invalidate = getattr(self.engine, "invalidate_candidate_sessions", None)
+            if callable(invalidate):
+                invalidate()
+        return response
+
     def _handle_candidate_page_request(self, message: dict[str, Any]) -> dict[str, Any]:
         request_id = None
         try:
@@ -137,9 +145,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
             try:
                 language_mode = NeuralLanguageMode(message.get("language_mode"))
             except (TypeError, ValueError) as error:
-                raise ProtocolError(
-                    "language_mode must be chinese_first or latin_first"
-                ) from error
+                raise ProtocolError("language_mode must be chinese_first or latin_first") from error
 
             identity = _optional_query_identity(message)
             if context_epoch == 0 and identity is not None:

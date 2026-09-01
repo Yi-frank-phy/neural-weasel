@@ -100,16 +100,16 @@ class SnapshotCoordinator:
             with self._request_lock:
                 if requested_epoch != self._requested_epoch:
                     continue
-            prewarm_error = self._prewarm_candidate_path(
-                before,
-                after,
-                state,
-            )
+                self._last_refresh_error = None
+                self._last_prewarm_error = None
+                # Publication is the readiness boundary. Any compatibility
+                # prewarm happens only after the epoch is already queryable.
+                self._publish(state)
+
+            prewarm_error = self._prewarm_candidate_path(before, after, state)
             with self._request_lock:
                 if requested_epoch == self._requested_epoch:
-                    self._last_refresh_error = None
                     self._last_prewarm_error = prewarm_error
-                    self._publish(state)
 
     def _prewarm_candidate_path(
         self,
@@ -117,11 +117,11 @@ class SnapshotCoordinator:
         after: str,
         state: BackendState,
     ) -> str | None:
-        """Touch cold query structures on the background context worker.
+        """Warm only the legacy query path after snapshot publication.
 
-        The fixed keys contain no editor text. Candidate objects are discarded
-        before the new epoch is published, so the foreground query path sees a
-        warmed immutable snapshot without persisting generated text.
+        The new page protocol has its own permanent empty-context prewarm and
+        does not depend on this compatibility optimization. This method may not
+        delay publication of an editor context epoch.
         """
 
         try:
@@ -134,9 +134,6 @@ class SnapshotCoordinator:
                     limit=5,
                 )
         except Exception as error:
-            # Prewarming is an optimization and must not make a valid context
-            # snapshot unavailable. Keep only the exception type for bounded,
-            # context-free diagnostics.
             return type(error).__name__
         return None
 

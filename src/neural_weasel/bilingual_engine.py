@@ -186,11 +186,7 @@ class BilingualImeEngine:
         snapshot is not ready or has expired, the same baseline is used instead.
         """
 
-        state = (
-            self.coordinator.state_for_epoch(context_epoch)
-            if context_epoch > 0
-            else None
-        )
+        state = self.coordinator.state_for_epoch(context_epoch) if context_epoch > 0 else None
         return self.candidate_pages.query_page(
             client_session_id=client_session_id,
             composition_revision=composition_revision,
