@@ -679,9 +679,7 @@ class NeuralCandidatePageManager:
 
         han = [candidate for candidate in freezable if candidate.script == "han"]
         latin = [candidate for candidate in freezable if candidate.script == "latin"]
-        literal = [
-            candidate for candidate in freezable if candidate.constraint_kind == "literal"
-        ]
+        literal = [candidate for candidate in freezable if candidate.constraint_kind == "literal"]
         if not han:
             combined = latin or literal
             chosen = combined[:page_size]
