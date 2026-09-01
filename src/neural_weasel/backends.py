@@ -159,29 +159,18 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         token_ids = self._validated_token_ids(allowed_token_ids, logits.size)
         return np.asarray(logits[token_ids], dtype=np.float32)
 
-    def continue_from_empty(
-        self,
-        token_paths: Sequence[Sequence[int]],
-        allowed_token_sets: Sequence[Sequence[int]],
-        *,
-        deadline_ms: float,
-    ) -> list[np.ndarray] | None:
-        """Score continuation branches without depending on an editor snapshot.
+    @property
+    def continue_from_empty(self) -> Any:
+        """Expose context-free continuation only when the runtime supports it.
 
-        This seam is intentionally optional. Production GGUF implements it with
-        the same Base model and a context-free root. If the model worker cannot
-        start inside the caller's deadline it returns ``None`` rather than
-        queueing a candidate request behind context refresh work.
+        The page manager intentionally detects this seam with ``callable``. A
+        snapshot backend wrapping a root-logits-only runtime therefore reports
+        no continuation capability instead of pretending that a resumable beam
+        exists and timing out later pages for work that can never run.
         """
 
         provider = getattr(self.runtime, "continue_from_empty", None)
-        if not callable(provider):
-            return None
-        return provider(
-            token_paths,
-            allowed_token_sets,
-            deadline_ms=deadline_ms,
-        )
+        return provider if callable(provider) else None
 
 
 class SparseProjectionBackend(_SnapshotBackend):
