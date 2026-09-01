@@ -159,6 +159,30 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         token_ids = self._validated_token_ids(allowed_token_ids, logits.size)
         return np.asarray(logits[token_ids], dtype=np.float32)
 
+    def continue_from_empty(
+        self,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> list[np.ndarray] | None:
+        """Score continuation branches without depending on an editor snapshot.
+
+        This seam is intentionally optional. Production GGUF implements it with
+        the same Base model and a context-free root. If the model worker cannot
+        start inside the caller's deadline it returns ``None`` rather than
+        queueing a candidate request behind context refresh work.
+        """
+
+        provider = getattr(self.runtime, "continue_from_empty", None)
+        if not callable(provider):
+            return None
+        return provider(
+            token_paths,
+            allowed_token_sets,
+            deadline_ms=deadline_ms,
+        )
+
 
 class SparseProjectionBackend(_SnapshotBackend):
     """Project an immutable continuation hidden state onto selected lm-head rows."""

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
@@ -243,6 +243,75 @@ class LlamaCppBackend:
             after_hash=snapshot.after_hash,
             latency_ms=snapshot.latency_ms,
         )
+
+    def continue_from_empty(
+        self,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> list[np.ndarray] | None:
+        """Score short context-free continuations without waiting for model work.
+
+        The caller owns the outer 120 ms request deadline. This method never
+        queues behind a context refresh past the remaining lock-acquisition
+        budget. It deliberately replays only the short candidate token path from
+        the permanent empty-context root, so editor text is not copied into a
+        candidate search session or continuation cache.
+        """
+
+        if deadline_ms <= 0:
+            return None
+        if len(token_paths) != len(allowed_token_sets):
+            raise ValueError("token_paths and allowed_token_sets must have equal length")
+        deadline = time.monotonic() + deadline_ms / 1000.0
+        remaining = max(0.0, deadline - time.monotonic())
+        if not self._lock.acquire(timeout=remaining):
+            return None
+
+        try:
+            outputs: list[np.ndarray] = []
+            vocabulary_size = len(self.tokenizer)
+            fallback = self._fallback_token()
+            for raw_path, raw_allowed in zip(
+                token_paths,
+                allowed_token_sets,
+                strict=True,
+            ):
+                if time.monotonic() >= deadline:
+                    return None
+                path = tuple(int(token_id) for token_id in raw_path)
+                if not path:
+                    raise ValueError("continuation token path must be non-empty")
+                if len(path) + 1 > self.n_ctx:
+                    raise ValueError("continuation token path exceeds n_ctx")
+                if min(path) < 0 or max(path) >= vocabulary_size:
+                    raise IndexError("continuation token path is outside the model vocabulary")
+                allowed = np.asarray(tuple(raw_allowed), dtype=np.int64)
+                if allowed.ndim != 1:
+                    raise ValueError("allowed continuation token ids must be one-dimensional")
+                if allowed.size and (
+                    int(allowed.min()) < 0 or int(allowed.max()) >= vocabulary_size
+                ):
+                    raise IndexError("allowed continuation token id is outside the model vocabulary")
+
+                self.llama.reset()
+                self.llama.eval([fallback, *path])
+                logits = self._copy_last_logits()
+                outputs.append(np.asarray(logits[allowed], dtype=np.float32).copy())
+                if time.monotonic() >= deadline:
+                    return None
+            return outputs
+        finally:
+            try:
+                self.llama.reset()
+                # Candidate replay deliberately disturbs the live llama context.
+                # Forget the incremental editor cache so the next refresh cannot
+                # accidentally append to a candidate continuation sequence.
+                self._cached_token_ids = None
+                self._cached_logits = None
+            finally:
+                self._lock.release()
 
     def invalidate_private_state(self) -> None:
         with self._lock:
