@@ -16,7 +16,6 @@ from .neural_candidate_pages_v3 import (
 )
 from .neural_candidates import (
     MAX_FROZEN_CANDIDATES,
-    MAX_MODEL_TOKENS,
     NeuralLanguageMode,
     _candidate_key,
     _latin_key,
