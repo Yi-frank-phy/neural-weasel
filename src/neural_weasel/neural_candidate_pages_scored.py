@@ -42,18 +42,14 @@ def _selected_log_probs(logits: Sequence[float], token_ids: Sequence[int]) -> np
     positive_infinity = np.isposinf(values)
     if positive_infinity.any():
         output = np.full(ids.size, -math.inf, dtype=np.float32)
-        output[positive_infinity[ids]] = np.float32(
-            -math.log(int(positive_infinity.sum()))
-        )
+        output[positive_infinity[ids]] = np.float32(-math.log(int(positive_infinity.sum())))
         return output
 
     finite = np.isfinite(values)
     if not finite.any():
         return np.full(ids.size, -math.inf, dtype=np.float32)
     maximum = float(values[finite].max())
-    log_normalizer = maximum + math.log(
-        float(np.exp(values[finite] - maximum).sum())
-    )
+    log_normalizer = maximum + math.log(float(np.exp(values[finite] - maximum).sum()))
     return np.asarray(values[ids] - log_normalizer, dtype=np.float32)
 
 
@@ -75,9 +71,9 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._all_model_token_ids: tuple[int, ...] = ()
-        self._baseline_han_cache: OrderedDict[
-            tuple[str, str, tuple[int, ...]], Candidate
-        ] = OrderedDict()
+        self._baseline_han_cache: OrderedDict[tuple[str, str, tuple[int, ...]], Candidate] = (
+            OrderedDict()
+        )
 
     def install_baseline_scores(
         self,
@@ -188,8 +184,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         other = [
             candidate
             for candidate in candidates
-            if candidate.script not in {"han", "latin"}
-            and candidate.constraint_kind != "literal"
+            if candidate.script not in {"han", "latin"} and candidate.constraint_kind != "literal"
         ]
         best: dict[tuple[str, int], Candidate] = {}
         for candidate in (*han, *cached_han):
