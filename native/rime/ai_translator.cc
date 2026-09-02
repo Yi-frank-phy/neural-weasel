@@ -277,6 +277,12 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
           const bool set_matches =
               requested_page == 0 ? !response_set.empty()
                                   : response_set == candidate_set_id_;
+          const bool source_identity_matches =
+              context_epoch_ == 0 ||
+              (response.value("context_session", std::string{}) ==
+                   context_session_ &&
+               response.value("source_revision", std::uint64_t{0}) ==
+                   source_revision_);
           if (response.value("type", "") != "candidate_page" ||
               !response.value("ok", false) ||
               response.value("session_id", std::string{}) !=
@@ -285,6 +291,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
                   composition_revision_ ||
               response.value("context_epoch", std::uint64_t{0}) !=
                   context_epoch_ ||
+              !source_identity_matches ||
               response.value("language_mode", std::string{}) !=
                   language_mode ||
               response.value("page_index", std::uint32_t{0}) !=
@@ -380,7 +387,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
     }
     context->set_property("neural_candidate_fresh", "1");
     TraceAiTranslator(L"event=query result=accepted page=%lu count=%llu",
-                      static_cast<unsigned long>(current_page_index_),
+                      static_cast<unsigned long long>(current_page_index_),
                       static_cast<unsigned long long>(accepted));
     return translation;
   } catch (...) {
