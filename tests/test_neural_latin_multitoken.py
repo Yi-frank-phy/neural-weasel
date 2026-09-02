@@ -6,6 +6,7 @@ import numpy as np
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
+from neural_weasel.neural_candidate_pages_scored import _selected_log_probs
 from neural_weasel.neural_candidates import NeuralLanguageMode
 from neural_weasel.neural_latin import NeuralLatinPrefixConstraint
 
@@ -69,8 +70,9 @@ class LatinContinuationRuntime:
             allowed = tuple(int(token_id) for token_id in allowed)
             self.allowed_sets.append(allowed)
             values = np.full(len(allowed), -np.inf, dtype=np.float32)
-            if tuple(token_path) == (10,) and 11 in allowed:
+            if tuple(token_path) == (10,):
                 values[allowed.index(11)] = 7.0
+                values[allowed.index(13)] = 6.0
             outputs.append(values)
         return outputs
 
@@ -84,6 +86,7 @@ class LatinContinuationRuntime:
 def _engine() -> tuple[BilingualImeEngine, LatinContinuationRuntime]:
     logits = np.full(14, -20.0, dtype=np.float32)
     logits[10] = 5.0
+    logits[13] = 4.0
     runtime = LatinContinuationRuntime(logits)
     engine = BilingualImeEngine(
         backend=FullLogitsSnapshotBackend(runtime),
@@ -108,7 +111,7 @@ def _page(engine: BilingualImeEngine, raw: str, revision: int, **kwargs):
     return engine.query_candidate_page(**values)
 
 
-def test_multitoken_latin_path_is_scored_from_one_root_without_normalization() -> None:
+def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization() -> None:
     engine, runtime = _engine()
 
     first = _page(engine, "asymmetry", 1)
@@ -127,9 +130,19 @@ def test_multitoken_latin_path_is_scored_from_one_root_without_normalization() -
 
     asymmetry = next(candidate for candidate in second.candidates if candidate.text == "asymmetry")
     assert asymmetry.token_path == (10, 11)
-    assert asymmetry.model_score == 12.0
+
+    root_log_prob = float(_selected_log_probs(runtime.logits, [10])[0])
+    continuation_logits = np.full(runtime.logits.size, -np.inf, dtype=np.float32)
+    continuation_logits[11] = 7.0
+    continuation_logits[13] = 6.0
+    continuation_log_prob = float(_selected_log_probs(continuation_logits, [11])[0])
+    expected_path_score = root_log_prob + continuation_log_prob
+
+    assert np.isclose(asymmetry.model_score, expected_path_score, atol=1e-6)
+    assert not np.isclose(asymmetry.model_score, expected_path_score / 2.0, atol=1e-6)
     assert asymmetry.script == "latin"
-    assert 12 not in runtime.allowed_sets[0]
+    assert runtime.allowed_sets[0] == tuple(range(runtime.logits.size))
+    assert all(13 not in candidate.token_path for candidate in second.candidates)
 
 
 def test_scored_multitoken_baseline_invalidates_prewarms_and_becomes_page0_supplement() -> None:
