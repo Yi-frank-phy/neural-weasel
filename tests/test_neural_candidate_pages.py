@@ -49,14 +49,26 @@ class ToggleContinuationRuntime(FakeRuntime):
     blocked = True
     continuation_calls = 0
 
-    def continue_from_empty(
+    def full_logits(self, before: str, after: str) -> RuntimeSnapshot:
+        self.calls += 1
+        return RuntimeSnapshot(
+            self.logits,
+            before,
+            after,
+            0.1,
+            continuation_root=("root", self.calls, before),
+        )
+
+    def continue_from_root(
         self,
+        root,
         token_paths,
         allowed_token_sets,
         *,
         deadline_ms: float,
     ):
         del token_paths, deadline_ms
+        assert root[0] == "root"
         self.continuation_calls += 1
         if self.blocked:
             return None
@@ -377,6 +389,33 @@ def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> Non
     assert second.candidate_set_id == first.candidate_set_id
     assert second.candidates
     assert all(candidate.predicted_syllables >= 1 for candidate in second.candidates)
+
+
+def test_context_session_never_hybridizes_with_baseline_continuation(make_index) -> None:
+    engine, runtime = _continuation_engine(make_index)
+    runtime.blocked = False
+    context_state = engine.update_context("editor-context")
+
+    first = _page(
+        engine,
+        "n",
+        context_epoch=context_state.epoch,
+        context_session="source-a",
+        source_revision=1,
+    )
+    assert first.score_source == "context"
+
+    second = _page(
+        engine,
+        "n",
+        context_epoch=context_state.epoch,
+        context_session="source-a",
+        source_revision=1,
+        page_index=1,
+        candidate_set_id=first.candidate_set_id,
+    )
+    assert second.score_source == "context"
+    assert runtime.continuation_calls > 0
 
 
 def test_candidate_set_rejects_new_composition_identity(make_index) -> None:
