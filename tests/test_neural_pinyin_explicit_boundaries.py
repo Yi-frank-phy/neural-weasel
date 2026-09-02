@@ -136,15 +136,16 @@ def test_explicit_apostrophe_is_preserved_across_multitoken_exact_search(make_in
     assert phrase.predicted_syllables == 0
     assert runtime.continuation_calls[0][0] == (2,)
 
-    # The high-score xian token may still be a legal prefix-consuming shorthand
-    # candidate (for example, consume only "x" and leave "i'an"). What the
-    # explicit apostrophe forbids is treating that one syllable as a complete
-    # parse that crosses the boundary.
-    assert all(
-        not (
-            1 in candidate.token_path
-            and candidate.completes_input
-            and candidate.consumed_keys == len("xi'an")
-        )
+    # The high-score xian token can still appear before the raw input is fully
+    # consumed, or later as a predictive suffix after a legal exact cover. The
+    # explicit apostrophe only forbids using that one syllable inside the
+    # zero-prediction exact-cover path for the typed raw keys.
+    exact_cover = [
+        candidate
         for candidate in second.candidates
-    )
+        if candidate.completes_input
+        and candidate.consumed_keys == len("xi'an")
+        and candidate.predicted_syllables == 0
+    ]
+    assert exact_cover
+    assert all(1 not in candidate.token_path for candidate in exact_cover)
