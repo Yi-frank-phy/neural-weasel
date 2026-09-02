@@ -73,9 +73,21 @@ class _SnapshotBackend:
         with self._lock:
             return self._state
 
-    def _publish(self, runtime_snapshot: RuntimeSnapshot, payload: Any) -> BackendState:
+    def _capture_generation(self) -> int:
+        with self._lock:
+            return self._generation
+
+    def _publish(
+        self,
+        runtime_snapshot: RuntimeSnapshot,
+        payload: Any,
+        *,
+        expected_generation: int,
+    ) -> BackendState:
         publication_started = time.perf_counter()
         with self._lock:
+            if expected_generation != self._generation:
+                raise RuntimeError("backend state was invalidated during context update")
             self._epoch += 1
             state = BackendState(
                 epoch=self._epoch,
@@ -147,12 +159,13 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
     backend_kind = "full_logits"
 
     def update_context(self, before: str, after: str = "") -> BackendState:
+        generation = self._capture_generation()
         result = self.runtime.full_logits(before, after)
         logits = np.asarray(result.payload, dtype=np.float32).copy()
         if logits.ndim != 1:
             raise ValueError("full logits snapshot must be one-dimensional")
         logits.flags.writeable = False
-        return self._publish(result, logits)
+        return self._publish(result, logits, expected_generation=generation)
 
     def score_allowed_tokens(
         self,
@@ -190,13 +203,14 @@ class SparseProjectionBackend(_SnapshotBackend):
     backend_kind = "sparse_projection"
 
     def update_context(self, before: str, after: str = "") -> BackendState:
+        generation = self._capture_generation()
         result = self.runtime.continuation_hidden(before, after)
         hidden = result.payload.detach()
         if hidden.ndim == 2 and hidden.shape[0] == 1:
             hidden = hidden[0]
         if hidden.ndim != 1:
             raise ValueError("continuation hidden state must be one-dimensional")
-        return self._publish(result, hidden)
+        return self._publish(result, hidden, expected_generation=generation)
 
     def score_allowed_tokens(
         self,
