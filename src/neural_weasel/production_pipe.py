@@ -174,6 +174,15 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 page_index=page_index,
                 candidate_set_id=candidate_set_id,
             )
+
+            # A secure/focus transition may invalidate the binding while model
+            # work is in flight. Revalidate immediately before serializing any
+            # candidate derived from a nonzero editor-context epoch so a stale
+            # query can never race a password/PIN boundary and leak its result.
+            binding_error = self._binding_error(message, context_epoch)
+            if binding_error is not None:
+                return binding_error
+
             values = []
             for candidate_id, candidate in zip(
                 page.candidate_ids,
