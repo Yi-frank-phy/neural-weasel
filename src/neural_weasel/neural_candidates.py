@@ -77,6 +77,7 @@ class _SearchPath:
     token_path: tuple[int, ...]
     score: float
     predicted_syllables: int
+    script: str = "han"
 
 
 @dataclass(slots=True)
@@ -84,6 +85,7 @@ class _SearchSession:
     candidate_set_id: str
     identity: _SearchIdentity
     score_source: str
+    continuation_root: Any | None
     pending: list[Candidate]
     frontier: list[_SearchPath]
     frozen_pages: dict[int, CandidatePage]
@@ -155,10 +157,11 @@ def _literal_candidate(raw_keys: str, context_epoch: int) -> Candidate:
 class NeuralCandidatePageManager:
     """Revision-scoped pure-neural candidate paging over immutable root scores.
 
-    Page 0 never performs a model forward. It scores only model-vocabulary paths
-    against either the latest immutable editor snapshot or the permanent empty-
-    context baseline. Multi-token continuation is optional and deadline bounded;
-    once a page is returned it is never mutated.
+    Page 0 never performs a model forward. Every search session locks one score
+    origin when it is created: either an accepted editor snapshot *and its exact
+    continuation root*, or the permanent empty-context baseline and baseline
+    root. A session never combines root scores from one origin with continuation
+    scores from another. Once a page is returned it is never mutated.
 
     A Han page is frozen only from length buckets that are already proven closed:
     if an unexpanded frontier can still produce bucket ``k``, a bucket ``k`` or
@@ -179,6 +182,7 @@ class NeuralCandidatePageManager:
         self.latin_constraint = latin_constraint
         self.clock = clock
         self._baseline_scores: np.ndarray | None = None
+        self._baseline_continuation_root: Any | None = None
         self._baseline_single_letter: dict[
             tuple[str, NeuralLanguageMode], tuple[Candidate, ...]
         ] = {}
@@ -213,12 +217,18 @@ class NeuralCandidatePageManager:
     def baseline_ready(self) -> bool:
         return self._baseline_scores is not None
 
-    def install_baseline_scores(self, scores: Sequence[float]) -> None:
+    def install_baseline_scores(
+        self,
+        scores: Sequence[float],
+        *,
+        continuation_root: Any | None = None,
+    ) -> None:
         values = np.asarray(scores, dtype=np.float32).reshape(-1).copy()
         if values.size == 0 or np.isnan(values).any():
             raise ValueError("empty-context baseline scores must not contain NaN")
         values.flags.writeable = False
         self._baseline_scores = values
+        self._baseline_continuation_root = continuation_root
         self._baseline_single_letter.clear()
         self.clear_sessions()
 
@@ -320,6 +330,22 @@ class NeuralCandidatePageManager:
         self._record_metrics(page)
         return page
 
+    def _select_score_origin(
+        self,
+        state: BackendState | None,
+    ) -> tuple[BackendState | None, Any | None, str]:
+        continuation = getattr(self.backend, "continue_from_root", None)
+        if not callable(continuation):
+            # Root-only test/alternate backends can still rank one-token paths
+            # from editor context because no continuation path can be produced.
+            return state, None, "context" if state is not None else "baseline"
+        if state is not None and state.continuation_root is not None:
+            return state, state.continuation_root, "context"
+        # A requested context epoch whose exact continuation root is absent must
+        # fall back as a whole session. Never hybridize its root logits with the
+        # permanent BOS continuation root.
+        return None, self._baseline_continuation_root, "baseline"
+
     def _new_session(self, identity: _SearchIdentity, state: BackendState | None) -> _SearchSession:
         for candidate_set_id, old in tuple(self._sessions.items()):
             if (
@@ -328,21 +354,23 @@ class NeuralCandidatePageManager:
             ):
                 del self._sessions[candidate_set_id]
 
-        root_candidates, frontier, score_source = self._root_candidates(
+        score_state, continuation_root, score_source = self._select_score_origin(state)
+        root_candidates, frontier, _ = self._root_candidates(
             raw_keys=identity.raw_keys,
             mode=identity.mode,
-            state=state,
+            state=score_state,
             response_epoch=identity.context_epoch,
         )
         if identity.mode is NeuralLanguageMode.LATIN_FIRST:
             root_candidates = root_candidates[:LATIN_PAGE_SIZE]
             frontier = []
         candidate_set_id = uuid.uuid4().hex
-        continuation = getattr(self.backend, "continue_from_empty", None)
+        continuation = getattr(self.backend, "continue_from_root", None)
         session = _SearchSession(
             candidate_set_id=candidate_set_id,
             identity=identity,
             score_source=score_source,
+            continuation_root=continuation_root,
             pending=list(root_candidates),
             frontier=frontier,
             frozen_pages={},
@@ -357,6 +385,7 @@ class NeuralCandidatePageManager:
                 identity.mode is NeuralLanguageMode.LATIN_FIRST
                 or not frontier
                 or not callable(continuation)
+                or continuation_root is None
             ),
         )
         self._sessions[candidate_set_id] = session
@@ -517,7 +546,10 @@ class NeuralCandidatePageManager:
                     dtype=np.float32,
                 )
             except (RuntimeError, ValueError, IndexError):
-                pass
+                # A session is created with a single score origin. If an editor
+                # state becomes invalid here, do not silently fall through to a
+                # different root. Make those candidates unavailable instead.
+                return np.full(len(token_ids), -math.inf, dtype=np.float32)
         if self._baseline_scores is None:
             return np.full(len(token_ids), -math.inf, dtype=np.float32)
         ids = np.asarray(tuple(token_ids), dtype=np.int64)
@@ -575,6 +607,7 @@ class NeuralCandidatePageManager:
                     token_path=candidate.token_path,
                     score=float(candidate.model_score or 0.0),
                     predicted_syllables=candidate.predicted_syllables,
+                    script="han",
                 )
             )
         return frontier
@@ -584,7 +617,7 @@ class NeuralCandidatePageManager:
         buckets = [
             path.predicted_syllables + 1
             for path in session.frontier
-            if path.token_path not in session.expanded_paths
+            if path.script == "han" and path.token_path not in session.expanded_paths
         ]
         return min(buckets, default=None)
 
@@ -758,8 +791,8 @@ class NeuralCandidatePageManager:
         if not session.frontier or not self._continuation_token_ids:
             session.exhausted = True
             return 0
-        continuation = getattr(self.backend, "continue_from_empty", None)
-        if not callable(continuation):
+        continuation = getattr(self.backend, "continue_from_root", None)
+        if not callable(continuation) or session.continuation_root is None:
             session.exhausted = True
             return 0
 
@@ -781,6 +814,7 @@ class NeuralCandidatePageManager:
             session.expanded_paths.discard(parent.token_path)
             return 0
         scored = continuation(
+            session.continuation_root,
             [parent.token_path],
             [self._continuation_token_ids],
             deadline_ms=remaining_ms,
@@ -845,6 +879,7 @@ class NeuralCandidatePageManager:
                             token_path=token_path,
                             score=score,
                             predicted_syllables=predicted,
+                            script="han",
                         )
                     )
             if produced >= MAX_FRONTIER_PER_BUCKET:
