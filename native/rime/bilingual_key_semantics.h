@@ -2,10 +2,9 @@
 
 namespace neural_weasel::rime_plugin {
 
-enum class InputMode {
-  kChinese,
-  kEnglish,
-  kAmbiguous,
+enum class NeuralLanguageMode {
+  kChineseFirst,
+  kLatinFirst,
 };
 
 enum class KeyIntent {
@@ -16,18 +15,22 @@ enum class KeyIntent {
   kEnter,
   kBackspace,
   kNumberedSelection,
+  kPageNext,
+  kPagePrevious,
 };
 
 enum class KeyOutcome {
   kUseRimeDefault,
   kCommitLiteralSpace,
   kAcceptCompletion,
-  kDismissCompletion,
-  kCommitLiteralAndForwardEnter,
+  kCancelComposition,
+  kCommitLiteral,
   kKeepLiteral,
+  kRequestNextPage,
+  kRequestPreviousPage,
 };
 
-KeyOutcome ResolveKeyOutcome(InputMode mode,
+KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,
                             bool candidate_fresh = true,

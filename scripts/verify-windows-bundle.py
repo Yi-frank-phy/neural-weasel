@@ -36,6 +36,7 @@ REQUIRED = (
     "build-manifest.json",
     "README-INSTALL-TEST.md",
     "data/neural_weasel.schema.yaml",
+    "python-service/README.md",
 )
 
 

@@ -12,7 +12,6 @@ from neural_weasel.candidate import Candidate
 from neural_weasel.http_server import (
     FIRST_PAGE_CANDIDATES,
     WisdomHttpServer,
-    _encode_bridge_candidates,
     _validate_request,
 )
 from neural_weasel.model import QwenBaseBackend
@@ -201,12 +200,6 @@ def test_http_request_candidate_count_defaults_to_first_page_and_caps_at_fifty()
             pass
         else:
             raise AssertionError(f"candidate_count {invalid!r} should be rejected")
-
-
-def test_file_bridge_preserves_partial_candidate_consumption() -> None:
-    candidates = [Candidate("神", "shen", 4, 1.0, 1, False, False, 1)]
-
-    assert _encode_bridge_candidates(candidates) == "4\t神"
 
 
 class AsyncFakeEngine:

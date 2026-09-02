@@ -10,6 +10,8 @@ from .backends import BackendState, ModelBackend
 from .candidate import Candidate
 from .unified import UnifiedConstraintEngine
 
+_CANDIDATE_PREWARM_KEYS = ("n", "ni")
+
 
 class SnapshotCoordinator:
     """Publish only the newest requested backend state.
@@ -24,13 +26,19 @@ class SnapshotCoordinator:
         backend: ModelBackend,
         engine: UnifiedConstraintEngine,
         retained_states: int = 4,
+        candidate_query: Callable[..., list[Candidate]] | None = None,
     ) -> None:
         if retained_states < 1:
             raise ValueError("retained_states must be positive")
         self.backend = backend
         self.engine = engine
+        self._candidate_query = candidate_query or engine.query
         self.retained_states = retained_states
         self._request_lock = threading.Lock()
+        # Context forwards and secure invalidation are mutually exclusive, but
+        # candidate reads never take this gate. A secure boundary can therefore
+        # wait out one in-flight forward without reintroducing query blocking.
+        self._backend_update_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._requested_epoch = 0
         self._pending: tuple[int, str, str] | None = None
@@ -38,6 +46,7 @@ class SnapshotCoordinator:
         self._state: BackendState | None = None
         self._states: dict[int, BackendState] = {}
         self._last_refresh_error: str | None = None
+        self._last_prewarm_error: str | None = None
 
     def _next_request_epoch(self) -> int:
         self._requested_epoch += 1
@@ -46,14 +55,20 @@ class SnapshotCoordinator:
     def update_context(self, before: str, after: str = "") -> BackendState:
         with self._request_lock:
             requested_epoch = self._next_request_epoch()
-        backend_state = self.backend.update_context(before, after)
-        state = (
-            backend_state
-            if backend_state.epoch == requested_epoch
-            else replace(backend_state, epoch=requested_epoch)
-        )
-        with self._request_lock:
-            if requested_epoch == self._requested_epoch:
+        with self._backend_update_lock:
+            with self._request_lock:
+                if requested_epoch != self._requested_epoch:
+                    raise RuntimeError("context update was invalidated before execution")
+            backend_state = self.backend.update_context(before, after)
+            state = (
+                backend_state
+                if backend_state.epoch == requested_epoch
+                else replace(backend_state, epoch=requested_epoch)
+            )
+            with self._request_lock:
+                if requested_epoch != self._requested_epoch:
+                    raise RuntimeError("context update was invalidated before publication")
+                self._last_prewarm_error = None
                 self._publish(state)
         return state
 
@@ -80,21 +95,60 @@ class SnapshotCoordinator:
                     return
             requested_epoch, before, after = pending
             try:
-                backend_state = self.backend.update_context(before, after)
-                state = (
-                    backend_state
-                    if backend_state.epoch == requested_epoch
-                    else replace(backend_state, epoch=requested_epoch)
-                )
+                with self._backend_update_lock:
+                    with self._request_lock:
+                        if requested_epoch != self._requested_epoch:
+                            continue
+                    backend_state = self.backend.update_context(before, after)
+                    state = (
+                        backend_state
+                        if backend_state.epoch == requested_epoch
+                        else replace(backend_state, epoch=requested_epoch)
+                    )
+                    with self._request_lock:
+                        if requested_epoch != self._requested_epoch:
+                            continue
+                        self._last_refresh_error = None
+                        self._last_prewarm_error = None
+                        # Publication is the readiness boundary. Any compatibility
+                        # prewarm happens only after the epoch is already queryable.
+                        self._publish(state)
             except Exception as error:
                 with self._request_lock:
                     if requested_epoch == self._requested_epoch:
                         self._last_refresh_error = type(error).__name__
                 continue
+
+            prewarm_error = self._prewarm_candidate_path(before, after, state)
             with self._request_lock:
                 if requested_epoch == self._requested_epoch:
-                    self._last_refresh_error = None
-                    self._publish(state)
+                    self._last_prewarm_error = prewarm_error
+
+    def _prewarm_candidate_path(
+        self,
+        before: str,
+        after: str,
+        state: BackendState,
+    ) -> str | None:
+        """Warm only the legacy query path after snapshot publication.
+
+        The new page protocol has its own permanent empty-context prewarm and
+        does not depend on this compatibility optimization. This method may not
+        delay publication of an editor context epoch.
+        """
+
+        try:
+            for raw_keys in _CANDIDATE_PREWARM_KEYS:
+                self._candidate_query(
+                    before,
+                    raw_keys,
+                    state=state,
+                    after_text=after,
+                    limit=5,
+                )
+        except Exception as error:
+            return type(error).__name__
+        return None
 
     def _publish(self, state: BackendState) -> None:
         with self._state_lock:
@@ -146,16 +200,21 @@ class SnapshotCoordinator:
         with self._request_lock:
             self._next_request_epoch()
             self._pending = None
-            self.backend.invalidate_private_state()
+            self._last_prewarm_error = None
+        # Stop exposing retained editor roots immediately. Then wait for any
+        # already-running forward and perform one final backend/runtime wipe.
         with self._state_lock:
             self._state = None
             self._states.clear()
+        with self._backend_update_lock:
+            self.backend.invalidate_private_state()
 
     def diagnostics(self) -> dict[str, object]:
         state = self.latest_state
         with self._request_lock:
             requested_epoch = self._requested_epoch
             last_error = self._last_refresh_error
+            last_prewarm_error = self._last_prewarm_error
         diagnostics = self.backend.diagnostics()
         diagnostics.update(
             {
@@ -167,6 +226,7 @@ class SnapshotCoordinator:
                     else None
                 ),
                 "last_refresh_error": last_error,
+                "last_prewarm_error": last_prewarm_error,
             }
         )
         return diagnostics

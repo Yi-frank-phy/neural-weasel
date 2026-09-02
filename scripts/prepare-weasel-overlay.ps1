@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string]$WeaselRoot,
@@ -26,12 +26,30 @@ static const GUID c_guidProfile = {
     {0x80, 0xe8, 0xac, 0xd9, 0x88, 0xc5, 0x7b, 0x0d}};
 '@
 
+# Upstream resource files are UTF-16 while sources are UTF-8; remember the
+# encoding of each read so Write-SourceFile can restore it byte-for-byte.
+$Global:LastSourceEncoding = 'utf-8'
+
 function Read-SourceFile {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Required upstream file is missing: $Path"
     }
-    return [IO.File]::ReadAllText($Path)
+    $Bytes = [IO.File]::ReadAllBytes($Path)
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+        $Global:LastSourceEncoding = 'unicode'
+        return [Text.Encoding]::Unicode.GetString($Bytes, 2, $Bytes.Length - 2)
+    }
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+        $Global:LastSourceEncoding = 'bigendianunicode'
+        return [Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $Bytes.Length - 2)
+    }
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        $Global:LastSourceEncoding = 'utf-8'
+        return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes, 3, $Bytes.Length - 3)
+    }
+    $Global:LastSourceEncoding = 'utf-8'
+    return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
 }
 
 function Write-SourceFile {
@@ -39,7 +57,11 @@ function Write-SourceFile {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Content
     )
-    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+    switch ($Global:LastSourceEncoding) {
+        'unicode' { [IO.File]::WriteAllText($Path, $Content, [Text.Encoding]::Unicode) }
+        'bigendianunicode' { [IO.File]::WriteAllText($Path, $Content, [Text.Encoding]::BigEndianUnicode) }
+        default { [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false)) }
+    }
 }
 
 function Replace-Literal {
@@ -144,7 +166,174 @@ Replace-Literal -Path $TsfXmake `
     -Old '  add_shflags("/DEBUG /OPT:REF /OPT:ICF")' `
     -New '  add_shflags("/DEBUG /OPT:REF /OPT:ICF /LTCG")'
 
+$WeaselUiSource = Join-Path $ResolvedWeaselRoot 'WeaselUI/WeaselUI.cpp'
+$RobustCandidateWindowCreate = @'
+bool UI::Create(HWND parent) {
+  if (!pimpl_) {
+    pimpl_ = new UIImpl(*this);
+    if (!pimpl_)
+      return false;
+  } else if (pimpl_->panel.IsWindow()) {
+    return true;
+  }
+
+  HWND created = pimpl_->panel.Create(
+      parent, 0, 0, WS_POPUP,
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+      0U, 0);
+  if (created == nullptr && parent != nullptr) {
+    // Some modern editor hosts expose a transient TSF view HWND that cannot
+    // own a popup. Keep the candidate panel process-local and retry unowned.
+    created = pimpl_->panel.Create(
+        nullptr, 0, 0, WS_POPUP,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE |
+            WS_EX_TRANSPARENT,
+        0U, 0);
+  }
+  return created != nullptr;
+}
+'@
+Replace-RegexOnce -Path $WeaselUiSource `
+    -Pattern 'bool UI::Create\(HWND parent\) \{.*?\}\s+(?=void UI::Destroy)' `
+    -Replacement $RobustCandidateWindowCreate
+
+$CandidateUiSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/CandidateList.cpp'
+Copy-Item -LiteralPath (
+    Join-Path $ResolvedRepositoryRoot 'native/tsf/ui_lifecycle_trace.h'
+) -Destination (
+    Join-Path $ResolvedWeaselRoot 'WeaselTSF/UiLifecycleTrace.h'
+) -Force
+Replace-Literal -Path $CandidateUiSource `
+    -Old '#include "CandidateList.h"' `
+    -New @'
+#include "CandidateList.h"
+#include "UiLifecycleTrace.h"
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^STDMETHODIMP CCandidateList::Show\(BOOL showCandidateWindow\) \{.*?^\}' `
+    -Replacement @'
+STDMETHODIMP CCandidateList::Show(BOOL showCandidateWindow) {
+  if (showCandidateWindow)
+    _ui->Show();
+  else
+    _ui->Hide();
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-window-visibility requested=%d actual=%d",
+      showCandidateWindow ? 1 : 0, _ui->IsShown() ? 1 : 0);
+  return S_OK;
+}
+'@
+Replace-Literal -Path $CandidateUiSource `
+    -Old 'void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {' `
+    -New @'
+void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-update candidates=%llu composing=%d pbShow=%d",
+      static_cast<unsigned long long>(ctx.cinfo.candies.size()),
+      status.composing ? 1 : 0, _pbShow ? 1 : 0);
+'@
+$TracedStartUi = @'
+void CCandidateList::StartUI() {
+  neural_weasel::tsf::TraceUiLifecycle(L"event=candidate-ui-start begin");
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  if (!pThreadMgr) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=no-thread-manager");
+    return;
+  }
+
+  com_ptr<ITfUIElementMgr> pUIElementMgr;
+  auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  if (FAILED(hr)) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=query-failed hr=%ld", hr);
+    return;
+  }
+
+  if (pUIElementMgr == NULL) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=null-ui-manager");
+    return;
+  }
+
+  if (!_ui->uiCallback())
+    _ui->SetUICallBack([this](size_t* const sel, size_t* const hov,
+                              bool* const next, bool* const scroll_next) {
+      _tsf->HandleUICallback(sel, hov, next, scroll_next);
+    });
+  hr = pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-start result=registered hr=%ld pbShow=%d uiid=%lu",
+      hr, _pbShow ? 1 : 0, uiid);
+  // pUIElementMgr->UpdateUIElement(uiid);
+  if (_pbShow) {
+    _ui->style() = _style;
+    _MakeUIWindow();
+  }
+}
+
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^void CCandidateList::StartUI\(\) \{.*?^\}\r?\n\r?\n(?=void CCandidateList::EndUI)' `
+    -Replacement $TracedStartUi
+Replace-Literal -Path $CandidateUiSource `
+    -Old 'void CCandidateList::EndUI() {' `
+    -New @'
+void CCandidateList::EndUI() {
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-end uiid-valid=%d",
+      uiid == TF_INVALID_UIELEMENTID ? 0 : 1);
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^void CCandidateList::_MakeUIWindow\(\) \{.*?^\}' `
+    -Replacement @'
+void CCandidateList::_MakeUIWindow() {
+  HWND p = _GetActiveWnd();
+  const bool created = _ui->Create(p);
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-window-create result=%d owner=%d", created ? 1 : 0,
+      p ? 1 : 0);
+}
+'@
+
+$WeaselTsfHeader = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.h'
+Replace-RegexOnce -Path $WeaselTsfHeader `
+    -Pattern '(?m)^(\s*weasel::Client m_client;\r?\n)(\s*DWORD _activateFlags;)' `
+    -Replacement @'
+$1  ULONGLONG _nextReconnectTick = 0;
+$2
+'@
+
 $WeaselTsfSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.cpp'
+$BoundedReconnect = @'
+bool WeaselTSF::_EnsureServerConnected() {
+  if (m_client.Echo()) {
+    _nextReconnectTick = 0;
+    return true;
+  }
+
+  // The launcher owns server lifetime. Never launch or wait from an
+  // application-hosted TSF DLL; return promptly and retry at a bounded rate.
+  const ULONGLONG now = GetTickCount64();
+  if (now < _nextReconnectTick) {
+    return false;
+  }
+  _nextReconnectTick = now + 1000;
+  _Reconnect();
+  if (!m_client.Echo()) {
+    return false;
+  }
+  _nextReconnectTick = 0;
+  return true;
+}
+'@
+# WeaselTSF.cpp bounded reconnect rewrite count is enforced once against the
+# pinned upstream revision. This removes process launch, sleeping and detached
+# callbacks from every editor process that loads the experimental TSF.
+Replace-RegexOnce -Path $WeaselTsfSource `
+    -Pattern '(?ms)^static unsigned int retry = 0;\r?\n\r?\nbool WeaselTSF::_EnsureServerConnected\(\) \{.*?^\}\s*\z' `
+    -Replacement $BoundedReconnect
+
 Replace-Literal -Path $WeaselTsfSource -Old '#include "WeaselTSF.h"' -New @'
 #include "WeaselTSF.h"
 #include "tsf/weasel_context_adapter.h"
@@ -300,12 +489,31 @@ Replace-RegexOnce -Path $RimeWithWeasel `
     -Pattern 'void RimeWithWeaselHandler::_Setup\(\) \{\s+RIME_STRUCT\(RimeTraits, weasel_traits\);' `
     -Replacement @'
 void rime_require_module_ai_translator();
+void rime_register_module_ai_translator_explicit();
 
 void RimeWithWeaselHandler::_Setup() {
   rime_require_module_ai_translator();
+  rime_register_module_ai_translator_explicit();
   RIME_STRUCT(RimeTraits, weasel_traits);
   RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator");
   weasel_traits.modules = neural_weasel_modules;
+'@
+Replace-RegexOnce -Path $RimeWithWeasel `
+    -Pattern 'LOG\(INFO\) << "Initializing la rime\.";\s+rime_api->initialize\(NULL\);' `
+    -Replacement @'
+LOG(INFO) << "Initializing la rime.";
+  RIME_MODULE_LIST(neural_weasel_init_modules, "default", "ai_translator");
+  std::string init_shared_dir = wtou8(WeaselSharedDataPath().wstring());
+  std::string init_user_dir = wtou8(WeaselUserDataPath().wstring());
+  std::string init_log_dir = WeaselLogPath().u8string();
+  RIME_STRUCT(RimeTraits, init_traits);
+  init_traits.shared_data_dir = init_shared_dir.c_str();
+  init_traits.user_data_dir = init_user_dir.c_str();
+  init_traits.prebuilt_data_dir = init_shared_dir.c_str();
+  init_traits.app_name = "rime.neural_weasel_experimental";
+  init_traits.log_dir = init_log_dir.c_str();
+  init_traits.modules = neural_weasel_init_modules;
+  rime_api->initialize(&init_traits);
 '@
 
 $TextExtensions = @('.cpp', '.h', '.rc', '.lua', '.def')
@@ -378,6 +586,9 @@ foreach ($ResourcePath in @(
     (Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServer.rc')
 )) {
     $Resource = Read-SourceFile -Path $ResourcePath
+    if (-not $Resource.StartsWith('#pragma code_page(65001)')) {
+        $Resource = "#pragma code_page(65001)`r`n$Resource"
+    }
     $Resource = $Resource.Replace('weaselx64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM.dll', 'NeuralWeaselExperimentalTSF.dll')

@@ -34,7 +34,11 @@ class PartialPinyinMatcher:
     def __init__(self, index: PinyinIndex) -> None:
         self.root = _Node()
         self._cache: dict[tuple[str, int], tuple[PartialPinyinMatch, ...]] = {}
+        self._neural_cache: dict[
+            tuple[str, int, tuple[int, ...]], tuple[PartialPinyinMatch, ...]
+        ] = {}
         seen: set[IndexedPronunciation] = set()
+        entries: list[IndexedPronunciation] = []
         stack = [index.root]
         while stack:
             node = stack.pop()
@@ -43,10 +47,12 @@ class PartialPinyinMatcher:
                 if entry in seen:
                     continue
                 seen.add(entry)
+                entries.append(entry)
                 target = self.root
                 for syllable in entry.syllable_path:
                     target = target.children.setdefault(syllable, _Node())
                 target.terminals.append(entry)
+        self.entries = tuple(entries)
         grouped: dict[str, list[str]] = {}
         for syllable in index.syllables:
             if syllable:
@@ -125,4 +131,104 @@ class PartialPinyinMatcher:
             )
         )
         self._cache[key] = result
+        return result
+
+    def neural_matches(
+        self,
+        raw: str,
+        start: int = 0,
+        boundaries: frozenset[int] | None = None,
+    ) -> tuple[PartialPinyinMatch, ...]:
+        """Enumerate model-token paths compatible with typed pinyin legality.
+
+        ``boundaries`` contains compact-letter offsets created by explicit user
+        apostrophes. A pronunciation syllable edge may end at such a boundary,
+        but it may never consume across one. This preserves forms such as
+        ``xi'an`` while still allowing initial shorthand such as ``n'h``.
+
+        Unlike the legacy bounded matcher, this method walks every descendant
+        after the typed path is covered and records how many *additional*
+        syllables the token predicts. It is used only by the pure-neural page
+        search; existing v0.2 matching behavior remains unchanged.
+        """
+
+        if not raw or start < 0 or start >= len(raw):
+            return ()
+        boundary_positions = frozenset(boundaries or ())
+        key = (raw, start, tuple(sorted(boundary_positions)))
+        cached = self._neural_cache.get(key)
+        if cached is not None:
+            return cached
+        found: dict[tuple[IndexedPronunciation, int], PartialPinyinMatch] = {}
+
+        def crosses_boundary(begin: int, end: int) -> bool:
+            return any(begin < boundary < end for boundary in boundary_positions)
+
+        def record(
+            node: _Node,
+            pos: int,
+            shorthand: int,
+            incomplete: bool,
+            predicted: int,
+        ) -> None:
+            for entry in node.terminals:
+                match = PartialPinyinMatch(entry, pos, shorthand, incomplete, predicted)
+                old = found.get((entry, pos))
+                if old is None or (
+                    match.completion_syllables,
+                    match.shorthand,
+                    match.incomplete_final,
+                ) < (
+                    old.completion_syllables,
+                    old.shorthand,
+                    old.incomplete_final,
+                ):
+                    found[(entry, pos)] = match
+
+        def descendants(node: _Node, pos: int, shorthand: int, predicted: int) -> None:
+            for child in node.children.values():
+                record(child, pos, shorthand, False, predicted)
+                descendants(child, pos, shorthand, predicted + 1)
+
+        def visit(node: _Node, pos: int, shorthand: int, incomplete: bool) -> None:
+            if pos > start:
+                record(node, pos, shorthand, incomplete, 0)
+            if pos >= len(raw):
+                if not incomplete:
+                    descendants(node, pos, shorthand, 1)
+                return
+            full = [
+                (syllable, child)
+                for syllable, child in node.children.items()
+                if raw.startswith(syllable, pos) and not crosses_boundary(pos, pos + len(syllable))
+            ]
+            if full:
+                for syllable, child in full:
+                    visit(child, pos + len(syllable), shorthand, incomplete)
+                return
+            remaining = raw[pos:]
+            for syllable, child in node.children.items():
+                if raw[pos] == syllable[0] and not crosses_boundary(pos, pos + 1):
+                    visit(child, pos + 1, shorthand + 1, incomplete)
+                if (
+                    1 < len(remaining) < len(syllable)
+                    and syllable.startswith(remaining)
+                    and not crosses_boundary(pos, len(raw))
+                ):
+                    visit(child, len(raw), shorthand, True)
+
+        visit(self.root, start, 0, False)
+        result = tuple(
+            sorted(
+                found.values(),
+                key=lambda item: (
+                    item.next_position != len(raw),
+                    item.completion_syllables,
+                    -item.next_position,
+                    item.entry.text,
+                    item.entry.token_id if item.entry.token_id is not None else -1,
+                ),
+            )
+        )
+        self._neural_cache[key] = result
         return result

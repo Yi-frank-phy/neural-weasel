@@ -55,6 +55,8 @@ class FakeRuntime:
 
 
 class EmptyPinyinIndex:
+    # Partial-pinyin matching walks this trie shape on the real PinyinIndex.
+    root = SimpleNamespace(children={}, terminals=[])
     syllables: set[str] = set()
     metadata = {
         "schema_version": 2,
@@ -79,11 +81,18 @@ class MismatchedPinyinIndex(EmptyPinyinIndex):
 def test_factory_builds_real_unified_engine_for_each_backend(
     backend_kind: str,
     expected: str,
+    make_index,
 ) -> None:
     """AT-MB-01/04: service selection changes backend, not constraint engine."""
+    index = make_index(
+        [],
+        tokenizer_hash=FakeRuntime.tokenizer_fingerprint,
+        model_id=FakeRuntime.model_id,
+        revision=FakeRuntime.tokenizer_revision,
+    )
     engine = build_bilingual_engine(
         runtime=FakeRuntime(),
-        index=EmptyPinyinIndex(),
+        index=index,
         backend_kind=backend_kind,
     )
 
@@ -113,15 +122,17 @@ def test_factory_rejects_unknown_backend() -> None:
         )
 
 
-def test_serve_cli_exposes_explicit_backend_selection() -> None:
-    """The PowerShell service entry can select the measured backend."""
+def test_serve_cli_pins_full_logits_and_exposes_quant_selector() -> None:
+    """The service entry is the full-logits production path with a quant selector."""
     parser = _parser()
 
-    full = parser.parse_args(["serve", "--backend", "full"])
-    sparse = parser.parse_args(["serve", "--backend", "sparse"])
+    args = parser.parse_args(["serve", "--quantization", "Q4_K_M"])
 
-    assert full.backend == "full"
-    assert sparse.backend == "sparse"
+    assert args.quantization == "Q4_K_M"
+    # The GGUF CUDA production runtime is full-logits only; the legacy Torch
+    # backend selection never reached the committed serve parser.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["serve", "--backend", "full"])
 
 
 def test_backend_benchmark_cli_is_directly_runnable() -> None:
@@ -150,10 +161,7 @@ def test_replay_cli_is_directly_runnable() -> None:
             "replay",
             "--fixture",
             "benchmarks/replay_v02.jsonl",
-            "--backend",
-            "sparse",
         ]
     )
 
     assert args.command == "replay"
-    assert args.backend == "sparse"

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
@@ -21,6 +22,22 @@ from .gpu import (
 )
 from .llama_vocab import LlamaVocabAdapter
 
+DEFAULT_MAX_BEFORE_TOKENS = 3072
+DEFAULT_N_CTX = 4096
+DEFAULT_N_BATCH = 512
+
+
+@dataclass(frozen=True, slots=True)
+class LlamaContinuationRoot:
+    """Opaque in-memory sequence state captured at one root-logits decode point.
+
+    The serialized llama.cpp sequence state contains KV/model state but no raw
+    editor string. It is never written to disk or exposed through diagnostics.
+    """
+
+    state_bytes: bytes = field(repr=False)
+    n_tokens: int
+
 
 @dataclass(frozen=True, slots=True)
 class GgufLogitsSnapshot:
@@ -30,6 +47,7 @@ class GgufLogitsSnapshot:
     logits: np.ndarray = field(repr=False)
     created_monotonic: float
     latency_ms: float
+    continuation_root: LlamaContinuationRoot | None = field(default=None, repr=False)
 
 
 def _text_hash(text: str) -> str:
@@ -60,20 +78,29 @@ def _llama_cpp_version() -> str:
 
 
 class LlamaCppBackend:
-    """Qwen3.5-4B-Base Q8_0 runtime with fail-closed CUDA full offload."""
+    """Qwen3.5-4B-Base GGUF runtime with fail-closed CUDA full offload."""
 
     def __init__(
         self,
         acquired: AcquiredGguf,
         *,
-        max_before_tokens: int = 3072,
-        n_ctx: int = 4096,
-        n_batch: int = 512,
+        max_before_tokens: int = DEFAULT_MAX_BEFORE_TOKENS,
+        n_ctx: int = DEFAULT_N_CTX,
+        n_batch: int = DEFAULT_N_BATCH,
         llama_factory: Callable[..., Any] | None = None,
         cuda_backend_probe: Callable[[], bool] | None = None,
         gpu_before_probe: Callable[[], NvidiaGpu] | None = None,
         gpu_after_probe: Callable[[], NvidiaGpu] | None = None,
     ) -> None:
+        if max_before_tokens < 1:
+            raise ValueError("max_before_tokens must be positive")
+        if n_ctx < 1:
+            raise ValueError("n_ctx must be positive")
+        if n_batch < 1:
+            raise ValueError("n_batch must be positive")
+        if max_before_tokens > n_ctx:
+            raise ValueError("max_before_tokens must not exceed n_ctx")
+
         artifact = acquired.artifact
         self.model_id = artifact.model_id
         self.format = artifact.format
@@ -82,11 +109,16 @@ class LlamaCppBackend:
         self.model_path = acquired.path
         self.gguf_sha256 = acquired.sha256
         self.model_revision = artifact.revision
-        self.max_before_tokens = max_before_tokens
+        self.max_before_tokens = int(max_before_tokens)
+        self.n_ctx = int(n_ctx)
+        self.n_batch = int(n_batch)
         self._lock = threading.Lock()
         self._epoch = 0
         self._cached_token_ids: tuple[int, ...] | None = None
         self._cached_logits: np.ndarray | None = None
+        # Replaced atomically after a successful refresh. The immutable tuple
+        # contains only counts and elapsed time, never editor text or hashes.
+        self._last_refresh_diagnostics: tuple[int, int, float] | None = None
 
         cuda_backend_probe = cuda_backend_probe or _default_cuda_backend_probe
         if not cuda_backend_probe():
@@ -103,8 +135,8 @@ class LlamaCppBackend:
             model_path=str(acquired.path),
             n_gpu_layers=-1,
             main_gpu=0,
-            n_ctx=n_ctx,
-            n_batch=n_batch,
+            n_ctx=self.n_ctx,
+            n_batch=self.n_batch,
             logits_all=False,
             offload_kqv=True,
             use_mmap=True,
@@ -158,6 +190,72 @@ class LlamaCppBackend:
         logits.flags.writeable = False
         return logits
 
+    def _capture_continuation_root(self, n_tokens: int) -> LlamaContinuationRoot | None:
+        """Capture sequence 0 without copying llama-cpp-python's score matrix."""
+
+        context = getattr(self.llama, "_ctx", None)
+        if context is None:
+            return None
+        test_capture = getattr(context, "capture_sequence_state", None)
+        if callable(test_capture):
+            payload = bytes(test_capture(0))
+            return LlamaContinuationRoot(payload, n_tokens)
+
+        raw_context = getattr(context, "ctx", None)
+        if raw_context is None:
+            # Lightweight unit-test fakes intentionally omit the C context.
+            return None
+        from llama_cpp import llama_cpp
+
+        size = int(llama_cpp.llama_state_seq_get_size(raw_context, 0))
+        if size <= 0:
+            raise RuntimeError("llama.cpp returned an empty candidate continuation state")
+        buffer = (ctypes.c_uint8 * size)()
+        copied = int(llama_cpp.llama_state_seq_get_data(raw_context, buffer, size, 0))
+        if copied <= 0 or copied > size:
+            raise RuntimeError("failed to capture llama.cpp candidate continuation state")
+        return LlamaContinuationRoot(bytes(buffer[:copied]), n_tokens)
+
+    def _restore_continuation_root(self, root: LlamaContinuationRoot) -> None:
+        context = getattr(self.llama, "_ctx", None)
+        if context is None:
+            raise RuntimeError("llama.cpp context is unavailable")
+        clear = getattr(context, "kv_cache_clear", None)
+        if callable(clear):
+            clear()
+        test_restore = getattr(context, "restore_sequence_state", None)
+        if callable(test_restore):
+            restored = test_restore(root.state_bytes, 0)
+            if restored is False:
+                raise RuntimeError("test continuation state restore failed")
+        else:
+            raw_context = getattr(context, "ctx", None)
+            if raw_context is None:
+                raise RuntimeError("llama.cpp raw context is unavailable for continuation restore")
+            from llama_cpp import llama_cpp
+
+            buffer = (ctypes.c_uint8 * len(root.state_bytes)).from_buffer_copy(root.state_bytes)
+            restored = int(
+                llama_cpp.llama_state_seq_set_data(
+                    raw_context,
+                    buffer,
+                    len(root.state_bytes),
+                    0,
+                )
+            )
+            if restored <= 0:
+                raise RuntimeError("failed to restore llama.cpp candidate continuation state")
+        # High-level Llama.eval positions the next batch from n_tokens. Sequence
+        # state restore owns the KV/positions; no raw context token ids are needed.
+        self.llama.n_tokens = root.n_tokens
+
+    def _clear_live_sequence(self) -> None:
+        context = getattr(self.llama, "_ctx", None)
+        clear = getattr(context, "kv_cache_clear", None)
+        if callable(clear):
+            clear()
+        self.llama.reset()
+
     def _smoke_forward(self) -> None:
         try:
             self.llama.reset()
@@ -166,7 +264,7 @@ class LlamaCppBackend:
         except Exception as exc:
             raise GpuBindingError(f"CUDA GGUF smoke forward failed: {exc}") from exc
         finally:
-            self.llama.reset()
+            self._clear_live_sequence()
         self._cached_token_ids = None
         self._cached_logits = None
 
@@ -174,6 +272,7 @@ class LlamaCppBackend:
         token_ids = self._tokenize_context(before)
         with self._lock:
             started = time.perf_counter()
+            evaluated_tokens = 0
             if token_ids == self._cached_token_ids and self._cached_logits is not None:
                 logits = self._cached_logits
             else:
@@ -184,19 +283,29 @@ class LlamaCppBackend:
                 )
                 try:
                     if can_append:
-                        self.llama.eval(list(token_ids[len(self._cached_token_ids) :]))
+                        suffix = token_ids[len(self._cached_token_ids) :]
+                        evaluated_tokens = len(suffix)
+                        self.llama.eval(list(suffix))
                     else:
-                        self.llama.reset()
+                        evaluated_tokens = len(token_ids)
+                        self._clear_live_sequence()
                         self.llama.eval(list(token_ids))
                     logits = self._copy_last_logits()
                 except Exception:
-                    self.llama.reset()
+                    self._clear_live_sequence()
                     self._cached_token_ids = None
                     self._cached_logits = None
                     raise
                 self._cached_token_ids = token_ids
                 self._cached_logits = logits
 
+            continuation_root = self._capture_continuation_root(len(token_ids))
+            latency_ms = (time.perf_counter() - started) * 1000
+            self._last_refresh_diagnostics = (
+                len(token_ids),
+                evaluated_tokens,
+                latency_ms,
+            )
             self._epoch += 1
             return GgufLogitsSnapshot(
                 epoch=self._epoch,
@@ -204,7 +313,8 @@ class LlamaCppBackend:
                 after_hash=_text_hash(after),
                 logits=logits,
                 created_monotonic=time.monotonic(),
-                latency_ms=(time.perf_counter() - started) * 1000,
+                latency_ms=latency_ms,
+                continuation_root=continuation_root,
             )
 
     def full_logits(self, before: str, after: str = "") -> RuntimeSnapshot:
@@ -214,19 +324,157 @@ class LlamaCppBackend:
             before_hash=snapshot.before_hash,
             after_hash=snapshot.after_hash,
             latency_ms=snapshot.latency_ms,
+            continuation_root=snapshot.continuation_root,
         )
+
+    def continue_from_root(
+        self,
+        root: LlamaContinuationRoot,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> list[np.ndarray] | None:
+        """Score branches from one exact root snapshot without context mixing.
+
+        Lock acquisition is deadline bounded. Each branch restores the same
+        sequence-0 KV root and evaluates only its candidate token path, so the
+        root token score and every continuation score share one model context.
+        """
+
+        if deadline_ms <= 0:
+            return None
+        if not isinstance(root, LlamaContinuationRoot):
+            raise TypeError("candidate continuation root has an unexpected runtime type")
+        if len(token_paths) != len(allowed_token_sets):
+            raise ValueError("token_paths and allowed_token_sets must have equal length")
+        deadline = time.monotonic() + deadline_ms / 1000.0
+        remaining = max(0.0, deadline - time.monotonic())
+        if not self._lock.acquire(timeout=remaining):
+            return None
+
+        try:
+            outputs: list[np.ndarray] = []
+            vocabulary_size = len(self.tokenizer)
+            for raw_path, raw_allowed in zip(token_paths, allowed_token_sets, strict=True):
+                if time.monotonic() >= deadline:
+                    return None
+                path = tuple(int(token_id) for token_id in raw_path)
+                if not path:
+                    raise ValueError("continuation token path must be non-empty")
+                if root.n_tokens + len(path) > self.n_ctx:
+                    raise ValueError("continuation token path exceeds n_ctx")
+                if min(path) < 0 or max(path) >= vocabulary_size:
+                    raise IndexError("continuation token path is outside the model vocabulary")
+                allowed = np.asarray(tuple(raw_allowed), dtype=np.int64)
+                if allowed.ndim != 1:
+                    raise ValueError("allowed continuation token ids must be one-dimensional")
+                if allowed.size and (
+                    int(allowed.min()) < 0 or int(allowed.max()) >= vocabulary_size
+                ):
+                    raise IndexError(
+                        "allowed continuation token id is outside the model vocabulary"
+                    )
+
+                self._restore_continuation_root(root)
+                self.llama.eval(list(path))
+                logits = self._copy_last_logits()
+                outputs.append(np.asarray(logits[allowed], dtype=np.float32).copy())
+                if time.monotonic() >= deadline:
+                    return None
+            return outputs
+        finally:
+            try:
+                self._clear_live_sequence()
+                # Branch evaluation deliberately invalidates the live incremental
+                # editor cache. The immutable published root remains usable.
+                self._cached_token_ids = None
+                self._cached_logits = None
+            finally:
+                self._lock.release()
+
+    def continue_from_empty(
+        self,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> list[np.ndarray] | None:
+        """Legacy BOS replay retained for compatibility tests/tools only."""
+
+        if deadline_ms <= 0:
+            return None
+        if len(token_paths) != len(allowed_token_sets):
+            raise ValueError("token_paths and allowed_token_sets must have equal length")
+        deadline = time.monotonic() + deadline_ms / 1000.0
+        remaining = max(0.0, deadline - time.monotonic())
+        if not self._lock.acquire(timeout=remaining):
+            return None
+
+        try:
+            outputs: list[np.ndarray] = []
+            vocabulary_size = len(self.tokenizer)
+            fallback = self._fallback_token()
+            for raw_path, raw_allowed in zip(token_paths, allowed_token_sets, strict=True):
+                if time.monotonic() >= deadline:
+                    return None
+                path = tuple(int(token_id) for token_id in raw_path)
+                if not path:
+                    raise ValueError("continuation token path must be non-empty")
+                if len(path) + 1 > self.n_ctx:
+                    raise ValueError("continuation token path exceeds n_ctx")
+                if min(path) < 0 or max(path) >= vocabulary_size:
+                    raise IndexError("continuation token path is outside the model vocabulary")
+                allowed = np.asarray(tuple(raw_allowed), dtype=np.int64)
+                if allowed.ndim != 1:
+                    raise ValueError("allowed continuation token ids must be one-dimensional")
+                if allowed.size and (
+                    int(allowed.min()) < 0 or int(allowed.max()) >= vocabulary_size
+                ):
+                    raise IndexError(
+                        "allowed continuation token id is outside the model vocabulary"
+                    )
+
+                self._clear_live_sequence()
+                self.llama.eval([fallback, *path])
+                logits = self._copy_last_logits()
+                outputs.append(np.asarray(logits[allowed], dtype=np.float32).copy())
+                if time.monotonic() >= deadline:
+                    return None
+            return outputs
+        finally:
+            try:
+                self._clear_live_sequence()
+                self._cached_token_ids = None
+                self._cached_logits = None
+            finally:
+                self._lock.release()
 
     def invalidate_private_state(self) -> None:
         with self._lock:
-            self.llama.reset()
+            self._clear_live_sequence()
             self._cached_token_ids = None
             self._cached_logits = None
+            self._last_refresh_diagnostics = None
+
+    def performance_diagnostics(self) -> dict[str, object]:
+        """Return cached timing/count metadata without probing GPU or model state."""
+
+        refresh = self._last_refresh_diagnostics
+        return {
+            "max_before_tokens": self.max_before_tokens,
+            "n_ctx": self.n_ctx,
+            "n_batch": self.n_batch,
+            "last_refresh_context_tokens": None if refresh is None else refresh[0],
+            "last_refresh_evaluated_tokens": None if refresh is None else refresh[1],
+            "last_refresh_latency_ms": None if refresh is None else refresh[2],
+        }
 
     def diagnostics(self) -> dict[str, object]:
         current_gpu = self._gpu_probe()
         if current_gpu.uuid != self.target_gpu.uuid or current_gpu.name != self.target_gpu.name:
             raise GpuBindingError("target GPU identity changed after GGUF startup")
-        return {
+        diagnostics = {
             "model": self.model_id,
             "format": self.format,
             "quantization": self.quantization,
@@ -242,3 +490,5 @@ class LlamaCppBackend:
             "gguf_revision": self.model_revision,
             "vocab_fingerprint": self.vocab_fingerprint,
         }
+        diagnostics.update(self.performance_diagnostics())
+        return diagnostics

@@ -2,6 +2,9 @@
 param(
     [ValidateRange(10, 3600)]
     [int]$ReadyTimeoutSeconds = 1800,
+    [ValidateSet('Q4_K_M', 'Q8_0')]
+    [string]$Quantization = 'Q8_0',
+    [string]$GgufPath,
     [switch]$NoActivate,
     [switch]$DryRun
 )
@@ -11,9 +14,17 @@ Set-StrictMode -Version Latest
 
 $Model = 'Qwen/Qwen3.5-4B-Base'
 $ModelFormat = 'gguf'
-$Quantization = 'Q8_0'
 $Runtime = 'llama.cpp'
 $ComputeBackend = 'CUDA'
+
+# Must match the quantization-aware safety profile written by
+# start-model-service.ps1 so a live service can never be reused under a
+# different model artifact.
+$SafetyProfile = if ($Quantization -eq 'Q4_K_M') {
+    'crash-contained-4b-q4-gguf-cuda'
+} else {
+    'crash-contained-4b-q8-gguf-cuda'
+}
 $ExperimentalClsid = '{8AA66261-ED5F-46B0-895D-339B42C3AE1B}'
 $ExperimentalProfileGuid = '{C9B3984E-A16C-4779-80E8-ACD988C57B0D}'
 $InstallRoot = Join-Path $env:LOCALAPPDATA (
@@ -49,18 +60,56 @@ function Test-ModelPipe {
 }
 
 function Get-LiveModelServiceProcess {
-    if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
-        return $null
-    }
-    try {
-        $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-        if (-not $State.pid) {
+    # Only state-file read/parse failures may fall back to "no live service".
+    # The compatibility check below deliberately lives outside that try/catch:
+    # a live incompatible service must fail the launch instead of being
+    # silently treated as absent while a second service starts on top of it.
+    $State = $null
+    if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
+        try {
+            $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+        } catch {
             return $null
         }
-        return Get-Process -Id ([int]$State.pid) -ErrorAction SilentlyContinue
+    }
+    if (-not $State) {
+        return $null
+    }
+    # State files written by older bundles may predate a key. Missing keys are
+    # normalized to null so the compatibility comparison below fails closed
+    # with its own message instead of a strict-mode property error.
+    foreach ($Key in @('pid', 'transport', 'model', 'quantization', 'safety_profile', 'updated_utc')) {
+        if (-not $State.PSObject.Properties[$Key]) {
+            $State | Add-Member -NotePropertyName $Key -NotePropertyValue $null
+        }
+    }
+    if (-not $State.pid) {
+        return $null
+    }
+    $Process = Get-Process -Id ([int]$State.pid) -ErrorAction SilentlyContinue
+    if (-not $Process) {
+        return $null
+    }
+    if (
+        $State.transport -ne 'pipe' -or
+        $State.model -ne $Model -or
+        $State.quantization -ne $Quantization -or
+        $State.safety_profile -ne $SafetyProfile
+    ) {
+        throw (
+            'A live incompatible Neural Weasel model service owns the shared state. ' +
+            'Stop that legacy service before launching the experimental pipe service.'
+        )
+    }
+    try {
+        $UpdatedUtc = [DateTime]::Parse([string]$State.updated_utc).ToUniversalTime()
     } catch {
         return $null
     }
+    if ($Process.StartTime.ToUniversalTime() -gt $UpdatedUtc.AddSeconds(2)) {
+        return $null
+    }
+    return $Process
 }
 
 function Wait-ModelPipe {
@@ -171,7 +220,12 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
             'Bypass',
             '-File',
             (Quote-ProcessArgument $ServiceScript)
-        ) -join ' '
+        )
+        $Arguments += @('-Quantization', $Quantization)
+        if ($GgufPath) {
+            $Arguments += @('-GgufPath', (Quote-ProcessArgument $GgufPath))
+        }
+        $Arguments = $Arguments -join ' '
         Write-Host (
             "Starting $Model $Quantization $ModelFormat through $Runtime $ComputeBackend. " +
             'The first launch may download about 4.5 GB and build the pinyin index.'

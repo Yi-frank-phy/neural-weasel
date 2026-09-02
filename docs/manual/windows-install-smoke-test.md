@@ -7,7 +7,8 @@ TSF profile or prove real typing behavior in an interactive Windows session.
 
 ## Preconditions
 
-- 64-bit Windows 11 with PowerShell 7.
+- 64-bit Windows 11 with PowerShell 7. Run the real install from an elevated
+  PowerShell; dry-run verification does not require elevation.
 - A disposable account that can open Windows language/input settings.
 - `uv` installed and available on `PATH`.
 - Enough disk and network access to download the configured Base checkpoint.

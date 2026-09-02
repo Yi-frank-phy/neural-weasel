@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "context/context_ipc_protocol.h"
+#include "context/metadata_trace.h"
 #include "context/context_update_bridge.h"
 
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
@@ -155,8 +156,15 @@ struct ContextCaptureBroker::Impl final {
 
   void Forward(ContextFrame frame) noexcept {
     if (bridge == nullptr) {
+      TraceContextPipeline(
+          L"broker", L"event=forward result=no-bridge");
       return;
     }
+
+    TraceContextPipeline(
+        L"broker", L"event=forward kind=%d scope=%d revision=%llu",
+        static_cast<int>(frame.kind), static_cast<int>(frame.scope_label),
+        static_cast<unsigned long long>(frame.revision));
 
     const std::string capability = CapabilityHex(frame.source_capability);
     if (frame.kind == ContextFrameKind::kClear) {
@@ -192,7 +200,11 @@ struct ContextCaptureBroker::Impl final {
     metadata.security_label = BridgeLabel(frame.scope_label);
     metadata.secure = false;
     metadata.partial = true;
-    bridge->Submit(std::move(snapshot), std::move(metadata));
+    const std::uint64_t sequence =
+        bridge->Submit(std::move(snapshot), std::move(metadata));
+    TraceContextPipeline(
+        L"broker", L"event=submit sequence=%llu",
+        static_cast<unsigned long long>(sequence));
   }
 
   void ServeClient(HANDLE pipe) noexcept {
@@ -218,8 +230,15 @@ struct ContextCaptureBroker::Impl final {
         const std::string_view view(
             reinterpret_cast<const char*>(bytes.data()), bytes.size());
         ContextFrame decoded;
-        if (DecodeContextFrame(view, &decoded) != ContextFrameDecodeResult::kOk ||
+        const ContextFrameDecodeResult decode_result =
+            DecodeContextFrame(view, &decoded);
+        if (decode_result != ContextFrameDecodeResult::kOk ||
             decoded.source_pid != static_cast<std::uint32_t>(client_pid)) {
+          TraceContextPipeline(
+              L"broker", L"event=frame result=rejected decode=%d pid-match=%d",
+              static_cast<int>(decode_result),
+              decoded.source_pid == static_cast<std::uint32_t>(client_pid) ? 1
+                                                                           : 0);
           continue;
         }
 
@@ -230,7 +249,14 @@ struct ContextCaptureBroker::Impl final {
           result = receiver.Accept(view, &accepted);
         }
         if (result == ContextFrameAcceptResult::kAccepted) {
+          TraceContextPipeline(
+              L"broker", L"event=frame result=accepted revision=%llu",
+              static_cast<unsigned long long>(accepted.revision));
           Forward(std::move(accepted));
+        } else {
+          TraceContextPipeline(
+              L"broker", L"event=frame result=filtered accept=%d",
+              static_cast<int>(result));
         }
       }
     } catch (...) {
@@ -294,6 +320,8 @@ bool ContextCaptureBroker::Start() noexcept {
     auto impl = std::make_unique<Impl>();
     impl->pipe_name = ContextPipeName();
     if (impl->pipe_name.empty()) {
+      TraceContextPipeline(
+          L"broker", L"event=start result=no-pipe-name");
       return false;
     }
 
@@ -301,6 +329,9 @@ bool ContextCaptureBroker::Start() noexcept {
     if (first_pipe == INVALID_HANDLE_VALUE) {
       // FILE_FLAG_FIRST_PIPE_INSTANCE makes predictable-name squatting a hard
       // startup failure instead of silently accepting an attacker endpoint.
+      TraceContextPipeline(
+          L"broker", L"event=start result=create-pipe-failure error=%lu",
+          GetLastError());
       return false;
     }
 
@@ -309,8 +340,10 @@ bool ContextCaptureBroker::Start() noexcept {
     impl->listener =
         std::thread([raw = impl.get(), first_pipe] { raw->Listen(first_pipe); });
     impl_ = std::move(impl);
+    TraceContextPipeline(L"broker", L"event=start result=ok");
     return true;
   } catch (...) {
+    TraceContextPipeline(L"broker", L"event=start result=exception");
     return false;
   }
 }

@@ -5,9 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-from .gguf_artifact import PRODUCTION_GGUF
+from .gguf_artifact import PRODUCTION_GGUF, resolve_quantization_artifact
 from .gpu import discover_target_gpu, verify_expected_nvidia_binding
 from .paths import configure_hf_cache
+
+QUANT_SELECTOR_CHOICES = ("Q4_K_M", "Q8_0")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -15,6 +17,11 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("gpu-info", help="verify strict RTX 4060 CUDA isolation")
+    diagnostics = subparsers.add_parser(
+        "runtime-diagnostics",
+        help="read metadata-only performance diagnostics from the live pipe service",
+    )
+    diagnostics.add_argument("--timeout-ms", type=int, default=1_000)
     subparsers.add_parser("acquire-model", help="download and hash the pinned 4B Q8_0 GGUF")
     subparsers.add_parser("gguf-smoke", help="prove Q8_0 llama.cpp CUDA full offload locally")
 
@@ -30,12 +37,16 @@ def _parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser("serve", help="start the production Windows named-pipe server")
     serve.add_argument("--index", type=Path)
+    serve.add_argument("--quantization", choices=QUANT_SELECTOR_CHOICES, default="Q8_0")
+    serve.add_argument("--gguf-path", type=Path)
 
     serve_http = subparsers.add_parser(
         "serve-http",
         help="start the loopback Wisdom Weasel HTTP compatibility server",
     )
     serve_http.add_argument("--index", type=Path)
+    serve_http.add_argument("--quantization", choices=QUANT_SELECTOR_CHOICES, default="Q8_0")
+    serve_http.add_argument("--gguf-path", type=Path)
     serve_http.add_argument("--host", default="127.0.0.1")
     serve_http.add_argument("--port", type=int, default=8000)
 
@@ -85,10 +96,18 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_production(index_path: Path | None):
+def _build_production(
+    index_path: Path | None,
+    quantization: str = "Q8_0",
+    gguf_path: Path | None = None,
+):
     from .production import build_production_runtime
 
-    return build_production_runtime(index_path)
+    return build_production_runtime(
+        index_path,
+        artifact=resolve_quantization_artifact(quantization),
+        gguf_path=gguf_path,
+    )
 
 
 def _print_json(payload: object) -> None:
@@ -115,6 +134,24 @@ def main() -> int:
             }
         )
         return 0
+
+    if args.command == "runtime-diagnostics":
+        from .pipe_client import NamedPipeClient
+
+        if args.timeout_ms < 0:
+            print("--timeout-ms must be non-negative", file=sys.stderr)
+            return 2
+        try:
+            with NamedPipeClient(timeout_ms=args.timeout_ms) as client:
+                response = client.request({"type": "diagnostics"})
+        except (OSError, PermissionError, TimeoutError) as error:
+            print(
+                f"runtime diagnostics unavailable: {type(error).__name__}",
+                file=sys.stderr,
+            )
+            return 1
+        _print_json(response)
+        return 0 if response.get("ok") is True else 1
 
     if args.command == "acquire-model":
         from .acquire_model import ensure_production_gguf
@@ -273,7 +310,11 @@ def main() -> int:
     if args.command in {"predict", "serve", "serve-http", "simulate", "benchmark"}:
         from .engine import NeuralPinyinEngine
 
-        bundle = _build_production(args.index)
+        bundle = _build_production(
+            args.index,
+            getattr(args, "quantization", "Q8_0"),
+            getattr(args, "gguf_path", None),
+        )
         runtime = bundle.runtime
 
         if args.command in {"serve", "serve-http"}:
@@ -289,9 +330,9 @@ def main() -> int:
             # the background by the service engine.
             engine.update_context("", "")
             if args.command == "serve":
-                from .pipe_server import NamedPipeServer
+                from .production_pipe import ProductionNamedPipeServer
 
-                NamedPipeServer(engine).serve_forever()
+                ProductionNamedPipeServer(engine).serve_forever()
             else:
                 from .http_server import serve_wisdom_http
 

@@ -28,6 +28,7 @@ constexpr LANGID kZhCn =
     MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
 constexpr wchar_t kClassesRoot[] = L"Software\\Classes\\CLSID\\";
 constexpr wchar_t kInprocServer[] = L"InprocServer32";
+constexpr DWORD kInstallLayoutOrTipUninstall = 0x00000001;
 
 struct Options {
   std::wstring command;
@@ -103,7 +104,7 @@ std::optional<std::wstring> ReadRegisteredDll() {
   wchar_t value[32768] = {};
   DWORD bytes = sizeof(value);
   const LSTATUS status =
-      RegGetValueW(HKEY_CURRENT_USER, ClsidRegistryPath().c_str(), nullptr,
+      RegGetValueW(HKEY_LOCAL_MACHINE, ClsidRegistryPath().c_str(), nullptr,
                    RRF_RT_REG_SZ, nullptr, value, &bytes);
   if (status == ERROR_FILE_NOT_FOUND) {
     return std::nullopt;
@@ -170,7 +171,7 @@ void SetRegistryString(HKEY key,
 void RegisterComServer(const std::filesystem::path& dll_path) {
   HKEY key = nullptr;
   DWORD disposition = 0;
-  if (RegCreateKeyExW(HKEY_CURRENT_USER, ClsidRegistryPath().c_str(), 0,
+  if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, ClsidRegistryPath().c_str(), 0,
                       nullptr, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE,
                       nullptr, &key, &disposition) != ERROR_SUCCESS) {
     throw std::runtime_error("failed to create experimental COM registration");
@@ -183,6 +184,15 @@ void RegisterComServer(const std::filesystem::path& dll_path) {
     throw;
   }
   RegCloseKey(key);
+
+  // Older development bundles wrote this COM class per-user. TSF can list
+  // that profile but does not load the in-proc text service from that hive on
+  // current Windows 11 builds. Remove the obsolete override after the
+  // machine-wide registration is durable.
+  RegDeleteTreeW(HKEY_CURRENT_USER,
+                 (std::wstring(kClassesRoot) +
+                  kNeuralWeaselTextServiceClsidString)
+                     .c_str());
 }
 
 void RegisterCategories(ITfCategoryMgr* manager) {
@@ -299,6 +309,48 @@ ProfileState ReadProfileState() {
   return state;
 }
 
+void EnableProfileForCurrentUser(ITfInputProcessorProfileMgr* profiles) {
+  ITfInputProcessorProfiles* legacy_profiles = nullptr;
+  const HRESULT queried = profiles->QueryInterface(
+      IID_ITfInputProcessorProfiles,
+      reinterpret_cast<void**>(&legacy_profiles));
+  if (FAILED(queried) || legacy_profiles == nullptr) {
+    throw std::runtime_error(
+        "failed to open per-user TSF language profile settings");
+  }
+  const HRESULT enabled = legacy_profiles->EnableLanguageProfile(
+      kNeuralWeaselTextServiceClsid, kZhCn,
+      kNeuralWeaselZhCnProfileGuid, TRUE);
+  legacy_profiles->Release();
+  if (FAILED(enabled)) {
+    throw std::runtime_error(
+        "failed to enable experimental language profile for current user");
+  }
+}
+
+void UpdateUserInputMethodTip(DWORD flags) {
+  const HMODULE input = LoadLibraryW(L"input.dll");
+  if (input == nullptr) {
+    throw std::runtime_error("Windows input configuration API is unavailable");
+  }
+  using InstallLayoutOrTipFunction = BOOL(WINAPI*)(LPCWSTR, DWORD);
+  const auto install_layout_or_tip =
+      reinterpret_cast<InstallLayoutOrTipFunction>(
+          GetProcAddress(input, "InstallLayoutOrTip"));
+  if (install_layout_or_tip == nullptr) {
+    FreeLibrary(input);
+    throw std::runtime_error("Windows input profile installer is unavailable");
+  }
+  const std::wstring tip =
+      std::wstring(L"0804:") + kNeuralWeaselTextServiceClsidString +
+      kNeuralWeaselZhCnProfileGuidString;
+  const BOOL updated = install_layout_or_tip(tip.c_str(), flags);
+  FreeLibrary(input);
+  if (!updated) {
+    throw std::runtime_error("failed to update the current-user input method list");
+  }
+}
+
 void RegisterProfile(const std::filesystem::path& dll_path) {
   RegisterComServer(dll_path);
   try {
@@ -316,6 +368,8 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
             throw std::runtime_error(
                 "failed to register experimental language profile");
           }
+          EnableProfileForCurrentUser(profiles);
+          UpdateUserInputMethodTip(0);
           RegisterCategories(categories);
         });
   } catch (...) {
@@ -323,6 +377,7 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
       WithTsfManagers(
           [](ITfInputProcessorProfileMgr* profiles,
              ITfCategoryMgr* categories) {
+            UpdateUserInputMethodTip(kInstallLayoutOrTipUninstall);
             profiles->UnregisterProfile(
                 kNeuralWeaselTextServiceClsid, kZhCn,
                 kNeuralWeaselZhCnProfileGuid, 0);
@@ -332,6 +387,10 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
       // Preserve the original registration failure. The COM key is still
       // removed below and a later idempotent uninstall retries cleanup.
     }
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE,
+                   (std::wstring(kClassesRoot) +
+                    kNeuralWeaselTextServiceClsidString)
+                       .c_str());
     RegDeleteTreeW(HKEY_CURRENT_USER,
                    (std::wstring(kClassesRoot) +
                     kNeuralWeaselTextServiceClsidString)
@@ -343,18 +402,23 @@ void RegisterProfile(const std::filesystem::path& dll_path) {
 void UnregisterProfile() {
   WithTsfManagers(
       [](ITfInputProcessorProfileMgr* profiles, ITfCategoryMgr* categories) {
+        UpdateUserInputMethodTip(kInstallLayoutOrTipUninstall);
         profiles->UnregisterProfile(kNeuralWeaselTextServiceClsid, kZhCn,
                                     kNeuralWeaselZhCnProfileGuid, 0);
         UnregisterCategories(categories);
       });
   const LSTATUS status =
-      RegDeleteTreeW(HKEY_CURRENT_USER,
+      RegDeleteTreeW(HKEY_LOCAL_MACHINE,
                      (std::wstring(kClassesRoot) +
                       kNeuralWeaselTextServiceClsidString)
                          .c_str());
   if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
     throw std::runtime_error("failed to remove experimental COM registration");
   }
+  RegDeleteTreeW(HKEY_CURRENT_USER,
+                 (std::wstring(kClassesRoot) +
+                  kNeuralWeaselTextServiceClsidString)
+                     .c_str());
 }
 
 void PrintUsage() {

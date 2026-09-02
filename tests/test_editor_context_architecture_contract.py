@@ -76,9 +76,48 @@ def test_rime_candidate_query_carries_coherent_editor_identity() -> None:
     assert "AcceptedEditorContext" in epoch_header
     assert "source_capability" in epoch_header
     assert "source_revision" in epoch_header
-    assert '"context_session"' in translator
-    assert '"source_revision"' in translator
-    assert "model_epoch == 0" in translator or "context_identity.model_epoch == 0" in translator
+
+    # Epoch zero is the permanent empty-context neural baseline, not a reason to
+    # reject a page request. Every request carries the captured epoch; editor
+    # identity is attached only when a real accepted editor epoch was captured.
+    assert '{"context_epoch", context_epoch_}' in translator
+    assert "if (context_epoch_ > 0)" in translator
+    assert 'request["context_session"] = context_session_' in translator
+    assert 'request["source_revision"] = source_revision_' in translator
+    assert "model_epoch == 0" not in translator
+    assert "context_identity.model_epoch == 0" not in translator
+
+    # A composition revision freezes its context identity. Responses must match
+    # that captured epoch, and a source boundary creates a fresh revision.
+    assert 'response.value("context_epoch", std::uint64_t{0}) !=' in translator
+    assert "context_epoch_" in translator
+    assert "IsSourceBoundaryChange(context_session_, latest_context)" in translator
+    assert "source_boundary" in translator
+
+
+def test_rime_candidate_revision_resets_across_identical_compositions() -> None:
+    header = (ROOT / "native/rime/ai_translator.h").read_text(encoding="utf-8")
+    translator = (ROOT / "native/rime/ai_translator.cc").read_text(encoding="utf-8")
+
+    # librime Context::Clear() preserves session properties but emits the update
+    # notifier. Track the composing -> idle boundary so `ni`, commit/cancel,
+    # `ni` cannot reuse the previous frozen candidate set.
+    assert "context->update_notifier().connect" in translator
+    assert "observed_composing_ || !composition_input_.empty()" in translator
+    assert "ResetCompositionBoundary();" in translator
+    assert "force_new_revision_ || composition_revision_ == 0" in translator
+    assert "++composition_revision_;" in translator
+    assert "composition_revision_ = 0" not in translator
+    assert "::rime::connection context_update_connection_" in header
+
+
+def test_rime_cancel_uses_pinned_context_clear() -> None:
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
+
+    cancel_case = processor[processor.index("case KeyOutcome::kCancelComposition:") :]
+    cancel_case = cancel_case[: cancel_case.index("case KeyOutcome::kCommitLiteral:")]
+    assert "context->Clear();" in cancel_case
+    assert "AbortComposition" not in processor
 
 
 def test_context_sender_and_broker_have_no_raw_context_read_api() -> None:

@@ -4,6 +4,9 @@ param(
     [string]$Transport = 'pipe',
     [ValidateRange(1, 65535)]
     [int]$Port = 8000,
+    [ValidateSet('Q4_K_M', 'Q8_0')]
+    [string]$Quantization = 'Q8_0',
+    [string]$GgufPath,
     [string]$Index
 )
 
@@ -12,11 +15,18 @@ Set-StrictMode -Version Latest
 
 $Model = 'Qwen/Qwen3.5-4B-Base'
 $ModelFormat = 'gguf'
-$Quantization = 'Q8_0'
 $Runtime = 'llama.cpp'
 $ComputeBackend = 'CUDA'
 $LlamaCppPythonVersion = '0.3.23'
 $LlamaCudaWheelIndex = 'https://abetlen.github.io/llama-cpp-python/whl/cu124'
+
+# The crash-contained safety profile is quantization-aware so a live service
+# can never be silently reused under a different model artifact.
+$SafetyProfile = if ($Quantization -eq 'Q4_K_M') {
+    'crash-contained-4b-q4-gguf-cuda'
+} else {
+    'crash-contained-4b-q8-gguf-cuda'
+}
 
 $BundledUv = Join-Path $PSScriptRoot 'tools\uv.exe'
 if (Test-Path -LiteralPath $BundledUv -PathType Leaf) {
@@ -71,7 +81,8 @@ function Write-ServiceState {
         index = $Index
         pid = $PID
         exit_code = $ExitCode
-        safety_profile = 'crash-contained-4b-q8-gguf-cuda'
+        gguf_path = $GgufPath
+        safety_profile = $SafetyProfile
         updated_utc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json
     Write-Utf8NoBom -Path $TemporaryState -Content $Json
@@ -94,8 +105,25 @@ if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
     throw "The synchronized Python runtime is missing: $PythonExe"
 }
 
+# The pinned llama.cpp CUDA wheel dynamically links the CUDA 12 runtime DLLs
+# shipped with the locked PyTorch wheel. Make that private runtime directory
+# visible to both the install check and the service child process.
+$TorchLibraryRoot = Join-Path $ProjectRoot '.venv\Lib\site-packages\torch\lib'
+if (-not (Test-Path -LiteralPath $TorchLibraryRoot -PathType Container)) {
+    Write-ServiceState -State 'failed' -ExitCode 1
+    throw "The locked PyTorch CUDA runtime directory is missing: $TorchLibraryRoot"
+}
+$env:PATH = "$TorchLibraryRoot;$env:PATH"
+
+# The probe prints its "not installed" verdict on stderr. Windows PowerShell
+# 5.1 promotes native stderr to a terminating NativeCommandError while the
+# preference is strict, so probe with a relaxed preference and branch on the
+# real exit code instead of a null redirect.
+$ErrorActionPreference = 'Continue'
 & $PythonExe -m neural_weasel.llama_install_check *> $null
-if ($LASTEXITCODE -ne 0) {
+$ProbeExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($ProbeExit -ne 0) {
     Write-Host (
         "Installing pinned llama-cpp-python $LlamaCppPythonVersion from the official CUDA 12.4 wheel index."
     )
@@ -110,8 +138,13 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
+# Same relaxed-probe rule for the verification pass: surface its output
+# for diagnosis, but never let a native stderr line kill the launcher.
+$ErrorActionPreference = 'Continue'
 & $PythonExe -m neural_weasel.llama_install_check
-if ($LASTEXITCODE -ne 0) {
+$CheckExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($CheckExit -ne 0) {
     Write-ServiceState -State 'failed' -ExitCode $LASTEXITCODE
     throw (
         'llama-cpp-python did not prove a CUDA-enabled llama.cpp build. ' +
@@ -125,6 +158,14 @@ try {
     $Arguments = @(
         'run', '--project', $ProjectRoot, '--no-sync', 'neural-weasel', $ServeCommand
     )
+    $Arguments += @('--quantization', $Quantization)
+    if ($GgufPath) {
+        if (-not (Test-Path -LiteralPath $GgufPath -PathType Leaf)) {
+            Write-ServiceState -State 'failed' -ExitCode 1
+            throw "The provided GGUF artifact does not exist: $GgufPath"
+        }
+        $Arguments += @('--gguf-path', $GgufPath)
+    }
     if ($Index) {
         $Arguments += @('--index', $Index)
     }

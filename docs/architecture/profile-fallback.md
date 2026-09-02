@@ -24,7 +24,7 @@ return one of:
 - `kUnregisterExperimentalProfile` when exactly that profile is present;
 - `kConflict` when only one reserved identifier has been reused.
 
-`NeuralWeaselProfileTool.exe` implements per-user COM, category, and profile
+`NeuralWeaselProfileTool.exe` implements machine-wide COM plus category registration and a per-user profile
 registration/unregistration. It refuses any CLSID/profile GUID other than the
 reserved pair and verifies the TSF DLL identity exports.
 

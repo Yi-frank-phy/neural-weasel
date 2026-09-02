@@ -7,8 +7,8 @@ from .bilingual_engine import BilingualImeEngine
 from .conditional_backend import ConditionalFullLogitsBackend
 from .index import PinyinIndex
 from .mixed_pinyin import MixedPinyinConstraint
+from .neural_latin import NeuralLatinPrefixConstraint
 from .runtime_identity import validated_runtime_index_identity
-from .unified import LatinPrefixConstraint
 
 
 def build_bilingual_engine(
@@ -24,9 +24,9 @@ def build_bilingual_engine(
             raise ValueError(
                 "GGUF production runtime supports only the snapshot full-logits backend"
             )
-        # Do not attach the Qwen/Torch conditional-continuation seam here.
-        # Keypress handling reads immutable logits snapshots only; llama.cpp
-        # forwards remain owned by background context refresh.
+        # Page-0 candidate handling reads immutable snapshots only. Any later
+        # continuation work is deadline bounded and may fall back to the
+        # permanent empty-context baseline.
         backend = FullLogitsSnapshotBackend(runtime)
     elif backend_kind == "full":
         backend = ConditionalFullLogitsBackend(runtime)
@@ -35,9 +35,14 @@ def build_bilingual_engine(
     else:
         raise ValueError(f"unsupported model backend: {backend_kind}")
 
-    return BilingualImeEngine(
+    engine = BilingualImeEngine(
         backend=backend,
         pinyin_constraint=MixedPinyinConstraint(index),
-        latin_prefix_constraint=LatinPrefixConstraint.from_tokenizer(runtime.tokenizer),
+        latin_prefix_constraint=NeuralLatinPrefixConstraint.from_tokenizer(runtime.tokenizer),
         diagnostic_identity=identity,
     )
+    # Service construction is the readiness boundary: the permanent
+    # context-free neural scores and all single-letter page-0 entries exist
+    # before a named pipe or HTTP listener can accept keypress queries.
+    engine.initialize_neural_baseline()
+    return engine
