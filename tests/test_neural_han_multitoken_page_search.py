@@ -14,9 +14,7 @@ from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 class MultiTokenRuntime:
     logits: np.ndarray
     calls: int = 0
-    continuation_calls: list[tuple[tuple[int, ...], tuple[int, ...]]] = field(
-        default_factory=list
-    )
+    continuation_calls: list[tuple[tuple[int, ...], tuple[int, ...]]] = field(default_factory=list)
 
     def load(self) -> None:
         pass
@@ -52,12 +50,7 @@ class MultiTokenRuntime:
             self.continuation_calls.append((path, allowed))
             outputs.append(
                 np.asarray(
-                    [
-                        1000.0
-                        if token_id == 7
-                        else 20.0 - float(token_id)
-                        for token_id in allowed
-                    ],
+                    [1000.0 if token_id == 7 else 20.0 - float(token_id) for token_id in allowed],
                     dtype=np.float32,
                 )
             )
@@ -134,9 +127,7 @@ def test_exact_han_cover_can_span_multiple_base_tokens(
         deadline_ms=120.0,
     )
 
-    exact = next(
-        candidate for candidate in second.candidates if candidate.text == expected_text
-    )
+    exact = next(candidate for candidate in second.candidates if candidate.text == expected_text)
     assert exact.token_path == expected_path
     assert exact.completes_input is True
     assert exact.consumed_keys == len(raw)
