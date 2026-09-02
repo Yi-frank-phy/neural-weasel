@@ -66,6 +66,74 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             tuple(path.pinyin_path),
         )
 
+    def _root_han_candidates(
+        self,
+        raw_keys: str,
+        state: BackendState | None,
+        response_epoch: int,
+    ) -> list[Candidate]:
+        if self.matcher is None:
+            return []
+        try:
+            parsed = parse_raw_pinyin(raw_keys)
+        except ValueError:
+            return []
+        raw = parsed.compact
+        if not raw:
+            return []
+        matches = [
+            match
+            for match in self.matcher.neural_matches(
+                raw,
+                0,
+                parsed.explicit_boundaries,
+            )
+            if match.next_position > 0
+            and match.entry.token_id is not None
+            and not match.entry.coverage
+            and is_all_han(match.entry.text)
+            and len(match.entry.text) <= MAX_HAN_CHARACTERS
+        ]
+        if not matches:
+            return []
+        token_ids = [int(match.entry.token_id) for match in matches]
+        scores = self._score_root(state, token_ids)
+        candidates: list[Candidate] = []
+        for match, score in zip(matches, scores, strict=True):
+            if not math.isfinite(float(score)):
+                continue
+            consumed = parsed.raw_characters_for_letters(match.next_position)
+            completes = match.next_position == len(raw)
+            predicted = match.completion_syllables if completes else 0
+            entry = match.entry
+            value = float(score)
+            candidates.append(
+                Candidate(
+                    text=entry.text,
+                    pinyin=entry.display_pinyin,
+                    consumed_keys=consumed,
+                    score=value,
+                    context_epoch=response_epoch,
+                    coverage=False,
+                    completes_input=completes,
+                    syllables=entry.syllables,
+                    token_id=int(entry.token_id),
+                    constraint_kind="pinyin",
+                    script="han",
+                    model_score=value,
+                    total_score=value,
+                    token_path=(int(entry.token_id),),
+                    predicted_syllables=predicted,
+                )
+            )
+        best: dict[tuple[str, int], Candidate] = {}
+        for candidate in candidates:
+            key = (unicodedata.normalize("NFKC", candidate.text), candidate.consumed_keys)
+            previous = best.get(key)
+            if previous is None or _candidate_key(candidate) < _candidate_key(previous):
+                best[key] = candidate
+        return list(best.values())
+
     def _han_frontier_from_candidates(
         self,
         raw_keys: str,
@@ -200,6 +268,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             for match in self.matcher.neural_matches(
                 parsed.compact,
                 parent.matched_letters,
+                parsed.explicit_boundaries,
             ):
                 entry = match.entry
                 if (
