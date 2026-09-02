@@ -11,6 +11,7 @@ import numpy as np
 
 from .backends import BackendState
 from .candidate import Candidate
+from .neural_candidate_pages_v2 import _MAX_BASELINE_LATIN_CACHE
 from .neural_candidate_pages_v3 import (
     NeuralCandidatePageManager as _V3CandidatePageManager,
 )
@@ -76,6 +77,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         self._baseline_han_cache: OrderedDict[tuple[str, str, tuple[int, ...]], Candidate] = (
             OrderedDict()
         )
+        self._dirty_single_letter_prewarms: set[str] = set()
 
     def install_baseline_scores(
         self,
@@ -86,6 +88,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         values = np.asarray(scores).reshape(-1)
         self._all_model_token_ids = tuple(range(int(values.size)))
         self._baseline_han_cache.clear()
+        self._dirty_single_letter_prewarms.clear()
         super().install_baseline_scores(scores, continuation_root=continuation_root)
 
     def query_page(
@@ -174,6 +177,70 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             # Do not silently switch score origin inside a revision.
             return np.full(len(token_ids), -math.inf, dtype=np.float32)
 
+    def _root_latin_candidates_and_frontier(
+        self,
+        raw_keys: str,
+        state: BackendState | None,
+        response_epoch: int,
+    ) -> tuple[list[Candidate], list[Any]]:
+        candidates, frontier = super()._root_latin_candidates_and_frontier(
+            raw_keys,
+            state,
+            response_epoch,
+        )
+        raw_folded = raw_keys.casefold()
+        consumed = len(raw_keys)
+        return (
+            [
+                replace(
+                    candidate,
+                    consumed_keys=consumed,
+                    completes_input=candidate.text.casefold() == raw_folded,
+                )
+                for candidate in candidates
+            ],
+            frontier,
+        )
+
+    def _mark_single_letter_prewarm_dirty(self, raw: str) -> None:
+        folded = raw.casefold()
+        if len(folded) == 1 and "a" <= folded <= "z":
+            self._dirty_single_letter_prewarms.add(folded)
+
+    def _refresh_dirty_single_letter_prewarms(self) -> None:
+        if not self._dirty_single_letter_prewarms or self._baseline_scores is None:
+            return
+        dirty = tuple(sorted(self._dirty_single_letter_prewarms))
+        self._dirty_single_letter_prewarms.clear()
+        for raw in dirty:
+            for mode in NeuralLanguageMode:
+                candidates, _, _ = self._root_candidates(
+                    raw_keys=raw,
+                    mode=mode,
+                    state=None,
+                    response_epoch=0,
+                    allow_prewarm_cache=False,
+                )
+                self._baseline_single_letter[(raw, mode)] = tuple(
+                    candidates[:MAX_FROZEN_CANDIDATES]
+                )
+
+    def _remember_baseline_latin_candidate(self, candidate: Candidate) -> None:
+        normalized = unicodedata.normalize("NFKC", candidate.text).casefold()
+        key = (normalized, candidate.token_path)
+        previous = self._baseline_latin_cache.get(key)
+        changed = previous is None or _latin_key(candidate) < _latin_key(previous)
+        if changed:
+            self._baseline_latin_cache[key] = replace(candidate, context_epoch=0)
+            self._baseline_latin_cache.move_to_end(key)
+            if normalized:
+                self._mark_single_letter_prewarm_dirty(normalized[0])
+        while len(self._baseline_latin_cache) > _MAX_BASELINE_LATIN_CACHE:
+            _, evicted = self._baseline_latin_cache.popitem(last=False)
+            evicted_text = unicodedata.normalize("NFKC", evicted.text).casefold()
+            if evicted_text:
+                self._mark_single_letter_prewarm_dirty(evicted_text[0])
+
     @staticmethod
     def _han_cache_key(
         raw_keys: str,
@@ -200,11 +267,10 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         self._baseline_han_cache.move_to_end(key)
 
         normalized_raw = raw_keys.casefold()
-        if len(normalized_raw) == 1:
-            for mode in NeuralLanguageMode:
-                self._baseline_single_letter.pop((normalized_raw, mode), None)
+        self._mark_single_letter_prewarm_dirty(normalized_raw)
         while len(self._baseline_han_cache) > _MAX_BASELINE_HAN_CACHE:
-            self._baseline_han_cache.popitem(last=False)
+            (evicted_raw, _, _), _ = self._baseline_han_cache.popitem(last=False)
+            self._mark_single_letter_prewarm_dirty(evicted_raw)
 
     def _cached_han_for_raw(
         self,
@@ -365,6 +431,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     session.identity.raw_keys,
                     candidate,
                 )
+        self._refresh_dirty_single_letter_prewarms()
 
         session.search_depth = max(session.search_depth, len(parent.token_path) + 1)
         self._prune_frontier(session)
