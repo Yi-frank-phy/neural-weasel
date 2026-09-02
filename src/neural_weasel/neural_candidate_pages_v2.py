@@ -62,9 +62,9 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
             and _LATIN_PATH.fullmatch(str(fragment)) is not None
         }
         self._latin_continuation_token_ids = tuple(sorted(self._latin_fragments_by_token))
-        self._baseline_latin_cache: OrderedDict[
-            tuple[str, tuple[int, ...]], Candidate
-        ] = OrderedDict()
+        self._baseline_latin_cache: OrderedDict[tuple[str, tuple[int, ...]], Candidate] = (
+            OrderedDict()
+        )
 
     def install_baseline_scores(
         self,
@@ -260,11 +260,7 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
             },
             expanded_paths=set(),
             last_used=self.clock(),
-            exhausted=(
-                not frontier
-                or not callable(continuation)
-                or continuation_root is None
-            ),
+            exhausted=(not frontier or not callable(continuation) or continuation_root is None),
         )
         self._sessions[candidate_set_id] = session
         self._sessions.move_to_end(candidate_set_id)
@@ -312,9 +308,7 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
             key=_latin_key,
         )
         other = [
-            candidate
-            for candidate in session.pending
-            if candidate.script not in {"han", "latin"}
+            candidate for candidate in session.pending if candidate.script not in {"han", "latin"}
         ]
         session.pending = [*self._merge_chinese_first(han, latin), *other]
 
