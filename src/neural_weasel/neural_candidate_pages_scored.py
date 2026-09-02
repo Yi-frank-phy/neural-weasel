@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -18,6 +19,8 @@ from .neural_candidate_pages_v3 import (
 from .neural_candidates import (
     MAX_FROZEN_CANDIDATES,
     CandidatePage,
+    CandidatePageError,
+    CandidatePageTimeout,
     NeuralLanguageMode,
     _candidate_key,
     _latin_key,
@@ -57,18 +60,21 @@ def _selected_log_probs(logits: Sequence[float], token_ids: Sequence[int]) -> np
 
 
 class NeuralCandidatePageManager(_V3CandidatePageManager):
-    """Complete the PR36 model-score and baseline-supplement contracts.
+    """Complete the PR36 model-score, cache and concurrency contracts.
 
-    The constrained beam already defines a path score as the sum of normalized
+    The constrained beam defines a path score as the sum of normalized
     next-token log probabilities, with no token-count division. Root logits and
     every continuation step here use that same definition. Strict Han length
     buckets remain the primary ordering key; model probability only orders paths
     inside a proven bucket.
 
-    Multi-token Han paths discovered from the permanent empty-context root are
-    retained only for the exact raw pinyin that proved them legal. They can then
-    supplement a later page 0 without another model forward. Editor-context paths
-    are revision-local and are never copied into this cache.
+    Candidate state is shared by up to four named-pipe client threads. A short
+    manager lock protects sessions, frozen pages, baseline caches and metrics,
+    but the lock is deliberately released around the potentially long CUDA
+    continuation call. Page 0 therefore never queues behind an uninterruptible
+    later-page decode. If a focus/new-revision boundary invalidates the session
+    while CUDA work is in flight, that late result is discarded before it can
+    mutate caches or freeze a page.
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -78,6 +84,8 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             OrderedDict()
         )
         self._dirty_single_letter_prewarms: set[str] = set()
+        self._state_lock = threading.RLock()
+        self._active_searches: set[str] = set()
 
     def install_baseline_scores(
         self,
@@ -85,11 +93,25 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         *,
         continuation_root: Any | None = None,
     ) -> None:
-        values = np.asarray(scores).reshape(-1)
-        self._all_model_token_ids = tuple(range(int(values.size)))
-        self._baseline_han_cache.clear()
-        self._dirty_single_letter_prewarms.clear()
-        super().install_baseline_scores(scores, continuation_root=continuation_root)
+        with self._state_lock:
+            values = np.asarray(scores).reshape(-1)
+            self._all_model_token_ids = tuple(range(int(values.size)))
+            self._baseline_han_cache.clear()
+            self._dirty_single_letter_prewarms.clear()
+            super().install_baseline_scores(scores, continuation_root=continuation_root)
+
+    def prewarm_single_letter_pages(self) -> None:
+        with self._state_lock:
+            super().prewarm_single_letter_pages()
+
+    def clear_sessions(self) -> None:
+        with self._state_lock:
+            self._sessions.clear()
+            self._active_searches.clear()
+
+    def diagnostics(self) -> dict[str, int | float | None]:
+        with self._state_lock:
+            return super().diagnostics()
 
     def query_page(
         self,
@@ -106,50 +128,60 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         state: BackendState | None,
         deadline_ms: float | None = None,
     ) -> CandidatePage:
-        """Return the already-frozen page 0 when the revision identity repeats.
+        """Serve frozen state quickly while later-page CUDA work runs unlocked."""
 
-        Native Rime normally serves its local frozen page without another pipe
-        call, but the wire contract itself must also be revision-stable. A late
-        baseline continuation may populate reusable multi-token caches; it must
-        affect only a later revision, never a repeated page-0 request for the
-        current revision.
-        """
-
-        if page_index == 0:
-            self._expire_sessions()
-            identity = _SearchIdentity(
-                client_session_id=client_session_id,
-                composition_revision=composition_revision,
-                context_epoch=context_epoch,
-                context_session=context_session,
-                source_revision=source_revision,
-                mode=NeuralLanguageMode(mode),
-                raw_keys=raw_keys,
-            )
-            for existing_set_id, session in tuple(self._sessions.items()):
-                if session.identity != identity:
-                    continue
-                frozen = session.frozen_pages.get(0)
-                if frozen is None:
-                    continue
-                session.last_used = self.clock()
-                self._sessions.move_to_end(existing_set_id)
-                self._record_metrics(frozen)
-                return frozen
-
-        return super().query_page(
+        normalized_mode = NeuralLanguageMode(mode)
+        identity = _SearchIdentity(
             client_session_id=client_session_id,
             composition_revision=composition_revision,
             context_epoch=context_epoch,
             context_session=context_session,
             source_revision=source_revision,
-            mode=mode,
+            mode=normalized_mode,
             raw_keys=raw_keys,
-            page_index=page_index,
-            candidate_set_id=candidate_set_id,
-            state=state,
-            deadline_ms=deadline_ms,
         )
+        with self._state_lock:
+            if page_index == 0:
+                self._expire_sessions()
+                for existing_set_id, session in tuple(self._sessions.items()):
+                    if session.identity != identity:
+                        continue
+                    frozen = session.frozen_pages.get(0)
+                    if frozen is None:
+                        continue
+                    session.last_used = self.clock()
+                    self._sessions.move_to_end(existing_set_id)
+                    self._record_metrics(frozen)
+                    return frozen
+            elif candidate_set_id is not None and candidate_set_id in self._active_searches:
+                session = self._sessions.get(candidate_set_id)
+                if session is None:
+                    raise CandidatePageError("candidate_set_id is unknown or expired")
+                if session.identity != identity:
+                    raise CandidatePageError(
+                        "candidate_set_id does not match the current composition"
+                    )
+                frozen = session.frozen_pages.get(page_index)
+                if frozen is not None:
+                    session.last_used = self.clock()
+                    self._sessions.move_to_end(candidate_set_id)
+                    self._record_metrics(frozen)
+                    return frozen
+                raise CandidatePageTimeout("candidate page search is already in progress")
+
+            return super().query_page(
+                client_session_id=client_session_id,
+                composition_revision=composition_revision,
+                context_epoch=context_epoch,
+                context_session=context_session,
+                source_revision=source_revision,
+                mode=normalized_mode,
+                raw_keys=raw_keys,
+                page_index=page_index,
+                candidate_set_id=candidate_set_id,
+                state=state,
+                deadline_ms=deadline_ms,
+            )
 
     def _score_root(
         self,
@@ -337,6 +369,15 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 seen_paths.add(key)
         return ordered[:MAX_FROZEN_CANDIDATES], frontier, score_source
 
+    @staticmethod
+    def _rollback_parent(
+        session: _SearchSession,
+        parent: Any,
+        parent_key: tuple[object, ...],
+    ) -> None:
+        session.frontier.insert(0, parent)
+        session.expanded_paths.discard(parent_key)
+
     def _expand_one_frontier(
         self,
         session: _SearchSession,
@@ -382,27 +423,48 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
 
         remaining_ms = max(0.0, (absolute_deadline - self.clock()) * 1000.0)
         if remaining_ms <= 0:
-            session.frontier.insert(0, parent)
-            session.expanded_paths.discard(parent_key)
+            self._rollback_parent(session, parent, parent_key)
             return 0
 
-        # Ask the exact-root runtime for the complete next-token distribution.
-        # Normalizing only over pinyin/Latin-legal tokens would score a different
-        # constrained model rather than the Base model required by PR36.
-        scored = continuation(
-            session.continuation_root,
-            [parent.token_path],
-            [self._all_model_token_ids],
-            deadline_ms=remaining_ms,
-        )
+        candidate_set_id = session.candidate_set_id
+        self._active_searches.add(candidate_set_id)
+        failure: Exception | None = None
+        scored: list[np.ndarray] | None = None
+
+        # The state lock protects Python paging state, not model execution. Drop
+        # it while CUDA runs so an unrelated page 0 or a focus boundary can be
+        # served immediately on another named-pipe client thread.
+        self._state_lock.release()
+        try:
+            try:
+                scored = continuation(
+                    session.continuation_root,
+                    [parent.token_path],
+                    [self._all_model_token_ids],
+                    deadline_ms=remaining_ms,
+                )
+            except Exception as error:
+                failure = error
+        finally:
+            self._state_lock.acquire()
+            self._active_searches.discard(candidate_set_id)
+
+        # A new composition/focus may have removed this object while CUDA was
+        # still executing. In that case the late result is stale by definition.
+        if self._sessions.get(candidate_set_id) is not session:
+            raise CandidatePageError("candidate set was invalidated during search")
+        if failure is not None:
+            self._rollback_parent(session, parent, parent_key)
+            raise failure
         if scored is None:
-            session.frontier.insert(0, parent)
-            session.expanded_paths.discard(parent_key)
+            self._rollback_parent(session, parent, parent_key)
             return 0
         if len(scored) != 1:
+            self._rollback_parent(session, parent, parent_key)
             raise RuntimeError("continuation scorer returned an invalid batch")
         full_logits = np.asarray(scored[0], dtype=np.float32)
         if full_logits.size != len(self._all_model_token_ids):
+            self._rollback_parent(session, parent, parent_key)
             raise RuntimeError("continuation scorer returned an invalid full-vocabulary vector")
         values = _selected_log_probs(full_logits, legal_token_ids)
 
