@@ -111,6 +111,15 @@ def test_rime_candidate_revision_resets_across_identical_compositions() -> None:
     assert "::rime::connection context_update_connection_" in header
 
 
+def test_rime_cancel_uses_pinned_context_clear() -> None:
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
+
+    cancel_case = processor[processor.index("case KeyOutcome::kCancelComposition:") :]
+    cancel_case = cancel_case[: cancel_case.index("case KeyOutcome::kCommitLiteral:")]
+    assert "context->Clear();" in cancel_case
+    assert "AbortComposition" not in processor
+
+
 def test_context_sender_and_broker_have_no_raw_context_read_api() -> None:
     sources = "\n".join(
         (ROOT / path).read_text(encoding="utf-8")
