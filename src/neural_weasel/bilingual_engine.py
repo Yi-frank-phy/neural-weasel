@@ -256,11 +256,14 @@ class BilingualImeEngine:
         self.candidate_pages.clear_sessions()
 
     def reset_private_context(self) -> None:
-        self.coordinator.invalidate_private_state()
+        # Remove every query-visible editor artifact before waiting for an
+        # in-flight model operation to finish its physical runtime wipe. The
+        # permanent empty-context baseline remains available by design.
+        self.candidate_pages.clear_sessions()
         with self._contexts_lock:
             self._contexts.clear()
         self._clear_query_cache()
-        self.candidate_pages.clear_sessions()
+        self.coordinator.invalidate_private_state()
 
     def clear_history(self) -> None:
         self.script_policy.stable_script = None
