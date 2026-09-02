@@ -118,7 +118,39 @@ std::atomic<std::uint64_t> AiTranslator::next_session_id_{1};
 
 AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
     : ::rime::Translator(ticket),
-      session_id_(next_session_id_.fetch_add(1, std::memory_order_relaxed)) {}
+      session_id_(next_session_id_.fetch_add(1, std::memory_order_relaxed)) {
+  if (engine_ && engine_->context()) {
+    auto* context = engine_->context();
+    observed_composing_ = context->IsComposing();
+    context_update_connection_ = context->update_notifier().connect(
+        [this](::rime::Context* updated) { OnContextUpdate(updated); });
+  }
+}
+
+AiTranslator::~AiTranslator() {
+  context_update_connection_.disconnect();
+}
+
+void AiTranslator::ResetCompositionBoundary() {
+  // Keep composition_revision_ monotonic. The next non-empty composition must
+  // receive a new revision even if it reuses the same raw keys, language mode,
+  // and editor source as the composition that was just committed/cancelled.
+  force_new_revision_ = true;
+  composition_input_.clear();
+  candidate_set_id_.clear();
+  current_page_index_ = 0;
+  current_has_more_ = false;
+  frozen_pages_.clear();
+}
+
+void AiTranslator::OnContextUpdate(::rime::Context* context) {
+  const bool composing = context && context->IsComposing();
+  if (!composing && (observed_composing_ || !composition_input_.empty())) {
+    ResetCompositionBoundary();
+    TraceAiTranslator(L"event=composition-boundary");
+  }
+  observed_composing_ = composing;
+}
 
 ::rime::an<::rime::Translation> AiTranslator::Query(
     const std::string& input,
@@ -148,12 +180,13 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
     const bool source_boundary =
         composition_revision_ > 0 &&
         IsSourceBoundaryChange(context_session_, latest_context);
-    const bool new_revision = composition_revision_ == 0 ||
+    const bool new_revision = force_new_revision_ || composition_revision_ == 0 ||
                               composition_input_ != input ||
                               composition_mode_ != language_mode ||
                               source_boundary;
     if (new_revision) {
       ++composition_revision_;
+      force_new_revision_ = false;
       composition_input_ = input;
       composition_mode_ = language_mode;
       if (latest_context.valid()) {
@@ -295,7 +328,8 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
     current_has_more_ = page.value("has_more", false);
     if (page.contains("candidate_set_id") &&
         page["candidate_set_id"].is_string()) {
-      const std::string response_set = page["candidate_set_id"].get<std::string>();
+      const std::string response_set =
+          page["candidate_set_id"].get<std::string>();
       if (candidate_set_id_.empty()) {
         candidate_set_id_ = response_set;
       }
