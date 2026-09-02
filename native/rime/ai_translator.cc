@@ -93,7 +93,7 @@ std::uint32_t RequestedPage(::rime::Context* context) {
   }
   try {
     const unsigned long parsed = std::stoul(value);
-    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+    if (parsed > (std::numeric_limits<std::uint32_t>::max)()) {
       return 0;
     }
     return static_cast<std::uint32_t>(parsed);
@@ -213,10 +213,6 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
     }
 
     std::uint32_t requested_page = RequestedPage(context);
-    if (language_mode == "latin_first") {
-      requested_page = 0;
-      context->set_property("neural_requested_page", "0");
-    }
     if (requested_page > current_page_index_ + 1U) {
       requested_page = current_page_index_;
       context->set_property("neural_requested_page",
