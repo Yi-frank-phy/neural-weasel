@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import unicodedata
+
 from .candidate import Candidate
 from .neural_candidate_pages_v2 import NeuralCandidatePageManager as _CandidatePageManager
 from .neural_candidates import NeuralLanguageMode, _latin_key
@@ -17,14 +19,15 @@ class NeuralCandidatePageManager(_CandidatePageManager):
     """
 
     def _remember_baseline_latin_candidate(self, candidate: Candidate) -> None:
-        key = (candidate.text.casefold(), candidate.token_path)
+        normalized = unicodedata.normalize("NFKC", candidate.text).casefold()
+        key = (normalized, candidate.token_path)
         previous = self._baseline_latin_cache.get(key)
         changed = previous is None or _latin_key(candidate) < _latin_key(previous)
 
         super()._remember_baseline_latin_candidate(candidate)
-        if not changed or not candidate.text:
+        if not changed or not normalized:
             return
 
-        first = candidate.text[0].casefold()
+        first = normalized[0]
         for mode in NeuralLanguageMode:
             self._baseline_single_letter.pop((first, mode), None)
