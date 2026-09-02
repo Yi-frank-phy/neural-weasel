@@ -12,9 +12,7 @@ from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 @dataclass
 class BoundaryRuntime:
     logits: np.ndarray
-    continuation_calls: list[tuple[tuple[int, ...], tuple[int, ...]]] = field(
-        default_factory=list
-    )
+    continuation_calls: list[tuple[tuple[int, ...], tuple[int, ...]]] = field(default_factory=list)
 
     def load(self) -> None:
         pass
