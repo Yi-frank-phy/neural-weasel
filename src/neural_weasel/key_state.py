@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 
 
 class CompositionMode(StrEnum):
-    CHINESE = "chinese"
-    ENGLISH = "english"
+    CHINESE_FIRST = "chinese_first"
+    LATIN_FIRST = "latin_first"
+
+    # Compatibility aliases for callers that still use the old symbolic names.
+    CHINESE = "chinese_first"
+    ENGLISH = "latin_first"
 
 
 class KeyAction(StrEnum):
@@ -76,20 +80,19 @@ def _selected_candidate(state: CompositionState, index: int | None = None) -> st
     return None
 
 
-def _commit(state: CompositionState, text: str, *, forward_enter: bool = False) -> KeyTransition:
+def _commit(state: CompositionState, text: str) -> KeyTransition:
     return KeyTransition(
         state=CompositionState.idle(state.mode),
         committed_text=text,
-        forward_enter=forward_enter,
     )
 
 
 def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
-    """Pure initial v0.2 key reducer.
+    """Pure key reducer for the native bilingual composition contract.
 
-    Candidate recomputation after character or backspace input is owned by the
-    caller. This reducer only makes acceptance and literal-preservation
-    semantics explicit.
+    Candidate recomputation and lazy page transport are owned by the caller.
+    NEXT/PREVIOUS therefore preserve this in-page state; they are page intents,
+    not candidate-selection movement.
     """
 
     if action == KeyAction.BACKSPACE:
@@ -105,50 +108,29 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
         )
 
     if action == KeyAction.ESCAPE:
-        if state.mode == CompositionMode.ENGLISH:
-            return KeyTransition(
-                replace(
-                    state,
-                    candidates=(),
-                    selected_index=0,
-                    completion_visible=False,
-                )
-            )
         return KeyTransition(CompositionState.idle(state.mode))
 
     if action == KeyAction.SPACE:
-        if state.mode == CompositionMode.ENGLISH:
+        if state.mode == CompositionMode.LATIN_FIRST:
             return _commit(state, state.literal + " ")
         return _commit(state, _selected_candidate(state) or state.literal)
 
     if action == KeyAction.TAB:
-        if state.mode != CompositionMode.ENGLISH:
+        if state.mode != CompositionMode.LATIN_FIRST:
             return KeyTransition(state)
         completion = _selected_candidate(state)
         return _commit(state, completion) if completion is not None else KeyTransition(state)
 
     if action == KeyAction.ENTER:
-        return _commit(
-            state,
-            state.literal,
-            forward_enter=state.mode == CompositionMode.ENGLISH,
-        )
+        return _commit(state, state.literal)
 
     if action in _NUMBER_ACTIONS:
-        if state.mode == CompositionMode.ENGLISH:
+        if state.mode == CompositionMode.LATIN_FIRST:
             return KeyTransition(state)
         candidate = _selected_candidate(state, _NUMBER_ACTIONS[action])
         return _commit(state, candidate) if candidate is not None else KeyTransition(state)
 
     if action in {KeyAction.NEXT, KeyAction.PREVIOUS}:
-        if not state.candidates:
-            return KeyTransition(state)
-        step = 1 if action == KeyAction.NEXT else -1
-        return KeyTransition(
-            replace(
-                state,
-                selected_index=(state.selected_index + step) % len(state.candidates),
-            )
-        )
+        return KeyTransition(state)
 
     raise ValueError(f"unsupported key action: {action}")
