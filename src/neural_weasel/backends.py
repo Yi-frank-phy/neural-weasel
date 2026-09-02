@@ -223,7 +223,10 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
 
         def worker() -> None:
             try:
-                remaining_ms = max(0.0, (deadline - time.monotonic()) * 1000.0)
+                remaining_ms = min(
+                    float(deadline_ms),
+                    max(0.0, (deadline - time.monotonic()) * 1000.0),
+                )
                 if remaining_ms <= 0:
                     box["result"] = None
                 else:
