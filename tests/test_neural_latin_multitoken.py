@@ -131,8 +131,9 @@ def test_multitoken_latin_path_is_scored_from_one_root_without_normalization() -
     assert 12 not in runtime.allowed_sets[0]
 
 
-def test_scored_multitoken_baseline_becomes_page0_cache_supplement() -> None:
+def test_scored_multitoken_baseline_invalidates_prewarms_and_becomes_page0_supplement() -> None:
     engine, runtime = _engine()
+    assert ("a", engine.candidate_pages._baseline_single_letter) is not None
     first = _page(engine, "asymmetry", 1)
     _page(
         engine,
@@ -144,7 +145,7 @@ def test_scored_multitoken_baseline_becomes_page0_cache_supplement() -> None:
     )
     calls_after_search = runtime.continuation_calls
 
-    cached = _page(engine, "asym", 2)
+    cached = _page(engine, "a", 2)
 
     assert any(
         candidate.text == "asymmetry" and candidate.token_path == (10, 11)
