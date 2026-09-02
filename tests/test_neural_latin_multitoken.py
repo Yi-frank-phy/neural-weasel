@@ -145,7 +145,7 @@ def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization(
     assert all(13 not in candidate.token_path for candidate in second.candidates)
 
 
-def test_scored_multitoken_baseline_invalidates_prewarms_and_becomes_page0_supplement() -> None:
+def test_scored_multitoken_baseline_refreshes_prewarm_and_rebinds_current_raw() -> None:
     engine, runtime = _engine()
     prewarm_key = ("a", NeuralLanguageMode.LATIN_FIRST)
     assert prewarm_key in engine.candidate_pages._baseline_single_letter
@@ -160,12 +160,31 @@ def test_scored_multitoken_baseline_invalidates_prewarms_and_becomes_page0_suppl
         deadline_ms=120.0,
     )
     calls_after_search = runtime.continuation_calls
-    assert prewarm_key not in engine.candidate_pages._baseline_single_letter
+
+    # Learning a reusable empty-context path refreshes the permanent first-letter
+    # prewarm instead of deleting it and forcing a future first-key rebuild.
+    assert prewarm_key in engine.candidate_pages._baseline_single_letter
+    prewarmed = next(
+        candidate
+        for candidate in engine.candidate_pages._baseline_single_letter[prewarm_key]
+        if candidate.text == "asymmetry"
+    )
+    assert prewarmed.token_path == (10, 11)
+    assert prewarmed.consumed_keys == len("a")
+    assert prewarmed.completes_input is False
 
     cached = _page(engine, "a", 2)
+    completion = next(candidate for candidate in cached.candidates if candidate.text == "asymmetry")
 
-    assert any(
-        candidate.text == "asymmetry" and candidate.token_path == (10, 11)
-        for candidate in cached.candidates
-    )
+    assert completion.token_path == (10, 11)
+    assert completion.consumed_keys == len("a")
+    assert completion.completes_input is False
+    assert runtime.continuation_calls == calls_after_search
+
+    # The same cached Base-model path rebinds to the full raw word when queried
+    # as an exact completion in a later revision.
+    exact_page = _page(engine, "asymmetry", 3)
+    exact = next(candidate for candidate in exact_page.candidates if candidate.text == "asymmetry")
+    assert exact.consumed_keys == len("asymmetry")
+    assert exact.completes_input is True
     assert runtime.continuation_calls == calls_after_search
