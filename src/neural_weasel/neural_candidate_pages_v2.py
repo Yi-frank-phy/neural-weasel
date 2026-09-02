@@ -22,15 +22,17 @@ from .neural_candidates import (
     CandidatePage,
     CandidatePageError,
     CandidatePageTimeout,
-    NeuralCandidatePageManager as _BaseCandidatePageManager,
     NeuralLanguageMode,
-    _SearchIdentity,
-    _SearchPath,
-    _SearchSession,
     _candidate_key,
     _latin_key,
     _literal_candidate,
     _page_candidate_id,
+    _SearchIdentity,
+    _SearchPath,
+    _SearchSession,
+)
+from .neural_candidates import (
+    NeuralCandidatePageManager as _BaseCandidatePageManager,
 )
 
 _MAX_LATIN_CHARACTERS = 64
@@ -272,9 +274,7 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
 
     def _prune_frontier(self, session: _SearchSession) -> None:
         preferred_script = (
-            "latin"
-            if session.identity.mode is NeuralLanguageMode.LATIN_FIRST
-            else "han"
+            "latin" if session.identity.mode is NeuralLanguageMode.LATIN_FIRST else "han"
         )
         session.frontier.sort(
             key=lambda path: (
@@ -342,14 +342,17 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         return ()
 
     def _remember_baseline_latin_candidate(self, candidate: Candidate) -> None:
-        key = (
-            unicodedata.normalize("NFKC", candidate.text).casefold(),
-            candidate.token_path,
-        )
+        normalized = unicodedata.normalize("NFKC", candidate.text).casefold()
+        key = (normalized, candidate.token_path)
         previous = self._baseline_latin_cache.get(key)
-        if previous is None or _latin_key(candidate) < _latin_key(previous):
+        changed = previous is None or _latin_key(candidate) < _latin_key(previous)
+        if changed:
             self._baseline_latin_cache[key] = replace(candidate, context_epoch=0)
             self._baseline_latin_cache.move_to_end(key)
+            if normalized:
+                first = normalized[0]
+                for mode in NeuralLanguageMode:
+                    self._baseline_single_letter.pop((first, mode), None)
         while len(self._baseline_latin_cache) > _MAX_BASELINE_LATIN_CACHE:
             self._baseline_latin_cache.popitem(last=False)
 
