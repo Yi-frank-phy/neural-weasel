@@ -95,6 +95,22 @@ def test_rime_candidate_query_carries_coherent_editor_identity() -> None:
     assert "source_boundary" in translator
 
 
+def test_rime_candidate_revision_resets_across_identical_compositions() -> None:
+    header = (ROOT / "native/rime/ai_translator.h").read_text(encoding="utf-8")
+    translator = (ROOT / "native/rime/ai_translator.cc").read_text(encoding="utf-8")
+
+    # librime Context::Clear() preserves session properties but emits the update
+    # notifier. Track the composing -> idle boundary so `ni`, commit/cancel,
+    # `ni` cannot reuse the previous frozen candidate set.
+    assert "context->update_notifier().connect" in translator
+    assert "observed_composing_ || !composition_input_.empty()" in translator
+    assert "ResetCompositionBoundary();" in translator
+    assert "force_new_revision_ || composition_revision_ == 0" in translator
+    assert "++composition_revision_;" in translator
+    assert "composition_revision_ = 0" not in translator
+    assert "::rime::connection context_update_connection_" in header
+
+
 def test_context_sender_and_broker_have_no_raw_context_read_api() -> None:
     sources = "\n".join(
         (ROOT / path).read_text(encoding="utf-8")
