@@ -170,7 +170,7 @@ void RefreshPage(::rime::Context* context,
       }
       return ::rime::kAccepted;
     case KeyOutcome::kCancelComposition:
-      context->AbortComposition();
+      context->Clear();
       return ::rime::kAccepted;
     case KeyOutcome::kCommitLiteral:
       engine_->CommitText(context->input());
