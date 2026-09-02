@@ -7,8 +7,8 @@ from .bilingual_engine import BilingualImeEngine
 from .conditional_backend import ConditionalFullLogitsBackend
 from .index import PinyinIndex
 from .mixed_pinyin import MixedPinyinConstraint
+from .neural_latin import NeuralLatinPrefixConstraint
 from .runtime_identity import validated_runtime_index_identity
-from .unified import LatinPrefixConstraint
 
 
 def build_bilingual_engine(
@@ -38,7 +38,7 @@ def build_bilingual_engine(
     engine = BilingualImeEngine(
         backend=backend,
         pinyin_constraint=MixedPinyinConstraint(index),
-        latin_prefix_constraint=LatinPrefixConstraint.from_tokenizer(runtime.tokenizer),
+        latin_prefix_constraint=NeuralLatinPrefixConstraint.from_tokenizer(runtime.tokenizer),
         diagnostic_identity=identity,
     )
     # Service construction is the readiness boundary: the permanent
