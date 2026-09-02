@@ -184,8 +184,7 @@ void RefreshPage(::rime::Context* context,
       }
       return ::rime::kAccepted;
     case KeyOutcome::kRequestNextPage: {
-      if (mode == NeuralLanguageMode::kLatinFirst ||
-          context->get_property("neural_has_more") != "1") {
+      if (context->get_property("neural_has_more") != "1") {
         return ::rime::kAccepted;
       }
       const std::uint32_t current = CurrentPage(context);
