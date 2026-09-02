@@ -19,6 +19,18 @@ class FakeContext:
     def get_logits(self):
         return self.owner.last_logits
 
+    def kv_cache_clear(self) -> None:
+        self.owner.clear_calls += 1
+
+    def capture_sequence_state(self, sequence_id: int) -> bytes:
+        assert sequence_id == 0
+        return f"root:{self.owner.n_tokens}".encode("ascii")
+
+    def restore_sequence_state(self, payload: bytes, sequence_id: int) -> bool:
+        assert sequence_id == 0
+        self.owner.restored_states.append(bytes(payload))
+        return True
+
 
 class FakeLlama:
     def __init__(self, model_path: str, **kwargs: object) -> None:
@@ -28,6 +40,9 @@ class FakeLlama:
         self.last_logits = np.arange(5, dtype=np.float32)
         self.eval_calls: list[list[int]] = []
         self.reset_calls = 0
+        self.clear_calls = 0
+        self.restored_states: list[bytes] = []
+        self.n_tokens = 0
 
     def n_vocab(self) -> int:
         return len(self._pieces)
@@ -52,9 +67,11 @@ class FakeLlama:
 
     def reset(self) -> None:
         self.reset_calls += 1
+        self.n_tokens = 0
 
     def eval(self, tokens: list[int]) -> None:
         self.eval_calls.append(list(tokens))
+        self.n_tokens += len(tokens)
         self.last_logits = np.arange(5, dtype=np.float32) + len(tokens) * 10
 
 
@@ -97,12 +114,42 @@ def test_context_free_continuation_replays_only_short_candidate_paths(tmp_path: 
     assert np.array_equal(scores[1], np.array([33.0, 34.0], dtype=np.float32))
 
 
+def test_snapshot_root_restores_exact_context_before_candidate_branch(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    snapshot = backend.create_snapshot("你")
+    root = snapshot.continuation_root
+    assert root is not None
+    assert root.n_tokens == 1
+
+    before = len(backend.llama.eval_calls)
+    scores = backend.continue_from_root(
+        root,
+        [(2,)],
+        [(1, 3)],
+        deadline_ms=1000.0,
+    )
+
+    assert scores is not None
+    assert backend.llama.restored_states[-1] == root.state_bytes
+    # The branch evaluates only its suffix from the saved editor root: no BOS or
+    # editor-text replay is mixed into the candidate search path.
+    assert backend.llama.eval_calls[before:] == [[2]]
+    assert np.array_equal(scores[0], np.array([11.0, 13.0], dtype=np.float32))
+
+
 def test_continuation_never_queues_past_model_lock_budget(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
+    snapshot = backend.create_snapshot("你")
+    assert snapshot.continuation_root is not None
     assert backend._lock.acquire(blocking=False)
     try:
         started = time.perf_counter()
-        scores = backend.continue_from_empty([(1,)], [(2,)], deadline_ms=5.0)
+        scores = backend.continue_from_root(
+            snapshot.continuation_root,
+            [(1,)],
+            [(2,)],
+            deadline_ms=5.0,
+        )
         elapsed_ms = (time.perf_counter() - started) * 1000
     finally:
         backend._lock.release()
@@ -111,12 +158,21 @@ def test_continuation_never_queues_past_model_lock_budget(tmp_path: Path) -> Non
     assert elapsed_ms < 50.0
 
 
-def test_candidate_replay_invalidates_editor_incremental_cache(tmp_path: Path) -> None:
+def test_candidate_branch_invalidates_editor_incremental_cache(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
-    backend.create_snapshot("你")
+    snapshot = backend.create_snapshot("你")
+    assert snapshot.continuation_root is not None
     assert backend._cached_token_ids == (1,)
 
-    assert backend.continue_from_empty([(1,)], [(2,)], deadline_ms=1000.0) is not None
+    assert (
+        backend.continue_from_root(
+            snapshot.continuation_root,
+            [(1,)],
+            [(2,)],
+            deadline_ms=1000.0,
+        )
+        is not None
+    )
 
     assert backend._cached_token_ids is None
     assert backend._cached_logits is None
