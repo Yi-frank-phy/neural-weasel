@@ -200,8 +200,7 @@ class PartialPinyinMatcher:
             full = [
                 (syllable, child)
                 for syllable, child in node.children.items()
-                if raw.startswith(syllable, pos)
-                and not crosses_boundary(pos, pos + len(syllable))
+                if raw.startswith(syllable, pos) and not crosses_boundary(pos, pos + len(syllable))
             ]
             if full:
                 for syllable, child in full:
