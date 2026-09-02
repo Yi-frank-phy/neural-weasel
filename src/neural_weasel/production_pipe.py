@@ -208,6 +208,9 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 "score_source": page.score_source,
                 "candidates": values,
             }
+            if identity is not None:
+                response["context_session"] = context_session
+                response["source_revision"] = source_revision
             if request_id is not None:
                 response["request_id"] = request_id
             return response
