@@ -13,7 +13,6 @@ from .neural_candidate_pages_v2 import NeuralCandidatePageManager as _V2Candidat
 from .neural_candidates import (
     MAX_ACTIVE_SEARCH_SESSIONS,
     MAX_FRONTIER_PER_BUCKET,
-    MAX_FROZEN_CANDIDATES,
     MAX_HAN_CHARACTERS,
     MAX_MODEL_TOKENS,
     NeuralLanguageMode,
