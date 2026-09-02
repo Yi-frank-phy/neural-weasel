@@ -160,6 +160,8 @@ def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_
         duplicate_thread.join(1.0)
         pytest.fail("duplicate later-page request queued behind continuation")
     assert isinstance(duplicate.get("error"), CandidatePageTimeout)
+    diagnostics = engine.runtime_performance_diagnostics()
+    assert diagnostics["candidate_page_timeout_count"] == 1
 
     # A different composition's page 0 is baseline-only and must remain
     # responsive even while the first candidate set is still inside CUDA work.
