@@ -158,6 +158,11 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
 
     backend_kind = "full_logits"
 
+    def __init__(self, runtime: Any) -> None:
+        super().__init__(runtime)
+        self._continuation_gate = threading.Lock()
+        self._continuation_active = False
+
     def update_context(self, before: str, after: str = "") -> BackendState:
         generation = self._capture_generation()
         result = self.runtime.full_logits(before, after)
@@ -177,17 +182,90 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         token_ids = self._validated_token_ids(allowed_token_ids, logits.size)
         return np.asarray(logits[token_ids], dtype=np.float32)
 
-    @property
-    def continue_from_root(self) -> Any:
-        """Expose continuation only when the runtime can restore an exact root.
+    def _continue_from_root_bounded(
+        self,
+        root: Any,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> Any:
+        """Run one exact-root continuation single-flight behind a hard caller bound.
 
-        The opaque root is captured together with the root logits. The page
-        manager therefore cannot accidentally score token 1 with editor context
-        and token 2 from a BOS-only replay.
+        Some CUDA llama.cpp decodes cannot be interrupted once launched. The
+        provider therefore runs on its own worker thread. The pipe/request thread
+        waits only until its absolute deadline and then returns ``None`` while a
+        late CUDA call finishes and cleans its runtime state in the background.
+        New continuation attempts never queue behind that worker: while it is
+        active they immediately return ``None`` and the frozen-page protocol
+        keeps the current page for a later retry.
         """
 
+        if deadline_ms <= 0:
+            return None
         provider = getattr(self.runtime, "continue_from_root", None)
-        return provider if callable(provider) else None
+        if not callable(provider):
+            return None
+
+        # Snapshot caller-owned sequences before the request thread can return.
+        paths = tuple(tuple(int(token_id) for token_id in path) for path in token_paths)
+        allowed_sets = tuple(
+            tuple(int(token_id) for token_id in allowed) for allowed in allowed_token_sets
+        )
+        deadline = time.monotonic() + deadline_ms / 1000.0
+        with self._continuation_gate:
+            if self._continuation_active:
+                return None
+            self._continuation_active = True
+
+        done = threading.Event()
+        box: dict[str, Any] = {}
+
+        def worker() -> None:
+            try:
+                remaining_ms = max(0.0, (deadline - time.monotonic()) * 1000.0)
+                if remaining_ms <= 0:
+                    box["result"] = None
+                else:
+                    box["result"] = provider(
+                        root,
+                        paths,
+                        allowed_sets,
+                        deadline_ms=remaining_ms,
+                    )
+            except Exception as error:  # Re-raised only if the caller is still waiting.
+                box["error"] = error
+            finally:
+                with self._continuation_gate:
+                    self._continuation_active = False
+                done.set()
+
+        thread = threading.Thread(
+            target=worker,
+            name="neural-weasel-candidate-continuation",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception:
+            with self._continuation_gate:
+                self._continuation_active = False
+            raise
+
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining <= 0 or not done.wait(remaining):
+            return None
+        error = box.get("error")
+        if isinstance(error, Exception):
+            raise error
+        return box.get("result")
+
+    @property
+    def continue_from_root(self) -> Any:
+        """Expose exact-root continuation through a deadline-bounded wrapper."""
+
+        provider = getattr(self.runtime, "continue_from_root", None)
+        return self._continue_from_root_bounded if callable(provider) else None
 
     @property
     def continue_from_empty(self) -> Any:
