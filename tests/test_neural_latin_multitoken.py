@@ -6,6 +6,7 @@ import numpy as np
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
+from neural_weasel.neural_candidates import NeuralLanguageMode
 from neural_weasel.neural_latin import NeuralLatinPrefixConstraint
 
 
@@ -133,7 +134,9 @@ def test_multitoken_latin_path_is_scored_from_one_root_without_normalization() -
 
 def test_scored_multitoken_baseline_invalidates_prewarms_and_becomes_page0_supplement() -> None:
     engine, runtime = _engine()
-    assert ("a", engine.candidate_pages._baseline_single_letter) is not None
+    prewarm_key = ("a", NeuralLanguageMode.LATIN_FIRST)
+    assert prewarm_key in engine.candidate_pages._baseline_single_letter
+
     first = _page(engine, "asymmetry", 1)
     _page(
         engine,
@@ -144,6 +147,7 @@ def test_scored_multitoken_baseline_invalidates_prewarms_and_becomes_page0_suppl
         deadline_ms=120.0,
     )
     calls_after_search = runtime.continuation_calls
+    assert prewarm_key not in engine.candidate_pages._baseline_single_letter
 
     cached = _page(engine, "a", 2)
 
