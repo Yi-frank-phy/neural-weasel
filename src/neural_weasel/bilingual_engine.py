@@ -52,19 +52,22 @@ class BilingualImeEngine:
         )
 
     def initialize_neural_baseline(self) -> None:
-        """Create the permanent empty-context neural score vector before serving.
+        """Create the permanent empty-context neural state before serving.
 
-        The copied score vector contains no editor context and intentionally lives
-        outside the mutable editor-snapshot lifecycle. Secure/private invalidation
-        may therefore destroy all contextual model state without deleting this
-        context-free fallback.
+        The copied score vector and opaque continuation root contain no editor
+        context and intentionally live outside the mutable editor-snapshot
+        lifecycle. Secure/private invalidation may therefore destroy all
+        contextual model state without deleting this context-free fallback.
         """
 
         state = self.coordinator.backend.update_context("", "")
         scores = np.asarray(state.payload, dtype=np.float32)
         if scores.ndim != 1:
             raise RuntimeError("empty-context baseline requires a full-vocabulary score vector")
-        self.candidate_pages.install_baseline_scores(scores)
+        self.candidate_pages.install_baseline_scores(
+            scores,
+            continuation_root=state.continuation_root,
+        )
         self.candidate_pages.prewarm_single_letter_pages()
 
     def _remember_context(self, epoch: int, before: str, after: str) -> None:
@@ -183,7 +186,8 @@ class BilingualImeEngine:
 
         `context_epoch == 0` deliberately means the context-free baseline, never
         "whatever editor snapshot happened to be latest". If a nonzero requested
-        snapshot is not ready or has expired, the same baseline is used instead.
+        snapshot is not ready, expired, or lacks its exact continuation root, the
+        page manager locks the entire revision to the permanent baseline instead.
         """
 
         state = self.coordinator.state_for_epoch(context_epoch) if context_epoch > 0 else None
