@@ -79,9 +79,7 @@ def test_all_valid_single_letter_entrances_are_prewarmed_neural_han(make_index) 
 
     assert runtime.calls == 1
     assert set(engine.candidate_pages._baseline_single_letter) == {
-        (letter, mode)
-        for letter in "abcdefghijklmnopqrstuvwxyz"
-        for mode in NeuralLanguageMode
+        (letter, mode) for letter in "abcdefghijklmnopqrstuvwxyz" for mode in NeuralLanguageMode
     }
 
     for revision, letter in enumerate(_VALID_SINGLE_LETTER_ENTRANCES, start=1):
