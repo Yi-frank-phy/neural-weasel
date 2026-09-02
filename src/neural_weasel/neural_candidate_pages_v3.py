@@ -87,14 +87,10 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             ):
                 continue
             consumed_raw = min(max(candidate.consumed_keys, 0), len(parsed.raw))
-            matched_letters = sum(
-                character != "'" for character in parsed.raw[:consumed_raw]
-            )
+            matched_letters = sum(character != "'" for character in parsed.raw[:consumed_raw])
             path = _HanSearchPath(
                 text=candidate.text,
-                pinyin_path=tuple(
-                    part for part in candidate.pinyin.split("'") if part
-                ),
+                pinyin_path=tuple(part for part in candidate.pinyin.split("'") if part),
                 token_path=candidate.token_path,
                 score=float(candidate.model_score or 0.0),
                 predicted_syllables=candidate.predicted_syllables,
@@ -122,10 +118,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             else None
         )
         if cached is not None:
-            candidates = [
-                replace(candidate, context_epoch=response_epoch)
-                for candidate in cached
-            ]
+            candidates = [replace(candidate, context_epoch=response_epoch) for candidate in cached]
             han = [candidate for candidate in candidates if candidate.script == "han"]
             _, latin_frontier = self._root_latin_candidates_and_frontier(
                 raw_keys,
@@ -162,9 +155,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
 
     def _prune_frontier(self, session: _SearchSession) -> None:
         preferred_script = (
-            "latin"
-            if session.identity.mode is NeuralLanguageMode.LATIN_FIRST
-            else "han"
+            "latin" if session.identity.mode is NeuralLanguageMode.LATIN_FIRST else "han"
         )
         session.frontier.sort(
             key=lambda path: (
@@ -266,10 +257,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 entry = edge.entry
                 text = parent.text + entry.text
                 token_path = (*parent.token_path, token_id)
-                if (
-                    len(text) > MAX_HAN_CHARACTERS
-                    or len(token_path) > MAX_MODEL_TOKENS
-                ):
+                if len(text) > MAX_HAN_CHARACTERS or len(token_path) > MAX_MODEL_TOKENS:
                     continue
                 predicted = edge.predicted_syllables
                 bucket_counts[predicted] = bucket_counts.get(predicted, 0) + 1
@@ -302,10 +290,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                         )
                     )
                     progressed += 1
-                if (
-                    len(token_path) < MAX_MODEL_TOKENS
-                    and len(text) < MAX_HAN_CHARACTERS
-                ):
+                if len(token_path) < MAX_MODEL_TOKENS and len(text) < MAX_HAN_CHARACTERS:
                     session.frontier.append(
                         _HanSearchPath(
                             text=text,
