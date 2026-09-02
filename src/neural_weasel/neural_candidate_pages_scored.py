@@ -113,6 +113,12 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         with self._state_lock:
             return super().diagnostics()
 
+    def _record_retryable_timeout(self, session: _SearchSession) -> None:
+        session.timeout_count += 1
+        self._last_page_metrics["candidate_page_timeout_count"] = (
+            int(self._last_page_metrics["candidate_page_timeout_count"] or 0) + 1
+        )
+
     def query_page(
         self,
         *,
@@ -167,6 +173,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     self._sessions.move_to_end(candidate_set_id)
                     self._record_metrics(frozen)
                     return frozen
+                self._record_retryable_timeout(session)
                 raise CandidatePageTimeout("candidate page search is already in progress")
 
             return super().query_page(
