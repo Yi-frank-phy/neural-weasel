@@ -160,3 +160,33 @@ def test_han_continuation_scores_full_vocab_but_generates_only_legal_edges(
     assert all(7 not in candidate.token_path for candidate in second.candidates)
     exact = next(candidate for candidate in second.candidates if candidate.text == "你好吗")
     assert exact.token_path == (1, 2, 3)
+
+
+def test_late_multitoken_cache_cannot_reorder_page_zero_in_same_revision(make_index) -> None:
+    engine, _ = _engine(make_index)
+
+    first = _page(engine, "nihao")
+    first_candidates = first.candidates
+    first_ids = first.candidate_ids
+    assert "你好" not in {candidate.text for candidate in first_candidates}
+
+    second = _page(
+        engine,
+        "nihao",
+        page_index=1,
+        candidate_set_id=first.candidate_set_id,
+        deadline_ms=120.0,
+    )
+    assert any(candidate.text == "你好" for candidate in second.candidates)
+
+    repeated_page_zero = _page(engine, "nihao")
+
+    assert repeated_page_zero.candidate_set_id == first.candidate_set_id
+    assert repeated_page_zero.candidates == first_candidates
+    assert repeated_page_zero.candidate_ids == first_ids
+
+    # The newly learned baseline path is allowed to improve a later revision,
+    # but it may not retroactively mutate the already frozen revision above.
+    next_revision = _page(engine, "nihao", composition_revision=2)
+    assert next_revision.candidate_set_id != first.candidate_set_id
+    assert any(candidate.text == "你好" for candidate in next_revision.candidates)
