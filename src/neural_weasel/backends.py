@@ -17,6 +17,9 @@ class RuntimeSnapshot:
     before_hash: str
     after_hash: str
     latency_ms: float
+    # Opaque, in-memory-only model continuation root captured at exactly the
+    # same decode point as ``payload``. It must never contain raw editor text.
+    continuation_root: Any | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,8 +31,9 @@ class BackendState:
     created_monotonic: float
     publication_latency_ms: float
     payload: Any = field(repr=False)
-    _backend_identity: int = field(repr=False)
-    _generation: int = field(repr=False)
+    continuation_root: Any | None = field(default=None, repr=False)
+    _backend_identity: int = field(repr=False, default=0)
+    _generation: int = field(repr=False, default=0)
 
 
 @runtime_checkable
@@ -82,6 +86,7 @@ class _SnapshotBackend:
                 publication_latency_ms=runtime_snapshot.latency_ms
                 + (time.perf_counter() - publication_started) * 1000,
                 payload=payload,
+                continuation_root=runtime_snapshot.continuation_root,
                 _backend_identity=self._identity,
                 _generation=self._generation,
             )
@@ -160,14 +165,20 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         return np.asarray(logits[token_ids], dtype=np.float32)
 
     @property
-    def continue_from_empty(self) -> Any:
-        """Expose context-free continuation only when the runtime supports it.
+    def continue_from_root(self) -> Any:
+        """Expose continuation only when the runtime can restore an exact root.
 
-        The page manager intentionally detects this seam with ``callable``. A
-        snapshot backend wrapping a root-logits-only runtime therefore reports
-        no continuation capability instead of pretending that a resumable beam
-        exists and timing out later pages for work that can never run.
+        The opaque root is captured together with the root logits. The page
+        manager therefore cannot accidentally score token 1 with editor context
+        and token 2 from a BOS-only replay.
         """
+
+        provider = getattr(self.runtime, "continue_from_root", None)
+        return provider if callable(provider) else None
+
+    @property
+    def continue_from_empty(self) -> Any:
+        """Legacy compatibility seam; new candidate paging does not use it."""
 
         provider = getattr(self.runtime, "continue_from_empty", None)
         return provider if callable(provider) else None
