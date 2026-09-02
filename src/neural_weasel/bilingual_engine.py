@@ -7,7 +7,8 @@ import numpy as np
 
 from .backends import BackendState, ModelBackend
 from .candidate import Candidate
-from .neural_candidates import CandidatePage, NeuralCandidatePageManager, NeuralLanguageMode
+from .neural_candidate_pages_v2 import NeuralCandidatePageManager
+from .neural_candidates import CandidatePage, NeuralLanguageMode
 from .realtime import SnapshotCoordinator
 from .unified import Constraint, ContextScriptPolicy, UnifiedConstraintEngine
 
