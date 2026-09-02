@@ -52,7 +52,12 @@ class MultiTokenRuntime:
             self.continuation_calls.append((path, allowed))
             outputs.append(
                 np.asarray(
-                    [20.0 - float(token_id) for token_id in allowed],
+                    [
+                        1000.0
+                        if token_id == 7
+                        else 20.0 - float(token_id)
+                        for token_id in allowed
+                    ],
                     dtype=np.float32,
                 )
             )
@@ -75,6 +80,7 @@ def _engine(make_index):
     )
     logits = np.full(8, -20.0, dtype=np.float32)
     logits[1:4] = [10.0, 9.0, 8.0]
+    logits[7] = 1000.0
     runtime = MultiTokenRuntime(logits)
     engine = BilingualImeEngine(
         backend=FullLogitsSnapshotBackend(runtime),
@@ -101,11 +107,11 @@ def _page(engine, raw: str, **overrides):
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected_text", "expected_path", "first_allowed"),
+    ("raw", "expected_text", "expected_path"),
     [
-        ("nihao", "你好", (1, 2), (2,)),
-        ("nh", "你好", (1, 2), (2,)),
-        ("nihaoma", "你好吗", (1, 2, 3), (2,)),
+        ("nihao", "你好", (1, 2)),
+        ("nh", "你好", (1, 2)),
+        ("nihaoma", "你好吗", (1, 2, 3)),
     ],
 )
 def test_exact_han_cover_can_span_multiple_base_tokens(
@@ -113,7 +119,6 @@ def test_exact_han_cover_can_span_multiple_base_tokens(
     raw: str,
     expected_text: str,
     expected_path: tuple[int, ...],
-    first_allowed: tuple[int, ...],
 ) -> None:
     engine, runtime = _engine(make_index)
 
@@ -137,14 +142,17 @@ def test_exact_han_cover_can_span_multiple_base_tokens(
     assert exact.consumed_keys == len(raw)
     assert exact.predicted_syllables == 0
     assert runtime.continuation_calls[0][0] == (1,)
-    assert runtime.continuation_calls[0][1] == first_allowed
+    assert runtime.continuation_calls[0][1] == tuple(range(runtime.logits.size))
+    assert all(7 not in candidate.token_path for candidate in second.candidates)
 
 
-def test_han_continuation_stays_pinyin_constrained_until_exact_cover(make_index) -> None:
+def test_han_continuation_scores_full_vocab_but_generates_only_legal_edges(
+    make_index,
+) -> None:
     engine, runtime = _engine(make_index)
 
     first = _page(engine, "nihaoma")
-    _page(
+    second = _page(
         engine,
         "nihaoma",
         page_index=1,
@@ -152,5 +160,12 @@ def test_han_continuation_stays_pinyin_constrained_until_exact_cover(make_index)
         deadline_ms=120.0,
     )
 
-    assert runtime.continuation_calls[0] == ((1,), (2,))
-    assert runtime.continuation_calls[1] == ((1, 2), (3,))
+    assert runtime.continuation_calls[0][0] == (1,)
+    assert runtime.continuation_calls[1][0] == (1, 2)
+    assert all(
+        allowed == tuple(range(runtime.logits.size))
+        for _, allowed in runtime.continuation_calls[:2]
+    )
+    assert all(7 not in candidate.token_path for candidate in second.candidates)
+    exact = next(candidate for candidate in second.candidates if candidate.text == "你好吗")
+    assert exact.token_path == (1, 2, 3)
