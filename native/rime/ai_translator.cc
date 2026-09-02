@@ -387,7 +387,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
     }
     context->set_property("neural_candidate_fresh", "1");
     TraceAiTranslator(L"event=query result=accepted page=%lu count=%llu",
-                      static_cast<unsigned long long>(current_page_index_),
+                      static_cast<unsigned long>(current_page_index_),
                       static_cast<unsigned long long>(accepted));
     return translation;
   } catch (...) {
