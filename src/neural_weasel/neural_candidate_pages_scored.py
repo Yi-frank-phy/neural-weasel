@@ -16,9 +16,11 @@ from .neural_candidate_pages_v3 import (
 )
 from .neural_candidates import (
     MAX_FROZEN_CANDIDATES,
+    CandidatePage,
     NeuralLanguageMode,
     _candidate_key,
     _latin_key,
+    _SearchIdentity,
     _SearchSession,
 )
 
@@ -85,6 +87,66 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         self._all_model_token_ids = tuple(range(int(values.size)))
         self._baseline_han_cache.clear()
         super().install_baseline_scores(scores, continuation_root=continuation_root)
+
+    def query_page(
+        self,
+        *,
+        client_session_id: str,
+        composition_revision: int,
+        context_epoch: int,
+        context_session: str | None,
+        source_revision: int | None,
+        mode: NeuralLanguageMode | str,
+        raw_keys: str,
+        page_index: int,
+        candidate_set_id: str | None,
+        state: BackendState | None,
+        deadline_ms: float | None = None,
+    ) -> CandidatePage:
+        """Return the already-frozen page 0 when the revision identity repeats.
+
+        Native Rime normally serves its local frozen page without another pipe
+        call, but the wire contract itself must also be revision-stable. A late
+        baseline continuation may populate reusable multi-token caches; it must
+        affect only a later revision, never a repeated page-0 request for the
+        current revision.
+        """
+
+        if page_index == 0:
+            self._expire_sessions()
+            identity = _SearchIdentity(
+                client_session_id=client_session_id,
+                composition_revision=composition_revision,
+                context_epoch=context_epoch,
+                context_session=context_session,
+                source_revision=source_revision,
+                mode=NeuralLanguageMode(mode),
+                raw_keys=raw_keys,
+            )
+            for existing_set_id, session in tuple(self._sessions.items()):
+                if session.identity != identity:
+                    continue
+                frozen = session.frozen_pages.get(0)
+                if frozen is None:
+                    continue
+                session.last_used = self.clock()
+                self._sessions.move_to_end(existing_set_id)
+                self._record_metrics(frozen)
+                return frozen
+
+        return super().query_page(
+            client_session_id=client_session_id,
+            composition_revision=composition_revision,
+            context_epoch=context_epoch,
+            context_session=context_session,
+            source_revision=source_revision,
+            mode=mode,
+            raw_keys=raw_keys,
+            page_index=page_index,
+            candidate_set_id=candidate_set_id,
+            state=state,
+            deadline_ms=deadline_ms,
+        )
 
     def _score_root(
         self,
