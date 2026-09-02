@@ -76,9 +76,23 @@ def test_rime_candidate_query_carries_coherent_editor_identity() -> None:
     assert "AcceptedEditorContext" in epoch_header
     assert "source_capability" in epoch_header
     assert "source_revision" in epoch_header
-    assert '"context_session"' in translator
-    assert '"source_revision"' in translator
-    assert "model_epoch == 0" in translator or "context_identity.model_epoch == 0" in translator
+
+    # Epoch zero is the permanent empty-context neural baseline, not a reason to
+    # reject a page request. Every request carries the captured epoch; editor
+    # identity is attached only when a real accepted editor epoch was captured.
+    assert '{"context_epoch", context_epoch_}' in translator
+    assert "if (context_epoch_ > 0)" in translator
+    assert 'request["context_session"] = context_session_' in translator
+    assert 'request["source_revision"] = source_revision_' in translator
+    assert "model_epoch == 0" not in translator
+    assert "context_identity.model_epoch == 0" not in translator
+
+    # A composition revision freezes its context identity. Responses must match
+    # that captured epoch, and a source boundary creates a fresh revision.
+    assert 'response.value("context_epoch", std::uint64_t{0}) !=' in translator
+    assert "context_epoch_" in translator
+    assert "IsSourceBoundaryChange(context_session_, latest_context)" in translator
+    assert "source_boundary" in translator
 
 
 def test_context_sender_and_broker_have_no_raw_context_read_api() -> None:
