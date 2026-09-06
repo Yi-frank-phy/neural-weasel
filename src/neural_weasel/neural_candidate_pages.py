@@ -156,9 +156,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 if presentation_refresh:
                     identity_key = self._async_identity_key(identity)
                     async_ready = identity_key in self._async_han_cache
-                    includes_async = self._session_includes_async_han.get(
-                        existing_set_id, False
-                    )
+                    includes_async = self._session_includes_async_han.get(existing_set_id, False)
                     if async_ready and not includes_async:
                         break
                 session.last_used = self.clock()
@@ -283,9 +281,8 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         if candidate_set_id in self._background_searches:
             return False
         identity_key = self._async_identity_key(session.identity)
-        if (
-            identity_key in self._async_han_cache
-            and not self._session_includes_async_han.get(candidate_set_id, False)
+        if identity_key in self._async_han_cache and not self._session_includes_async_han.get(
+            candidate_set_id, False
         ):
             return False
         total_frozen = sum(len(page.candidates) for page in session.frozen_pages.values())
@@ -336,13 +333,17 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         generation_provider = getattr(self.backend, "continuation_busy_generation", None)
         register = getattr(self.backend, "register_continuation_idle_wait", None)
         unregister = getattr(self.backend, "cancel_continuation_idle_wait", None)
-        if not callable(generation_provider) or not callable(register):
+        if not callable(generation_provider) or not callable(register) or cancel.is_set():
             return False
         generation = generation_provider()
         if generation is None:
             return False
         wake.clear()
+        if cancel.is_set():
+            return False
         register(generation, wake)
+        if cancel.is_set():
+            wake.set()
         wake.wait()
         if callable(unregister):
             unregister(wake)
