@@ -10,6 +10,27 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
          !composing_on_release;
 }
 
+LatinPunctuationAction ResolveLatinPunctuationAction(
+    NeuralLanguageMode mode,
+    char character) noexcept {
+  if (mode != NeuralLanguageMode::kLatinFirst) {
+    return LatinPunctuationAction::kNone;
+  }
+  if (character == '-') {
+    return LatinPunctuationAction::kExtendComposition;
+  }
+  if (character == '=') {
+    return LatinPunctuationAction::kCommitLiteral;
+  }
+  return LatinPunctuationAction::kNone;
+}
+
+std::string AppendLiteralCharacter(std::string_view input, char character) {
+  std::string output(input);
+  output.push_back(character);
+  return output;
+}
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,
