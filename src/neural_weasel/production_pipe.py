@@ -199,9 +199,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
             # retry a presentation pull only while this exact candidate set is
             # still being prepared.
             pages = self.engine.candidate_pages
-            background_pending = page.candidate_set_id in getattr(
-                pages, "_background_searches", ()
-            )
+            background_pending = page.candidate_set_id in getattr(pages, "_background_searches", ())
             response: dict[str, Any] = {
                 "type": "candidate_page",
                 "ok": True,

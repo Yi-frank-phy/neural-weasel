@@ -209,10 +209,7 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         """Wake ``event`` once the continuation occupying ``generation`` is gone."""
 
         with self._continuation_gate:
-            if (
-                not self._continuation_active
-                or generation != self._continuation_generation
-            ):
+            if not self._continuation_active or generation != self._continuation_generation:
                 event.set()
                 return
             self._continuation_idle_waiters.add(event)

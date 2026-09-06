@@ -144,9 +144,7 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
     assert busy_seen.wait(0.5), "revision 2 never attempted continuation while revision 1 was busy"
     assert runtime.continuation_calls == 1
     assert "你好" not in {candidate.text for candidate in revision_two.candidates}
-    completion = engine.candidate_pages._background_search_events.get(
-        revision_two.candidate_set_id
-    )
+    completion = engine.candidate_pages._background_search_events.get(revision_two.candidate_set_id)
     assert completion is not None
 
     runtime.release_first.set()

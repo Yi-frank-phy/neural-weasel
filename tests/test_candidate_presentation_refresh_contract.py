@@ -21,9 +21,7 @@ def test_presentation_refresh_does_not_create_an_input_revision() -> None:
     assert "kNeuralCandidatePendingProperty" in refresh_header
     assert "kNeuralForceRefreshProperty" not in refresh_header
 
-    start = translator.index(
-        "if (context->get_property(kNeuralPresentationRefreshProperty) == \"1\")"
-    )
+    start = translator.index('if (context->get_property(kNeuralPresentationRefreshProperty) == "1")')
     end = translator.index("const std::string language_mode", start)
     refresh_block = translator[start:end]
     assert "frozen_pages_.clear();" in refresh_block

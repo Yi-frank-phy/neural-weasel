@@ -364,10 +364,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 }
                 deadline = self.clock() + _BACKGROUND_CONTINUATION_DEADLINE_MS / 1000.0
                 while self.clock() < deadline:
-                    if (
-                        cancel_event.is_set()
-                        or self._sessions.get(candidate_set_id) is not session
-                    ):
+                    if cancel_event.is_set() or self._sessions.get(candidate_set_id) is not session:
                         return
                     progressed = self._expand_background_frontier_batch(
                         session,
@@ -379,12 +376,8 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     retry_generation = self._background_retry_generations.pop(
                         candidate_set_id, None
                     )
-                    register_wait = getattr(
-                        self.backend, "register_continuation_idle_wait", None
-                    )
-                    cancel_wait = getattr(
-                        self.backend, "cancel_continuation_idle_wait", None
-                    )
+                    register_wait = getattr(self.backend, "register_continuation_idle_wait", None)
+                    cancel_wait = getattr(self.backend, "cancel_continuation_idle_wait", None)
                     if (
                         retry_generation is None
                         or retry_wakes >= _BACKGROUND_MAX_RETRY_WAKES

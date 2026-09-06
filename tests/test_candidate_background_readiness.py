@@ -92,9 +92,7 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
     assert first["ok"] is True
     assert first["background_pending"] is True
     assert runtime.started.wait(0.5)
-    completion = engine.candidate_pages._background_search_events.get(
-        first["candidate_set_id"]
-    )
+    completion = engine.candidate_pages._background_search_events.get(first["candidate_set_id"])
     assert completion is not None
 
     runtime.release.set()
