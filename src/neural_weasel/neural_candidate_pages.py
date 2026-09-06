@@ -40,7 +40,8 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 # Multiple immutable presentation snapshots may share one input
                 # identity. A normal retry always replays the newest published
                 # snapshot; only presentation_refresh may advance it.
-                for existing_set_id, session in reversed(tuple(self._sessions.items())):
+                sessions = reversed(tuple(self._sessions.items()))
+                for existing_set_id, session in sessions:
                     if session.identity != identity:
                         continue
                     frozen = session.frozen_pages.get(0)
