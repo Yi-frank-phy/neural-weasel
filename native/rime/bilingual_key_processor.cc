@@ -105,19 +105,14 @@ void RefreshPage(::rime::Context* context,
       return ::rime::kAccepted;
     }
     // Never replace a candidate list while the user has moved the selection.
-    // The owner-thread refresh may try again after the next real input update.
+    // Pending state is returned through Weasel status metadata rather than the
+    // ProcessResult, so the private noncharacter never enters commit history.
     if (SelectedIndex(context) != 0) {
       return ::rime::kAccepted;
     }
     context->set_property(kNeuralPresentationRefreshProperty, "1");
     context->RefreshNonConfirmedComposition();
-    // This synthetic key is never delivered to an application. kRejected
-    // stops the Rime processor chain while returning false to the private
-    // Weasel caller, which means this exact presentation still has background
-    // work and merits a bounded later pull.
-    return context->get_property(kNeuralCandidatePendingProperty) == "1"
-               ? ::rime::kRejected
-               : ::rime::kAccepted;
+    return ::rime::kAccepted;
   }
 
   if (IsShiftKey(key_event)) {
