@@ -46,7 +46,7 @@ def test_background_readiness_uses_status_metadata_and_bounded_owner_thread_pull
     assert "constexpr unsigned int kNeuralRefreshMaxAttempts = 16;" in overlay
     assert "if (!m_client.ProcessKeyEvent(refresh))" in overlay
     assert "const bool presentation_ready = !_status.neural_candidate_pending;" in overlay
-    assert 'status.neural_candidate_pending=' in overlay
+    assert "status.neural_candidate_pending=" in overlay
     assert 'get_property(session_id, "neural_candidate_pending"' in overlay
     assert "if (presentation_ready ||" in overlay
     assert "kNeuralRefreshRetryDelayMs" in overlay
