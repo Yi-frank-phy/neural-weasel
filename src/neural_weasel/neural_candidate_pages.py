@@ -255,9 +255,10 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         self,
         session: _SearchSession,
         identity_key: tuple[int, str | None, int | None, str, str],
+        cancel_event: threading.Event,
     ) -> None:
         try:
-            super()._run_background_continuation(session, identity_key)
+            super()._run_background_continuation(session, identity_key, cancel_event)
         finally:
             self._maybe_start_page_preparation(session)
 
