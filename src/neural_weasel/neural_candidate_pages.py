@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from .backends import BackendState
 from .neural_candidate_pages_scored import NeuralCandidatePageManager as _ScoredPageManager
 from .neural_candidates import CandidatePage, NeuralLanguageMode, _SearchIdentity
