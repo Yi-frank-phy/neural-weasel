@@ -103,6 +103,10 @@ int main() {
           LatinPunctuationAction::kExtendComposition ||
       ResolveLatinPunctuationAction(NeuralLanguageMode::kLatinFirst, '=') !=
           LatinPunctuationAction::kCommitLiteral ||
+      ResolveLatinPunctuationAction(NeuralLanguageMode::kLatinFirst, '-', true) !=
+          LatinPunctuationAction::kNone ||
+      ResolveLatinPunctuationAction(NeuralLanguageMode::kLatinFirst, '=', true) !=
+          LatinPunctuationAction::kNone ||
       ResolveLatinPunctuationAction(NeuralLanguageMode::kChineseFirst, '-') !=
           LatinPunctuationAction::kNone ||
       ResolveLatinPunctuationAction(NeuralLanguageMode::kChineseFirst, '=') !=

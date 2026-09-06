@@ -12,8 +12,9 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
 
 LatinPunctuationAction ResolveLatinPunctuationAction(
     NeuralLanguageMode mode,
-    char character) noexcept {
-  if (mode != NeuralLanguageMode::kLatinFirst) {
+    char character,
+    bool shifted) noexcept {
+  if (mode != NeuralLanguageMode::kLatinFirst || shifted) {
     return LatinPunctuationAction::kNone;
   }
   if (character == '-') {

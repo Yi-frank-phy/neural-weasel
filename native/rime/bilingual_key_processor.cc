@@ -164,7 +164,7 @@ void RefreshPage(::rime::Context* context,
   const char punctuation = key_event.keycode() == XK_minus   ? '-'
                            : key_event.keycode() == XK_equal ? '='
                                                              : '\0';
-  switch (ResolveLatinPunctuationAction(mode, punctuation)) {
+  switch (ResolveLatinPunctuationAction(mode, punctuation, key_event.shift())) {
     case LatinPunctuationAction::kExtendComposition:
       ResetCandidatePageState(context);
       context->PushInput(punctuation);

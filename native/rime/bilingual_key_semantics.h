@@ -46,7 +46,8 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
 
 LatinPunctuationAction ResolveLatinPunctuationAction(
     NeuralLanguageMode mode,
-    char character) noexcept;
+    char character,
+    bool shifted = false) noexcept;
 
 std::string AppendLiteralCharacter(std::string_view input, char character);
 
