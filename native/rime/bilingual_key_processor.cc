@@ -80,6 +80,13 @@ std::size_t SelectedIndex(::rime::Context* context) {
   return composition.empty() ? 0 : composition.back().selected_index;
 }
 
+void ResetCandidatePageState(::rime::Context* context) {
+  context->set_property("neural_requested_page", "0");
+  context->set_property("neural_page_index", "0");
+  context->set_property("neural_has_more", "0");
+  context->set_property("neural_candidate_fresh", "0");
+}
+
 void RefreshPage(::rime::Context* context,
                  std::uint32_t target_page,
                  std::size_t selected_index) {
@@ -136,10 +143,7 @@ void RefreshPage(::rime::Context* context,
         context, current == NeuralLanguageMode::kChineseFirst
                      ? NeuralLanguageMode::kLatinFirst
                      : NeuralLanguageMode::kChineseFirst);
-    context->set_property("neural_requested_page", "0");
-    context->set_property("neural_page_index", "0");
-    context->set_property("neural_has_more", "0");
-    context->set_property("neural_candidate_fresh", "0");
+    ResetCandidatePageState(context);
     return ::rime::kAccepted;
   }
 
@@ -156,16 +160,30 @@ void RefreshPage(::rime::Context* context,
     return ::rime::kNoop;
   }
 
+  const auto mode = CurrentLanguageMode(context);
+  const char punctuation = key_event.keycode() == XK_minus   ? '-'
+                           : key_event.keycode() == XK_equal ? '='
+                                                             : '\0';
+  switch (ResolveLatinPunctuationAction(mode, punctuation)) {
+    case LatinPunctuationAction::kExtendComposition:
+      ResetCandidatePageState(context);
+      context->PushInput(punctuation);
+      context->BeginEditing();
+      return ::rime::kAccepted;
+    case LatinPunctuationAction::kCommitLiteral:
+      engine_->CommitText(AppendLiteralCharacter(context->input(), punctuation));
+      context->Clear();
+      return ::rime::kAccepted;
+    case LatinPunctuationAction::kNone:
+      break;
+  }
+
   const auto intent = IntentFor(key_event);
   if (intent == KeyIntent::kBackspace) {
-    context->set_property("neural_requested_page", "0");
-    context->set_property("neural_page_index", "0");
-    context->set_property("neural_has_more", "0");
-    context->set_property("neural_candidate_fresh", "0");
+    ResetCandidatePageState(context);
     return ::rime::kNoop;
   }
 
-  const auto mode = CurrentLanguageMode(context);
   auto selected = context->GetSelectedCandidate();
   const bool candidate_fresh =
       context->get_property("neural_candidate_fresh") == "1";
