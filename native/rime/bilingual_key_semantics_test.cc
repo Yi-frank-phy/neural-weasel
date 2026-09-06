@@ -12,9 +12,12 @@
 
 namespace {
 
+using neural_weasel::rime_plugin::AppendLiteralCharacter;
 using neural_weasel::rime_plugin::KeyIntent;
 using neural_weasel::rime_plugin::KeyOutcome;
+using neural_weasel::rime_plugin::LatinPunctuationAction;
 using neural_weasel::rime_plugin::NeuralLanguageMode;
+using neural_weasel::rime_plugin::ResolveLatinPunctuationAction;
 using neural_weasel::rime_plugin::ShouldToggleLanguageMode;
 
 std::vector<std::string> Split(const std::string& line) {
@@ -93,6 +96,25 @@ int main() {
       ShouldToggleLanguageMode(true, true, true, false) ||
       ShouldToggleLanguageMode(false, false, true, false)) {
     std::cerr << "Shift language-mode toggle escaped its idle-only contract\n";
+    return 1;
+  }
+
+  if (ResolveLatinPunctuationAction(NeuralLanguageMode::kLatinFirst, '-') !=
+          LatinPunctuationAction::kExtendComposition ||
+      ResolveLatinPunctuationAction(NeuralLanguageMode::kLatinFirst, '=') !=
+          LatinPunctuationAction::kCommitLiteral ||
+      ResolveLatinPunctuationAction(NeuralLanguageMode::kChineseFirst, '-') !=
+          LatinPunctuationAction::kNone ||
+      ResolveLatinPunctuationAction(NeuralLanguageMode::kChineseFirst, '=') !=
+          LatinPunctuationAction::kNone ||
+      ResolveLatinPunctuationAction(NeuralLanguageMode::kLatinFirst, '.') !=
+          LatinPunctuationAction::kNone) {
+    std::cerr << "Latin punctuation escaped its language-specific routing contract\n";
+    return 1;
+  }
+  if (AppendLiteralCharacter("neural", '=') != "neural=" ||
+      AppendLiteralCharacter("mother", '-') != "mother-") {
+    std::cerr << "Latin punctuation did not preserve final literal text\n";
     return 1;
   }
 
