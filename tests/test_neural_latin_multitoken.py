@@ -123,6 +123,14 @@ def _page(engine: BilingualImeEngine, raw: str, revision: int, **kwargs):
     return engine.query_candidate_page(**values)
 
 
+def _wait_for_page_preparation(engine: BilingualImeEngine, candidate_set_id: str) -> None:
+    manager = engine.candidate_pages
+    with manager._state_lock:
+        event = manager._page_preparation_events.get(candidate_set_id)
+    assert event is not None
+    assert event.wait(1.0)
+
+
 def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization() -> None:
     engine, runtime = _engine()
 
@@ -133,6 +141,7 @@ def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization(
     assert first.has_more is True
     assert runtime.continuation_calls == 0
 
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     second = _page(
         engine,
         "asymmetry",
@@ -165,6 +174,7 @@ def test_scored_multitoken_baseline_refreshes_prewarm_and_rebinds_current_raw() 
     assert prewarm_key in engine.candidate_pages._baseline_single_letter
 
     first = _page(engine, "asymmetry", 1)
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     _page(
         engine,
         "asymmetry",

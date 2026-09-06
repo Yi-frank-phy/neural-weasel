@@ -83,7 +83,13 @@ def _engine(make_index, *, include_phrase_token: bool):
     return engine, runtime
 
 
-def _page(engine, *, page_index: int = 0, candidate_set_id: str | None = None):
+def _page(
+    engine,
+    *,
+    page_index: int = 0,
+    candidate_set_id: str | None = None,
+    presentation_refresh: bool = False,
+):
     return engine.query_candidate_page(
         client_session_id="explicit-boundary-session",
         composition_revision=1,
@@ -95,7 +101,22 @@ def _page(engine, *, page_index: int = 0, candidate_set_id: str | None = None):
         page_index=page_index,
         candidate_set_id=candidate_set_id,
         deadline_ms=120.0 if page_index else None,
+        presentation_refresh=presentation_refresh,
     )
+
+
+def _wait_for_async_han(engine: BilingualImeEngine, candidate_set_id: str) -> None:
+    manager = engine.candidate_pages
+    with manager._state_lock:
+        session = manager._sessions[candidate_set_id]
+        identity_key = manager._async_identity_key(session.identity)
+        if identity_key in manager._async_han_cache:
+            return
+        event = manager._background_search_events.get(candidate_set_id)
+    assert event is not None
+    assert event.wait(1.0)
+    with manager._state_lock:
+        assert identity_key in manager._async_han_cache
 
 
 def test_explicit_apostrophe_blocks_one_syllable_path_that_crosses_it(make_index) -> None:
@@ -122,13 +143,11 @@ def test_explicit_apostrophe_is_preserved_across_multitoken_exact_search(make_in
     assert "西安" not in {candidate.text for candidate in first.candidates}
     assert first.has_more is True
 
-    second = _page(
-        engine,
-        page_index=1,
-        candidate_set_id=first.candidate_set_id,
-    )
+    _wait_for_async_han(engine, first.candidate_set_id)
+    refreshed = _page(engine, presentation_refresh=True)
+    assert refreshed.candidate_set_id != first.candidate_set_id
 
-    phrase = next(candidate for candidate in second.candidates if candidate.text == "西安")
+    phrase = next(candidate for candidate in refreshed.candidates if candidate.text == "西安")
     assert phrase.token_path == (2, 3)
     assert phrase.pinyin == "xi'an"
     assert phrase.completes_input is True
@@ -142,7 +161,7 @@ def test_explicit_apostrophe_is_preserved_across_multitoken_exact_search(make_in
     # zero-prediction exact-cover path for the typed raw keys.
     exact_cover = [
         candidate
-        for candidate in second.candidates
+        for candidate in refreshed.candidates
         if candidate.completes_input
         and candidate.consumed_keys == len("xi'an")
         and candidate.predicted_syllables == 0

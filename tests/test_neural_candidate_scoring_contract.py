@@ -56,7 +56,14 @@ class ContinuationRuntime:
         pass
 
 
-def _page(engine, revision: int, page_index: int = 0, candidate_set_id: str | None = None):
+def _page(
+    engine,
+    revision: int,
+    page_index: int = 0,
+    candidate_set_id: str | None = None,
+    *,
+    presentation_refresh: bool = False,
+):
     return engine.query_candidate_page(
         client_session_id="scoring-test",
         composition_revision=revision,
@@ -68,7 +75,22 @@ def _page(engine, revision: int, page_index: int = 0, candidate_set_id: str | No
         page_index=page_index,
         candidate_set_id=candidate_set_id,
         deadline_ms=1000.0,
+        presentation_refresh=presentation_refresh,
     )
+
+
+def _wait_for_async_han(engine: BilingualImeEngine, candidate_set_id: str) -> None:
+    manager = engine.candidate_pages
+    with manager._state_lock:
+        session = manager._sessions[candidate_set_id]
+        identity_key = manager._async_identity_key(session.identity)
+        if identity_key in manager._async_han_cache:
+            return
+        event = manager._background_search_events.get(candidate_set_id)
+    assert event is not None
+    assert event.wait(1.0)
+    with manager._state_lock:
+        assert identity_key in manager._async_han_cache
 
 
 def test_selected_log_probs_normalize_over_full_vocabulary() -> None:
@@ -98,7 +120,9 @@ def test_baseline_multitoken_han_path_becomes_page_zero_supplement(make_index) -
     assert runtime.full_logits_calls == 1
     assert not any(candidate.text == "你好" for candidate in first.candidates)
 
-    second = _page(engine, 1, 1, first.candidate_set_id)
+    _wait_for_async_han(engine, first.candidate_set_id)
+    second = _page(engine, 1, presentation_refresh=True)
+    assert second.candidate_set_id != first.candidate_set_id
     learned = [candidate for candidate in second.candidates if candidate.text == "你好"]
     assert learned
     assert learned[0].token_path == (1, 2)
