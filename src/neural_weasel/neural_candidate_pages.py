@@ -25,7 +25,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         presentation_refresh: bool = False,
     ) -> CandidatePage:
         normalized_mode = NeuralLanguageMode(mode)
-        if page_index == 0 and not presentation_refresh:
+        if page_index == 0:
             identity = _SearchIdentity(
                 client_session_id=client_session_id,
                 composition_revision=composition_revision,
@@ -39,7 +39,8 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 self._expire_sessions()
                 # Multiple immutable presentation snapshots may share one input
                 # identity. A normal retry always replays the newest published
-                # snapshot; only presentation_refresh may advance it.
+                # snapshot. An explicit presentation pull advances it only when
+                # the completed async cache is newer than that snapshot.
                 sessions = reversed(tuple(self._sessions.items()))
                 for existing_set_id, session in sessions:
                     if session.identity != identity:
@@ -47,6 +48,14 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                     frozen = session.frozen_pages.get(0)
                     if frozen is None:
                         continue
+                    if presentation_refresh:
+                        identity_key = self._async_identity_key(identity)
+                        async_ready = identity_key in self._async_han_cache
+                        includes_async = self._session_includes_async_han.get(
+                            existing_set_id, False
+                        )
+                        if async_ready and not includes_async:
+                            break
                     session.last_used = self.clock()
                     self._sessions.move_to_end(existing_set_id)
                     self._record_metrics(frozen)
