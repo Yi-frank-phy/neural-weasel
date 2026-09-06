@@ -25,10 +25,12 @@ def test_presentation_refresh_does_not_create_an_input_revision() -> None:
     start = translator.index(refresh_condition)
     end = translator.index("const std::string language_mode", start)
     refresh_block = translator[start:end]
-    assert "frozen_pages_.clear();" in refresh_block
-    assert "candidate_set_id_.clear();" in refresh_block
+    assert "presentation_refresh = true;" in refresh_block
+    assert "frozen_pages_.clear();" not in refresh_block
+    assert "candidate_set_id_.clear();" not in refresh_block
     assert "force_new_revision_ = true" not in refresh_block
     assert "++composition_revision_" not in refresh_block
+    assert 'request["presentation_refresh"] = true;' in translator
 
 
 def test_background_readiness_drives_only_bounded_owner_thread_pulls() -> None:

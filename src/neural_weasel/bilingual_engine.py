@@ -182,13 +182,16 @@ class BilingualImeEngine:
         page_index: int,
         candidate_set_id: str | None = None,
         deadline_ms: float | None = None,
+        presentation_refresh: bool = False,
     ) -> CandidatePage:
-        """Return one immutable revision-scoped page without waiting for context.
+        """Return one immutable input-scoped candidate presentation snapshot.
 
         `context_epoch == 0` deliberately means the context-free baseline, never
         "whatever editor snapshot happened to be latest". If a nonzero requested
         snapshot is not ready, expired, or lacks its exact continuation root, the
-        page manager locks the entire revision to the permanent baseline instead.
+        page manager locks the input revision to the permanent baseline instead.
+        A normal retry replays the latest immutable snapshot; only an explicit
+        presentation refresh may publish background work as a new candidate set.
         """
 
         state = self.coordinator.state_for_epoch(context_epoch) if context_epoch > 0 else None
@@ -204,6 +207,7 @@ class BilingualImeEngine:
             candidate_set_id=candidate_set_id,
             state=state,
             deadline_ms=deadline_ms,
+            presentation_refresh=presentation_refresh,
         )
 
     def query_pinyin(

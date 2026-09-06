@@ -127,6 +127,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
                         "raw_keys",
                         "page_index",
                         "candidate_set_id",
+                        "presentation_refresh",
                     }
                 ),
             )
@@ -137,6 +138,9 @@ class ProductionNamedPipeServer(NamedPipeServer):
             context_epoch = _require_int(message, "context_epoch", 0)
             page_index = _require_int(message, "page_index", 0)
             candidate_set_id = _optional_identifier(message, "candidate_set_id")
+            presentation_refresh = message.get("presentation_refresh", False)
+            if not isinstance(presentation_refresh, bool):
+                raise ProtocolError("presentation_refresh must be a boolean")
             raw_keys = message.get("raw_keys")
             if not isinstance(raw_keys, str) or not raw_keys or len(raw_keys) > MAX_PINYIN_KEYS:
                 raise ProtocolError(
@@ -160,20 +164,27 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 raise ProtocolError("candidate_set_id must be omitted for page 0")
             if page_index > 0 and candidate_set_id is None:
                 raise ProtocolError("candidate_set_id is required after page 0")
+            if presentation_refresh and page_index != 0:
+                raise ProtocolError("presentation_refresh is only valid for page 0")
 
             context_session = identity[0] if identity is not None else None
             source_revision = identity[1] if identity is not None else None
-            page = self.engine.query_candidate_page(
-                client_session_id=session_id,
-                composition_revision=composition_revision,
-                context_epoch=context_epoch,
-                context_session=context_session,
-                source_revision=source_revision,
-                language_mode=language_mode,
-                raw_keys=raw_keys,
-                page_index=page_index,
-                candidate_set_id=candidate_set_id,
-            )
+            query_kwargs = {
+                "client_session_id": session_id,
+                "composition_revision": composition_revision,
+                "context_epoch": context_epoch,
+                "context_session": context_session,
+                "source_revision": source_revision,
+                "language_mode": language_mode,
+                "raw_keys": raw_keys,
+                "page_index": page_index,
+                "candidate_set_id": candidate_set_id,
+            }
+            # Keep simple protocol test doubles compatible with the baseline
+            # engine signature unless this new capability was explicitly asked.
+            if presentation_refresh:
+                query_kwargs["presentation_refresh"] = True
+            page = self.engine.query_candidate_page(**query_kwargs)
 
             # A secure/focus transition may invalidate the binding while model
             # work is in flight. Revalidate immediately before serializing any
@@ -198,8 +209,10 @@ class ProductionNamedPipeServer(NamedPipeServer):
             # editor context or candidate text and lets the native owner thread
             # retry a presentation pull only while this exact candidate set is
             # still being prepared.
-            pages = self.engine.candidate_pages
-            background_pending = page.candidate_set_id in getattr(pages, "_background_searches", ())
+            pages = getattr(self.engine, "candidate_pages", None)
+            background_pending = pages is not None and page.candidate_set_id in getattr(
+                pages, "_background_searches", ()
+            )
             response: dict[str, Any] = {
                 "type": "candidate_page",
                 "ok": True,
@@ -212,6 +225,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 "page_size": page.page_size,
                 "has_more": page.has_more,
                 "background_pending": background_pending,
+                "presentation_refresh": presentation_refresh,
                 "score_source": page.score_source,
                 "candidates": values,
             }

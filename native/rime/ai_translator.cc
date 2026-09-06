@@ -177,15 +177,11 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
   context->set_property("neural_candidate_fresh", "0");
 
   try {
+    bool presentation_refresh = false;
     if (context->get_property(kNeuralPresentationRefreshProperty) == "1") {
       context->set_property(kNeuralPresentationRefreshProperty, "0");
-      candidate_set_id_.clear();
-      current_page_index_ = 0;
-      current_has_more_ = false;
-      frozen_pages_.clear();
+      presentation_refresh = true;
       context->set_property("neural_requested_page", "0");
-      context->set_property("neural_page_index", "0");
-      context->set_property("neural_has_more", "0");
       TraceAiTranslator(
           L"event=presentation-refresh revision=%llu",
           static_cast<unsigned long long>(composition_revision_));
@@ -203,6 +199,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
     if (new_revision) {
       ++composition_revision_;
       force_new_revision_ = false;
+      presentation_refresh = false;
       composition_input_ = input;
       composition_mode_ = language_mode;
       if (latest_context.valid()) {
@@ -229,7 +226,8 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
           language_mode == "latin_first" ? 1 : 0);
     }
 
-    std::uint32_t requested_page = RequestedPage(context);
+    std::uint32_t requested_page =
+        presentation_refresh ? 0U : RequestedPage(context);
     if (requested_page > current_page_index_ + 1U) {
       requested_page = current_page_index_;
       context->set_property("neural_requested_page",
@@ -238,7 +236,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
 
     std::string page_payload;
     const auto cached = frozen_pages_.find(requested_page);
-    if (cached != frozen_pages_.end()) {
+    if (!presentation_refresh && cached != frozen_pages_.end()) {
       page_payload = cached->second;
     } else {
       if (requested_page > 0 &&
@@ -263,6 +261,9 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
             {"raw_keys", input},
             {"page_index", requested_page},
         };
+        if (presentation_refresh) {
+          request["presentation_refresh"] = true;
+        }
         if (context_epoch_ > 0) {
           request["context_session"] = context_session_;
           request["source_revision"] = source_revision_;
@@ -308,6 +309,8 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
                   composition_revision_ ||
               response.value("context_epoch", std::uint64_t{0}) !=
                   context_epoch_ ||
+              response.value("presentation_refresh", false) !=
+                  presentation_refresh ||
               !source_identity_matches ||
               response.value("language_mode", std::string{}) !=
                   language_mode ||
@@ -327,6 +330,9 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
             page_payload = current->second;
           } else {
             if (requested_page == 0) {
+              if (presentation_refresh) {
+                frozen_pages_.clear();
+              }
               candidate_set_id_ = response_set;
             }
             current_page_index_ = requested_page;

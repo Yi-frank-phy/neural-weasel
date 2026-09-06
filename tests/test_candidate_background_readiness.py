@@ -91,6 +91,7 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
     first = server.handle_message(request)
     assert first["ok"] is True
     assert first["background_pending"] is True
+    assert first["presentation_refresh"] is False
     assert runtime.started.wait(0.5)
     completion = engine.candidate_pages._background_search_events.get(first["candidate_set_id"])
     assert completion is not None
@@ -98,8 +99,17 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
     runtime.release.set()
     assert completion.wait(1.0)
 
-    refreshed = server.handle_message(request)
+    replay = server.handle_message(request)
+    assert replay["ok"] is True
+    assert replay["candidate_set_id"] == first["candidate_set_id"]
+    assert tuple(item["candidate_id"] for item in replay["candidates"]) == tuple(
+        item["candidate_id"] for item in first["candidates"]
+    )
+
+    refreshed_request = dict(request, presentation_refresh=True)
+    refreshed = server.handle_message(refreshed_request)
     assert refreshed["ok"] is True
     assert refreshed["background_pending"] is False
+    assert refreshed["presentation_refresh"] is True
     assert refreshed["candidate_set_id"] != first["candidate_set_id"]
     assert "你好" in {item["text"] for item in refreshed["candidates"]}

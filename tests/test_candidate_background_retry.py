@@ -85,7 +85,12 @@ def _engine(make_index) -> tuple[BilingualImeEngine, BlockingContinuationRuntime
     return engine, runtime
 
 
-def _page(engine: BilingualImeEngine, *, revision: int):
+def _page(
+    engine: BilingualImeEngine,
+    *,
+    revision: int,
+    presentation_refresh: bool = False,
+):
     return engine.query_candidate_page(
         client_session_id="same-client",
         composition_revision=revision,
@@ -95,6 +100,7 @@ def _page(engine: BilingualImeEngine, *, revision: int):
         language_mode="chinese_first",
         raw_keys="nihao",
         page_index=0,
+        presentation_refresh=presentation_refresh,
     )
 
 
@@ -154,7 +160,11 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
     )
     assert completion.wait(1.0), "resumed revision did not publish its completed candidates"
 
-    refreshed = _page(engine, revision=2)
+    replay = _page(engine, revision=2)
+    assert replay.candidate_set_id == revision_two.candidate_set_id
+    assert replay.candidate_ids == revision_two.candidate_ids
+
+    refreshed = _page(engine, revision=2, presentation_refresh=True)
     assert refreshed.candidate_set_id != revision_two.candidate_set_id
     assert "你好" in {candidate.text for candidate in refreshed.candidates}
     assert all(candidate.context_epoch == 0 for candidate in refreshed.candidates)
