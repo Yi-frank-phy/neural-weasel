@@ -104,20 +104,37 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
     engine, runtime = _engine(make_index)
     backend = engine.candidate_pages.backend
     busy_seen = threading.Event()
-    original_continue = backend._continue_from_root_bounded
+    original_attempt = getattr(backend, "_continue_from_root_attempt", None)
 
-    def observed_continue(root, token_paths, allowed_token_sets, *, deadline_ms: float):
-        with backend._continuation_gate:
-            if backend._continuation_active:
-                busy_seen.set()
-        return original_continue(
-            root,
-            token_paths,
-            allowed_token_sets,
-            deadline_ms=deadline_ms,
-        )
+    if callable(original_attempt):
 
-    monkeypatch.setattr(backend, "_continue_from_root_bounded", observed_continue)
+        def observed_attempt(root, token_paths, allowed_token_sets, *, deadline_ms: float):
+            with backend._continuation_gate:
+                if backend._continuation_active:
+                    busy_seen.set()
+            return original_attempt(
+                root,
+                token_paths,
+                allowed_token_sets,
+                deadline_ms=deadline_ms,
+            )
+
+        monkeypatch.setattr(backend, "_continue_from_root_attempt", observed_attempt)
+    else:
+        original_continue = backend._continue_from_root_bounded
+
+        def observed_continue(root, token_paths, allowed_token_sets, *, deadline_ms: float):
+            with backend._continuation_gate:
+                if backend._continuation_active:
+                    busy_seen.set()
+            return original_continue(
+                root,
+                token_paths,
+                allowed_token_sets,
+                deadline_ms=deadline_ms,
+            )
+
+        monkeypatch.setattr(backend, "_continue_from_root_bounded", observed_continue)
 
     revision_one = _page(engine, revision=1)
     assert runtime.first_started.wait(0.5)
@@ -127,17 +144,19 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
     assert busy_seen.wait(0.5), "revision 2 never attempted continuation while revision 1 was busy"
     assert runtime.continuation_calls == 1
     assert "你好" not in {candidate.text for candidate in revision_two.candidates}
+    completion = engine.candidate_pages._background_search_events.get(
+        revision_two.candidate_set_id
+    )
+    assert completion is not None
 
     runtime.release_first.set()
 
-    # Expected RED on the handoff baseline: the revision-2 background worker
-    # already exited after seeing the busy provider, so no one retries when the
-    # actual provider becomes idle.  C1 must make this event fire without a new
-    # key press, page navigation, or explicit page query.
     assert runtime.second_started.wait(1.0), (
         "latest revision did not resume automatically after the old provider released"
     )
+    assert completion.wait(1.0), "resumed revision did not publish its completed candidates"
 
     refreshed = _page(engine, revision=2)
+    assert refreshed.candidate_set_id != revision_two.candidate_set_id
     assert "你好" in {candidate.text for candidate in refreshed.candidates}
     assert all(candidate.context_epoch == 0 for candidate in refreshed.candidates)
