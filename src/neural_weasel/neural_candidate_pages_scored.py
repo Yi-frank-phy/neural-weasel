@@ -44,6 +44,7 @@ _MAX_ASYNC_HAN_CACHE = 128
 # native query remains guarded by its independent 50 ms deadline.
 _BACKGROUND_CONTINUATION_DEADLINE_MS = 2500.0
 _BACKGROUND_ROOT_BATCH_SIZE = 8
+_BACKGROUND_MAX_RETRY_WAKES = 4
 
 
 def _selected_log_probs(logits: Sequence[float], token_ids: Sequence[int]) -> np.ndarray:
@@ -103,6 +104,9 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         self._active_searches: set[str] = set()
         self._background_searches: set[str] = set()
         self._background_search_events: dict[str, threading.Event] = {}
+        self._background_cancel_events: dict[str, threading.Event] = {}
+        self._background_retry_generations: dict[str, int] = {}
+        self._session_includes_async_han: dict[str, bool] = {}
         self._async_han_cache: OrderedDict[
             tuple[int, str | None, int | None, str, str], tuple[Candidate, ...]
         ] = OrderedDict()
@@ -130,10 +134,15 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         with self._state_lock:
             for event in self._background_search_events.values():
                 event.set()
+            for event in self._background_cancel_events.values():
+                event.set()
             self._sessions.clear()
             self._active_searches.clear()
             self._background_searches.clear()
             self._background_search_events.clear()
+            self._background_cancel_events.clear()
+            self._background_retry_generations.clear()
+            self._session_includes_async_han.clear()
             self._async_han_cache.clear()
 
     def diagnostics(self) -> dict[str, int | float | None]:
@@ -184,6 +193,12 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                         continue
                     frozen = session.frozen_pages.get(0)
                     if frozen is None:
+                        continue
+                    identity_key = self._async_identity_key(identity)
+                    if (
+                        identity_key in self._async_han_cache
+                        and not self._session_includes_async_han.get(existing_set_id, False)
+                    ):
                         continue
                     session.last_used = self.clock()
                     self._sessions.move_to_end(existing_set_id)
@@ -276,11 +291,32 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         identity: _SearchIdentity,
         state: BackendState | None,
     ) -> _SearchSession:
+        invalidated_ids = tuple(
+            candidate_set_id
+            for candidate_set_id, old in self._sessions.items()
+            if (
+                old.identity.client_session_id == identity.client_session_id
+                and old.identity != identity
+            )
+        )
         self._building_identity = identity
         try:
-            return super()._new_session(identity, state)
+            session = super()._new_session(identity, state)
         finally:
             self._building_identity = None
+        for candidate_set_id in invalidated_ids:
+            event = self._background_cancel_events.get(candidate_set_id)
+            if event is not None:
+                event.set()
+        identity_key = self._async_identity_key(identity)
+        self._session_includes_async_han[session.candidate_set_id] = (
+            identity_key in self._async_han_cache
+        )
+        live = set(self._sessions)
+        for candidate_set_id in tuple(self._session_includes_async_han):
+            if candidate_set_id not in live:
+                self._session_includes_async_han.pop(candidate_set_id, None)
+        return session
 
     def _start_background_continuation(self, session: _SearchSession) -> None:
         candidate_set_id = session.candidate_set_id
@@ -300,9 +336,11 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             return
         self._background_searches.add(candidate_set_id)
         self._background_search_events[candidate_set_id] = threading.Event()
+        cancel_event = threading.Event()
+        self._background_cancel_events[candidate_set_id] = cancel_event
         worker = threading.Thread(
             target=self._run_background_continuation,
-            args=(session, identity_key),
+            args=(session, identity_key, cancel_event),
             name=f"neural-page-{candidate_set_id[:8]}",
             daemon=True,
         )
@@ -312,9 +350,11 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         self,
         session: _SearchSession,
         identity_key: tuple[int, str | None, int | None, str, str],
+        cancel_event: threading.Event,
     ) -> None:
         with self._state_lock:
             candidate_set_id = session.candidate_set_id
+            retry_wakes = 0
             try:
                 if self._sessions.get(candidate_set_id) is not session:
                     return
@@ -323,20 +363,47 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     for candidate in session.pending
                 }
                 deadline = self.clock() + _BACKGROUND_CONTINUATION_DEADLINE_MS / 1000.0
-                # Advance in bounded batches.  The frontier is re-ranked after
-                # every batch, so lower-scoring partial roots remain reachable
-                # without making any one foreground context update wait for a
-                # full 32-root CUDA replay.
                 while self.clock() < deadline:
-                    if self._sessions.get(candidate_set_id) is not session:
+                    if (
+                        cancel_event.is_set()
+                        or self._sessions.get(candidate_set_id) is not session
+                    ):
                         return
                     progressed = self._expand_background_frontier_batch(
                         session,
                         deadline,
                         max_parents=_BACKGROUND_ROOT_BATCH_SIZE,
                     )
-                    if progressed <= 0:
+                    if progressed > 0:
+                        continue
+                    retry_generation = self._background_retry_generations.pop(
+                        candidate_set_id, None
+                    )
+                    register_wait = getattr(
+                        self.backend, "register_continuation_idle_wait", None
+                    )
+                    cancel_wait = getattr(
+                        self.backend, "cancel_continuation_idle_wait", None
+                    )
+                    if (
+                        retry_generation is None
+                        or retry_wakes >= _BACKGROUND_MAX_RETRY_WAKES
+                        or not callable(register_wait)
+                        or not callable(cancel_wait)
+                    ):
                         break
+                    register_wait(retry_generation, cancel_event)
+                    self._state_lock.release()
+                    try:
+                        cancel_event.wait()
+                    finally:
+                        self._state_lock.acquire()
+                        cancel_wait(cancel_event)
+                    if self._sessions.get(candidate_set_id) is not session:
+                        return
+                    cancel_event.clear()
+                    retry_wakes += 1
+                    deadline = self.clock() + _BACKGROUND_CONTINUATION_DEADLINE_MS / 1000.0
                 if self._sessions.get(candidate_set_id) is not session:
                     return
                 completed = tuple(
@@ -361,6 +428,8 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 return
             finally:
                 self._background_searches.discard(candidate_set_id)
+                self._background_retry_generations.pop(candidate_set_id, None)
+                self._background_cancel_events.pop(candidate_set_id, None)
                 event = self._background_search_events.pop(candidate_set_id, None)
                 if event is not None:
                     event.set()
@@ -657,16 +726,28 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         self._active_searches.add(candidate_set_id)
         failure: Exception | None = None
         normalized: list[np.ndarray] | None = None
+        retry_generation: int | None = None
 
         self._state_lock.release()
         try:
             try:
-                scored = continuation(
-                    session.continuation_root,
-                    [item[0].token_path for item in selected],
-                    [self._all_model_token_ids] * len(selected),
-                    deadline_ms=remaining_ms,
-                )
+                attempt_provider = getattr(self.backend, "continue_from_root_attempt", None)
+                if callable(attempt_provider):
+                    attempt = attempt_provider(
+                        session.continuation_root,
+                        [item[0].token_path for item in selected],
+                        [self._all_model_token_ids] * len(selected),
+                        deadline_ms=remaining_ms,
+                    )
+                    scored = attempt.result
+                    retry_generation = attempt.retry_generation
+                else:
+                    scored = continuation(
+                        session.continuation_root,
+                        [item[0].token_path for item in selected],
+                        [self._all_model_token_ids] * len(selected),
+                        deadline_ms=remaining_ms,
+                    )
                 if scored is not None:
                     if len(scored) != len(selected):
                         raise RuntimeError("continuation scorer returned an invalid batch")
@@ -691,6 +772,8 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             raise failure
         if normalized is None:
             rollback()
+            if retry_generation is not None:
+                self._background_retry_generations[candidate_set_id] = retry_generation
             return 0
 
         progressed = 0
