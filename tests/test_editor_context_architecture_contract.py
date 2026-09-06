@@ -8,8 +8,10 @@ OVERLAY_CORE = ROOT / "scripts" / "prepare-weasel-overlay-core.ps1"
 
 
 def _overlay_text() -> str:
-    return OVERLAY_CORE.read_text(encoding="utf-8-sig") + "\n" + OVERLAY.read_text(
-        encoding="utf-8-sig"
+    return (
+        OVERLAY_CORE.read_text(encoding="utf-8-sig")
+        + "\n"
+        + OVERLAY.read_text(encoding="utf-8-sig")
     )
 
 
@@ -198,7 +200,7 @@ def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() 
     assert "kNeuralRefreshKeycode" in overlay
     assert "constexpr unsigned int kNeuralRefreshMaxAttempts = 16;" in overlay
     assert "const bool presentation_ready = !_status.neural_candidate_pending;" in overlay
-    assert 'status.neural_candidate_pending=' in overlay
+    assert "status.neural_candidate_pending=" in overlay
     refresh_block = overlay[overlay.index("void WeaselTSF::_RunNeuralRefresh()") :]
     refresh_block = refresh_block.split("static void error_message", 1)[0]
     assert "_HideUI" not in refresh_block
