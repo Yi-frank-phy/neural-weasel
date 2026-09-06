@@ -176,6 +176,13 @@ void RefreshPage(::rime::Context* context,
   }
 
   const auto mode = CurrentLanguageMode(context);
+  if (const char literal = LatinLiteralCharacter(mode, key_event.keycode());
+      literal != '\0') {
+    context->PushInput(literal);
+    context->BeginEditing();
+    return ::rime::kAccepted;
+  }
+
   auto selected = context->GetSelectedCandidate();
   const bool candidate_fresh =
       context->get_property("neural_candidate_fresh") == "1";

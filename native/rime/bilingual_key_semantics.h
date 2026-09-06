@@ -35,6 +35,8 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
                               bool started_while_idle,
                               bool composing_on_release) noexcept;
 
+char LatinLiteralCharacter(NeuralLanguageMode mode, int keycode) noexcept;
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,
