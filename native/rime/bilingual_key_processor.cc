@@ -111,11 +111,12 @@ void RefreshPage(::rime::Context* context,
     }
     context->set_property(kNeuralPresentationRefreshProperty, "1");
     context->RefreshNonConfirmedComposition();
-    // This synthetic key is never delivered to an application. kNoop is used
-    // only as a private Weasel-server signal that this exact presentation still
-    // has background work and merits a bounded later pull.
+    // This synthetic key is never delivered to an application. kRejected
+    // stops the Rime processor chain while returning false to the private
+    // Weasel caller, which means this exact presentation still has background
+    // work and merits a bounded later pull.
     return context->get_property(kNeuralCandidatePendingProperty) == "1"
-               ? ::rime::kNoop
+               ? ::rime::kRejected
                : ::rime::kAccepted;
   }
 
