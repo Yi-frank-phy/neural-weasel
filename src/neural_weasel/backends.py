@@ -218,6 +218,14 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         with self._continuation_gate:
             self._continuation_idle_waiters.discard(event)
 
+    def continuation_busy_generation(self) -> int | None:
+        """Return the generation currently occupying continuation, if any."""
+
+        with self._continuation_gate:
+            if not self._continuation_active:
+                return None
+            return self._continuation_generation
+
     def _continue_from_root_attempt(
         self,
         root: Any,
