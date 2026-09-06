@@ -10,6 +10,14 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
          !composing_on_release;
 }
 
+char LatinLiteralCharacter(NeuralLanguageMode mode, int keycode) noexcept {
+  if (mode != NeuralLanguageMode::kLatinFirst)
+    return '\0';
+  if (keycode == '-' || keycode == '=')
+    return static_cast<char>(keycode);
+  return '\0';
+}
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,
