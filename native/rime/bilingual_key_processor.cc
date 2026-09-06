@@ -104,9 +104,19 @@ void RefreshPage(::rime::Context* context,
     if (!context->IsComposing()) {
       return ::rime::kAccepted;
     }
-    context->set_property(kNeuralForceRefreshProperty, "1");
+    // Never replace a candidate list while the user has moved the selection.
+    // The owner-thread refresh may try again after the next real input update.
+    if (SelectedIndex(context) != 0) {
+      return ::rime::kAccepted;
+    }
+    context->set_property(kNeuralPresentationRefreshProperty, "1");
     context->RefreshNonConfirmedComposition();
-    return ::rime::kAccepted;
+    // This synthetic key is never delivered to an application. kNoop is used
+    // only as a private Weasel-server signal that this exact presentation still
+    // has background work and merits a bounded later pull.
+    return context->get_property(kNeuralCandidatePendingProperty) == "1"
+               ? ::rime::kNoop
+               : ::rime::kAccepted;
   }
 
   if (IsShiftKey(key_event)) {
