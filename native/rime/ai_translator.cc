@@ -177,9 +177,18 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
   context->set_property("neural_candidate_fresh", "0");
 
   try {
-    if (context->get_property(kNeuralForceRefreshProperty) == "1") {
-      context->set_property(kNeuralForceRefreshProperty, "0");
-      force_new_revision_ = true;
+    if (context->get_property(kNeuralPresentationRefreshProperty) == "1") {
+      context->set_property(kNeuralPresentationRefreshProperty, "0");
+      candidate_set_id_.clear();
+      current_page_index_ = 0;
+      current_has_more_ = false;
+      frozen_pages_.clear();
+      context->set_property("neural_requested_page", "0");
+      context->set_property("neural_page_index", "0");
+      context->set_property("neural_has_more", "0");
+      TraceAiTranslator(
+          L"event=presentation-refresh revision=%llu",
+          static_cast<unsigned long long>(composition_revision_));
     }
     const std::string language_mode = CurrentLanguageMode(context);
     const AcceptedEditorContext latest_context =
@@ -212,6 +221,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
       context->set_property("neural_requested_page", "0");
       context->set_property("neural_page_index", "0");
       context->set_property("neural_has_more", "0");
+      context->set_property(kNeuralCandidatePendingProperty, "0");
       TraceAiTranslator(
           L"event=revision created revision=%llu context-epoch=%llu mode=%d",
           static_cast<unsigned long long>(composition_revision_),
@@ -324,10 +334,11 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
             page_payload = response.dump();
             frozen_pages_[requested_page] = page_payload;
             TraceAiTranslator(
-                L"event=page frozen page=%lu count=%llu has-more=%d",
+                L"event=page frozen page=%lu count=%llu has-more=%d pending=%d",
                 static_cast<unsigned long>(requested_page),
                 static_cast<unsigned long long>(response["candidates"].size()),
-                current_has_more_ ? 1 : 0);
+                current_has_more_ ? 1 : 0,
+                response.value("background_pending", false) ? 1 : 0);
           }
         }
       }
@@ -349,6 +360,8 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
     context->set_property("neural_requested_page",
                           std::to_string(current_page_index_));
     context->set_property("neural_has_more", current_has_more_ ? "1" : "0");
+    context->set_property(kNeuralCandidatePendingProperty,
+                          page.value("background_pending", false) ? "1" : "0");
 
     auto translation = ::rime::New<::rime::FifoTranslation>();
     const std::size_t page_limit = language_mode == "latin_first"
@@ -398,6 +411,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
                       static_cast<unsigned long long>(accepted));
     return translation;
   } catch (...) {
+    context->set_property(kNeuralCandidatePendingProperty, "0");
     TraceAiTranslator(L"event=query result=exception");
     return nullptr;
   }
