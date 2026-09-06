@@ -194,6 +194,14 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 value["context_epoch"] = context_epoch
                 values.append(value)
 
+            # This is identity-bound readiness metadata only. It contains no raw
+            # editor context or candidate text and lets the native owner thread
+            # retry a presentation pull only while this exact candidate set is
+            # still being prepared.
+            pages = self.engine.candidate_pages
+            background_pending = page.candidate_set_id in getattr(
+                pages, "_background_searches", ()
+            )
             response: dict[str, Any] = {
                 "type": "candidate_page",
                 "ok": True,
@@ -205,6 +213,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 "page_index": page.page_index,
                 "page_size": page.page_size,
                 "has_more": page.has_more,
+                "background_pending": background_pending,
                 "score_source": page.score_source,
                 "candidates": values,
             }
