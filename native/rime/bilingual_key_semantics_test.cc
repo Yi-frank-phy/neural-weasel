@@ -15,6 +15,7 @@ namespace {
 using neural_weasel::rime_plugin::KeyIntent;
 using neural_weasel::rime_plugin::KeyOutcome;
 using neural_weasel::rime_plugin::NeuralLanguageMode;
+using neural_weasel::rime_plugin::ShouldToggleLanguageMode;
 
 std::vector<std::string> Split(const std::string& line) {
   std::vector<std::string> fields;
@@ -86,6 +87,15 @@ std::string ObservableOutcome(NeuralLanguageMode mode,
 }  // namespace
 
 int main() {
+  if (!ShouldToggleLanguageMode(true, false, true, false) ||
+      ShouldToggleLanguageMode(true, false, false, false) ||
+      ShouldToggleLanguageMode(true, false, true, true) ||
+      ShouldToggleLanguageMode(true, true, true, false) ||
+      ShouldToggleLanguageMode(false, false, true, false)) {
+    std::cerr << "Shift language-mode toggle escaped its idle-only contract\n";
+    return 1;
+  }
+
   std::ifstream fixture(NEURAL_WEASEL_KEY_FIXTURE_PATH);
   if (!fixture) {
     std::cerr << "shared key fixture is unavailable\n";

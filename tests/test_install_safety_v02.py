@@ -184,6 +184,21 @@ def test_pinned_overlay_rewrites_all_official_runtime_identities() -> None:
     assert "native/pipe/named_pipe_client.cc" not in tsf_block
 
 
+def test_experimental_overlay_removes_upstream_self_update_surface() -> None:
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    bundle = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts/verify-windows-bundle.py").read_text(encoding="utf-8")
+
+    assert "Experimental builds must never initialize the upstream updater" in overlay
+    assert "$ServerAppSource" in overlay
+    assert "$ServerAppHeader" in overlay
+    assert "$ServerResource" in overlay
+    assert "ID_WEASELTRAY_CHECKUPDATE" in overlay
+    assert "WinSparkle.dll" in bundle
+    assert "FORBIDDEN_UPDATE_ARTIFACTS" in verifier
+    assert "FORBIDDEN_UPDATE_LITERALS" in verifier
+
+
 def test_ci_runs_disposable_install_safety_suite_without_global_registration() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     safety = (ROOT / "scripts/test-install-safety.ps1").read_text(encoding="utf-8")

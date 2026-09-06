@@ -205,7 +205,6 @@ class PartialPinyinMatcher:
             if full:
                 for syllable, child in full:
                     visit(child, pos + len(syllable), shorthand, incomplete)
-                return
             remaining = raw[pos:]
             for syllable, child in node.children.items():
                 if raw[pos] == syllable[0] and not crosses_boundary(pos, pos + 1):
@@ -218,9 +217,12 @@ class PartialPinyinMatcher:
                     visit(child, len(raw), shorthand, True)
 
         visit(self.root, start, 0, False)
+        max_positions: dict[IndexedPronunciation, int] = {}
+        for entry, pos in found:
+            max_positions[entry] = max(pos, max_positions.get(entry, start))
         result = tuple(
             sorted(
-                found.values(),
+                (match for (entry, pos), match in found.items() if pos == max_positions[entry]),
                 key=lambda item: (
                     item.next_position != len(raw),
                     item.completion_syllables,

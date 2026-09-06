@@ -53,6 +53,16 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        root_completions_by_initial: dict[str, list[Any]] = {}
+        for completion in self.latin_constraint.completions:
+            text = completion.text
+            if not text:
+                continue
+            root_completions_by_initial.setdefault(text[0].casefold(), []).append(completion)
+        self._latin_root_completions_by_initial = {
+            initial: tuple(completions)
+            for initial, completions in root_completions_by_initial.items()
+        }
         raw_fragments = getattr(self.latin_constraint, "continuation_fragments", {})
         self._latin_fragments_by_token: dict[int, str] = {
             int(token_id): str(fragment)
@@ -92,7 +102,10 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
 
         compatible = [
             completion
-            for completion in self.latin_constraint.completions
+            for completion in self._latin_root_completions_by_initial.get(
+                raw_keys[0].casefold(),
+                (),
+            )
             if completion.token_path
             and len(completion.token_path) == 1
             and self._prefix_comparable(raw_keys, completion.text)
@@ -216,7 +229,10 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         score_source = "context" if state is not None else "baseline"
 
         if mode is NeuralLanguageMode.LATIN_FIRST:
-            return sorted(latin, key=_latin_key), latin_frontier, score_source
+            ordered_latin = sorted(latin, key=_latin_key)
+            if not ordered_latin:
+                ordered_latin = [_literal_candidate(raw_keys, response_epoch)]
+            return ordered_latin, latin_frontier, score_source
 
         ordered_han = sorted(han, key=_candidate_key)
         ordered_latin = sorted(latin, key=_latin_key)

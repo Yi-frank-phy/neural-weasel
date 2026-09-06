@@ -78,6 +78,118 @@ class ToggleContinuationRuntime(FakeRuntime):
         ]
 
 
+class BlockingContinuationRuntime(FakeRuntime):
+    def __post_init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def full_logits(self, before: str, after: str) -> RuntimeSnapshot:
+        self.calls += 1
+        return RuntimeSnapshot(
+            self.logits,
+            before,
+            after,
+            0.1,
+            continuation_root=("root", self.calls, before),
+        )
+
+    def continue_from_root(
+        self,
+        root,
+        token_paths,
+        allowed_token_sets,
+        *,
+        deadline_ms: float,
+    ):
+        del token_paths, deadline_ms
+        assert root[0] == "root"
+        self.started.set()
+        assert self.release.wait(2.0)
+        outputs = []
+        for allowed in allowed_token_sets:
+            allowed = tuple(int(token_id) for token_id in allowed)
+            values = np.full(len(allowed), -20.0, dtype=np.float32)
+            if 2 in allowed:
+                values[allowed.index(2)] = 20.0
+            outputs.append(values)
+        return outputs
+
+
+class ProductionTopologyContinuationRuntime(FakeRuntime):
+    def __post_init__(self) -> None:
+        self.continuation_batches: list[tuple[tuple[int, ...], ...]] = []
+
+    def full_logits(self, before: str, after: str) -> RuntimeSnapshot:
+        self.calls += 1
+        return RuntimeSnapshot(
+            self.logits,
+            before,
+            after,
+            0.1,
+            continuation_root=("root", self.calls, before),
+        )
+
+    def continue_from_root(
+        self,
+        root,
+        token_paths,
+        allowed_token_sets,
+        *,
+        deadline_ms: float,
+    ):
+        del deadline_ms
+        assert root[0] == "root"
+        paths = tuple(tuple(int(token_id) for token_id in path) for path in token_paths)
+        self.continuation_batches.append(paths)
+        outputs = []
+        for path, allowed in zip(paths, allowed_token_sets, strict=True):
+            values = np.full(len(tuple(allowed)), -20.0, dtype=np.float32)
+            if path == (3,):
+                values[4] = 20.0
+            outputs.append(values)
+        return outputs
+
+
+class ProgressiveContinuationRuntime(FakeRuntime):
+    """Expose a target root only after the first bounded background batch."""
+
+    def __post_init__(self) -> None:
+        self.continuation_batches: list[tuple[tuple[int, ...], ...]] = []
+
+    def full_logits(self, before: str, after: str) -> RuntimeSnapshot:
+        self.calls += 1
+        return RuntimeSnapshot(
+            self.logits,
+            before,
+            after,
+            0.1,
+            continuation_root=("root", self.calls, before),
+        )
+
+    def continue_from_root(
+        self,
+        root,
+        token_paths,
+        allowed_token_sets,
+        *,
+        deadline_ms: float,
+    ):
+        del deadline_ms
+        assert root[0] == "root"
+        paths = tuple(tuple(int(token_id) for token_id in path) for path in token_paths)
+        self.continuation_batches.append(paths)
+        child_token = 21
+        target_root = (20,)
+        outputs = []
+        for path in paths:
+            values = np.full(self.logits.size, -np.inf, dtype=np.float32)
+            if child_token < self.logits.size:
+                values[child_token] = 30.0 if path == target_root else 0.0
+            outputs.append(values)
+        assert len(outputs) == len(tuple(allowed_token_sets))
+        return outputs
+
+
 class FakeTokenizer:
     pieces = {
         0: "<special>",
@@ -181,6 +293,38 @@ def test_empty_context_baseline_is_ready_before_editor_context(make_index) -> No
     assert all(candidate.constraint_kind != "literal" for candidate in page.candidates)
 
 
+def test_chinese_page_zero_reserves_eight_han_slots_and_one_latin_slot(make_index) -> None:
+    engine, _ = _engine(make_index)
+
+    page = _page(engine, "n")
+
+    assert [candidate.script for candidate in page.candidates] == ["han"] * 8 + ["latin"]
+
+
+def test_ready_chinese_context_reorders_page_zero_ahead_of_baseline_prewarm(make_index) -> None:
+    engine, runtime = _engine(make_index)
+    baseline = _page(engine, "n")
+    assert baseline.candidates[0].text != "逆"
+
+    contextual_logits = runtime.logits.copy()
+    contextual_logits[9] = 1_000.0
+    runtime.logits = contextual_logits
+    context_state = engine.update_context("这是一个中文上下文")
+
+    contextual = _page(
+        engine,
+        "n",
+        composition_revision=2,
+        context_epoch=context_state.epoch,
+        context_session="source-context",
+        source_revision=1,
+    )
+
+    assert contextual.score_source == "context"
+    assert contextual.candidates[0].text == "逆"
+    assert [candidate.script for candidate in contextual.candidates] == ["han"] * 8 + ["latin"]
+
+
 def test_predicted_syllables_is_hard_primary_han_bucket(make_index) -> None:
     engine, _ = _engine(make_index)
 
@@ -207,6 +351,30 @@ def test_predicted_syllables_is_hard_primary_han_bucket(make_index) -> None:
     assert by_text["你好"].predicted_syllables == 1
 
 
+def test_wide_han_root_materializes_only_protocol_reachable_candidates(make_index) -> None:
+    rows = [(token_id, chr(0x4E00 + token_id), "zi", "zi", 1, 0) for token_id in range(1, 251)]
+    index = make_index(rows)
+    logits = np.full(300, -100.0, dtype=np.float32)
+    logits[1:251] = np.arange(250, 0, -1, dtype=np.float32)
+    runtime = FakeRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    candidates = engine.candidate_pages._root_han_candidates("z", None, 0)
+    eligible_token_ids = sorted(
+        int(entry.token_id)
+        for entry in engine.candidate_pages.matcher.entries
+        if entry.token_id is not None
+    )
+
+    assert len(candidates) == 180
+    assert {candidate.token_id for candidate in candidates} == set(eligible_token_ids[:180])
+
+
 @pytest.mark.parametrize(
     ("raw", "expected", "predicted"),
     [
@@ -230,6 +398,31 @@ def test_half_pinyin_and_initial_shorthand_stay_on_legal_model_paths(
     assert matches
     assert min(candidate.predicted_syllables for candidate in matches) == predicted
     assert all(candidate.token_path for candidate in matches)
+
+
+def test_initial_shorthand_survives_a_competing_exact_short_syllable(make_index) -> None:
+    index = make_index(
+        [
+            (1, "嗯", "n", "n", 1, 0),
+            (2, "你好", "nihao", "ni'hao", 2, 0),
+        ]
+    )
+    logits = np.full(4, -20.0, dtype=np.float32)
+    logits[1] = 20.0
+    logits[2] = 10.0
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(FakeRuntime(logits)),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    page = _page(engine, "nh")
+
+    by_text = {candidate.text: candidate for candidate in page.candidates}
+    assert "你好" in by_text
+    assert by_text["你好"].completes_input
+    assert by_text["你好"].token_path == (2,)
 
 
 def test_full_input_can_offer_prefix_consumption_without_beating_full_cover(make_index) -> None:
@@ -318,7 +511,10 @@ def test_returned_pages_are_frozen_and_candidate_ids_stable(make_index) -> None:
 
 
 def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> None:
-    rows = [(token_id, chr(0x4E00 + token_id), "ni", "ni", 1, 0) for token_id in range(1, 46)]
+    simplified = (
+        "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能看"
+    )
+    rows = [(token_id, text, "ni", "ni", 1, 0) for token_id, text in enumerate(simplified, start=1)]
     index = make_index(rows)
     logits = np.arange(64, dtype=np.float32)
     engine = BilingualImeEngine(
@@ -362,6 +558,218 @@ def test_page_zero_never_waits_for_continuation_and_long_root_stays_unfrozen(mak
     assert runtime.continuation_calls == 0
     assert [candidate.text for candidate in first.candidates] == ["你"]
     assert first.has_more is True
+
+
+def test_search_frontier_retains_partial_root_beyond_visible_180(make_index) -> None:
+    safe = "的一是在不了有和人这中大为上个国我以要"
+    exact = [
+        (token_id, safe[left] + safe[right], "mingxian", "ming'xian", 2, 0)
+        for token_id, (left, right) in enumerate(
+            ((left, right) for left in range(len(safe)) for right in range(len(safe))),
+            start=1,
+        )
+    ][:250]
+    parent_token = 251
+    index = make_index([*exact, (parent_token, "明", "ming", "ming", 1, 0)])
+    logits = np.full(300, -20.0, dtype=np.float32)
+    logits[1:251] = np.arange(250, dtype=np.float32)
+    logits[parent_token] = 1_000.0
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(FakeRuntime(logits)),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    first = _page(engine, "mingxian")
+    session = engine.candidate_pages._sessions[first.candidate_set_id]
+
+    assert all(candidate.text != "明" for candidate in first.candidates)
+    assert any(path.token_path == (parent_token,) for path in session.frontier)
+
+
+def test_page_zero_background_continuation_publishes_only_to_next_revision(make_index) -> None:
+    index = make_index(
+        [
+            (1, "明", "ming", "ming", 1, 0),
+            (2, "显", "xian", "xian", 1, 0),
+        ]
+    )
+    logits = np.full(8, -20.0, dtype=np.float32)
+    logits[1] = 10.0
+    logits[2] = 9.0
+    runtime = BlockingContinuationRuntime(logits)
+    runtime.__post_init__()
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    first = _page(engine, "mingxian")
+    assert [candidate.text for candidate in first.candidates] == ["明"]
+    assert runtime.started.wait(0.5)
+    replay = _page(engine, "mingxian")
+    assert replay.candidate_set_id == first.candidate_set_id
+    assert replay.candidates == first.candidates
+
+    runtime.release.set()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if engine.candidate_pages._async_han_cache:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("background continuation did not publish its completed candidate")
+
+    refreshed = _page(engine, "mingxian", composition_revision=2)
+    assert refreshed.candidate_set_id != first.candidate_set_id
+    assert refreshed.candidates[0].text == "明显"
+
+
+def test_background_continuation_batches_production_shorthand_roots(
+    make_index,
+    monkeypatch,
+) -> None:
+    index = make_index(
+        [
+            (1, "明星", "mingxing", "ming'xing", 2, 0),
+            (2, "梦想", "mengxiang", "meng'xiang", 2, 0),
+            (3, "明显", "mingxian", "ming'xian", 2, 0),
+            (4, "不对", "budui", "bu'dui", 2, 0),
+        ]
+    )
+    logits = np.full(8, -20.0, dtype=np.float32)
+    logits[1] = 12.0
+    logits[2] = 11.0
+    logits[3] = 10.0
+    runtime = ProductionTopologyContinuationRuntime(logits)
+    runtime.__post_init__()
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+    matcher = engine.candidate_pages.matcher
+    assert matcher is not None
+    original_neural_matches = matcher.neural_matches
+    suffix_match_starts: list[int] = []
+
+    def counted_neural_matches(raw, start=0, boundaries=None):
+        if start > 0:
+            suffix_match_starts.append(start)
+        return original_neural_matches(raw, start, boundaries)
+
+    monkeypatch.setattr(matcher, "neural_matches", counted_neural_matches)
+
+    first = _page(engine, "mxbd")
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if engine.candidate_pages._async_han_cache:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("background continuation did not publish the multi-token phrase")
+
+    assert runtime.continuation_batches
+    assert runtime.continuation_batches[0][0] != (3,)
+    assert (3,) in runtime.continuation_batches[0]
+    assert suffix_match_starts == [2]
+    replay = _page(engine, "mxbd")
+    assert replay.candidate_set_id == first.candidate_set_id
+    assert all(candidate.text != "明显不对" for candidate in replay.candidates)
+
+    refreshed = _page(engine, "mxbd", composition_revision=2)
+    assert refreshed.candidate_set_id != first.candidate_set_id
+    assert refreshed.candidates[0].text == "明显不对"
+
+
+def test_background_continuation_progresses_beyond_first_root_batch(make_index) -> None:
+    # Keep nineteen lower-scoring roots in the same shorthand bucket so the
+    # desired twentieth root can only be reached by multiple eight-root calls.
+    dummy_text = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申"
+    rows = [
+        (token_id, text, "ming'xian", "ming'xian", 2, 0)
+        for token_id, text in enumerate(dummy_text, start=1)
+    ]
+    rows.extend(
+        [
+            (20, "明显", "ming'xian", "ming'xian", 2, 0),
+            (21, "不对", "bu'dui", "bu'dui", 2, 0),
+        ]
+    )
+    index = make_index(rows)
+    logits = np.full(22, -20.0, dtype=np.float32)
+    logits[1:20] = np.arange(19, 0, -1, dtype=np.float32)
+    logits[20] = -1.0
+    runtime = ProgressiveContinuationRuntime(logits)
+    runtime.__post_init__()
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    first = _page(engine, "mxbd")
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if engine.candidate_pages._async_han_cache:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("progressive background continuation did not publish a candidate")
+
+    assert len(runtime.continuation_batches) >= 3
+    assert (20,) in runtime.continuation_batches[2]
+    refreshed = _page(engine, "mxbd", composition_revision=2)
+    assert refreshed.candidate_set_id != first.candidate_set_id
+    pages = [refreshed]
+    for page_index in (1, 2):
+        pages.append(
+            _page(
+                engine,
+                "mxbd",
+                composition_revision=2,
+                page_index=page_index,
+                candidate_set_id=refreshed.candidate_set_id,
+            )
+        )
+    assert any(
+        candidate.text == "明显不对"
+        for page in pages
+        for candidate in page.candidates
+    )
+
+
+def test_focus_invalidation_discards_background_continuation_result(make_index) -> None:
+    index = make_index(
+        [
+            (1, "明", "ming", "ming", 1, 0),
+            (2, "显", "xian", "xian", 1, 0),
+        ]
+    )
+    logits = np.full(8, -20.0, dtype=np.float32)
+    logits[1] = 10.0
+    logits[2] = 9.0
+    runtime = BlockingContinuationRuntime(logits)
+    runtime.__post_init__()
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    _page(engine, "mingxian")
+    assert runtime.started.wait(0.5)
+    engine.invalidate_candidate_sessions()
+    runtime.release.set()
+    time.sleep(0.05)
+
+    assert not engine.candidate_pages._async_han_cache
 
 
 def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> None:

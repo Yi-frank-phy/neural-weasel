@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 import time
 import unicodedata
@@ -15,7 +16,7 @@ import numpy as np
 
 from .backends import BackendState, ModelBackend
 from .candidate import Candidate
-from .pinyin import is_all_han, parse_raw_pinyin
+from .pinyin import parse_raw_pinyin
 from .pinyin_partial import PartialPinyinMatcher
 from .unified import LatinPrefixConstraint, detect_script
 
@@ -29,6 +30,7 @@ MAX_HAN_CHARACTERS = 64
 MAX_FRONTIER_PER_BUCKET = 32
 PAGE0_DEADLINE_MS = 35.0
 NEXT_PAGE_DEADLINE_MS = 120.0
+_MAX_ROOT_HAN_PLAN_CACHE = 256
 
 
 class NeuralLanguageMode(StrEnum):
@@ -78,6 +80,18 @@ class _SearchPath:
     score: float
     predicted_syllables: int
     script: str = "han"
+
+
+@dataclass(frozen=True, slots=True)
+class _RootHanPlanEntry:
+    text: str
+    pinyin: str
+    normalized_text: str
+    consumed_keys: int
+    completes_input: bool
+    syllables: int
+    token_id: int
+    predicted_syllables: int
 
 
 @dataclass(slots=True)
@@ -187,6 +201,7 @@ class NeuralCandidatePageManager:
             tuple[str, NeuralLanguageMode], tuple[Candidate, ...]
         ] = {}
         self._sessions: OrderedDict[str, _SearchSession] = OrderedDict()
+        self._root_han_plans: OrderedDict[str, tuple[_RootHanPlanEntry, ...]] = OrderedDict()
         self._last_page_metrics: dict[str, int | float | None] = {
             "last_candidate_page_index": None,
             "last_candidate_count": None,
@@ -200,12 +215,7 @@ class NeuralCandidatePageManager:
         if self.matcher is not None:
             grouped: dict[int, list[Any]] = {}
             for entry in self.matcher.entries:
-                if (
-                    entry.token_id is None
-                    or entry.coverage
-                    or not is_all_han(entry.text)
-                    or len(entry.text) > MAX_HAN_CHARACTERS
-                ):
+                if entry.token_id is None or entry.coverage or len(entry.text) > MAX_HAN_CHARACTERS:
                     continue
                 grouped.setdefault(int(entry.token_id), []).append(entry)
             self._continuation_entries_by_token = {
@@ -435,63 +445,117 @@ class NeuralCandidatePageManager:
         state: BackendState | None,
         response_epoch: int,
     ) -> list[Candidate]:
-        if self.matcher is None:
+        plan = self._root_han_plan(raw_keys)
+        if not plan:
             return []
+        return self._materialize_root_han_candidates(
+            plan,
+            state=state,
+            response_epoch=response_epoch,
+        )
+
+    def _root_han_plan(self, raw_keys: str) -> tuple[_RootHanPlanEntry, ...]:
+        cached = self._root_han_plans.pop(raw_keys, None)
+        if cached is not None:
+            self._root_han_plans[raw_keys] = cached
+            return cached
+        if self.matcher is None:
+            return ()
         try:
             parsed = parse_raw_pinyin(raw_keys)
         except ValueError:
-            return []
+            return ()
         raw = parsed.compact
         if not raw:
-            return []
+            return ()
         matches = [
             match
             for match in self.matcher.neural_matches(raw, 0)
             if match.next_position > 0
             and match.entry.token_id is not None
             and not match.entry.coverage
-            and is_all_han(match.entry.text)
             and len(match.entry.text) <= MAX_HAN_CHARACTERS
         ]
-        if not matches:
-            return []
-        token_ids = [int(match.entry.token_id) for match in matches]
+        plan = tuple(
+            _RootHanPlanEntry(
+                text=match.entry.text,
+                pinyin=match.entry.display_pinyin,
+                normalized_text=match.entry.normalized_text,
+                consumed_keys=parsed.raw_characters_for_letters(match.next_position),
+                completes_input=match.next_position == len(raw),
+                syllables=match.entry.syllables,
+                token_id=int(match.entry.token_id),
+                predicted_syllables=(
+                    match.completion_syllables if match.next_position == len(raw) else 0
+                ),
+            )
+            for match in matches
+        )
+        self._root_han_plans[raw_keys] = plan
+        while len(self._root_han_plans) > _MAX_ROOT_HAN_PLAN_CACHE:
+            self._root_han_plans.popitem(last=False)
+        return plan
+
+    def _materialize_root_han_candidates(
+        self,
+        plan: Sequence[_RootHanPlanEntry],
+        *,
+        state: BackendState | None,
+        response_epoch: int,
+    ) -> list[Candidate]:
+        token_ids = [entry.token_id for entry in plan]
         scores = self._score_root(state, token_ids)
-        candidates: list[Candidate] = []
-        for match, score in zip(matches, scores, strict=True):
+        best: dict[
+            tuple[str, int],
+            tuple[tuple[object, ...], _RootHanPlanEntry, float],
+        ] = {}
+        for entry, score in zip(plan, scores, strict=True):
             if not math.isfinite(float(score)):
                 continue
-            consumed = parsed.raw_characters_for_letters(match.next_position)
-            completes = match.next_position == len(raw)
-            predicted = match.completion_syllables if completes else 0
-            entry = match.entry
             value = float(score)
-            candidates.append(
-                Candidate(
-                    text=entry.text,
-                    pinyin=entry.display_pinyin,
-                    consumed_keys=consumed,
-                    score=value,
-                    context_epoch=response_epoch,
-                    coverage=False,
-                    completes_input=completes,
-                    syllables=entry.syllables,
-                    token_id=int(entry.token_id),
-                    constraint_kind="pinyin",
-                    script="han",
-                    model_score=value,
-                    total_score=value,
-                    token_path=(int(entry.token_id),),
-                    predicted_syllables=predicted,
-                )
+            sort_key = (
+                not entry.completes_input,
+                entry.predicted_syllables,
+                -value,
+                -entry.consumed_keys,
+                entry.normalized_text,
+                (entry.token_id,),
+                entry.pinyin,
             )
-        best: dict[tuple[str, int], Candidate] = {}
-        for candidate in candidates:
-            key = (unicodedata.normalize("NFKC", candidate.text), candidate.consumed_keys)
+            key = (entry.normalized_text, entry.consumed_keys)
             previous = best.get(key)
-            if previous is None or _candidate_key(candidate) < _candidate_key(previous):
-                best[key] = candidate
-        return list(best.values())
+            if previous is None or sort_key < previous[0]:
+                best[key] = (sort_key, entry, value)
+
+        # A revision can freeze at most this many candidates across every page.
+        # Retain the exact globally ordered reachable prefix, matching the
+        # existing single-letter baseline cache contract, before constructing
+        # heavyweight Candidate objects.
+        selected = heapq.nsmallest(
+            MAX_FROZEN_CANDIDATES,
+            best.values(),
+            key=lambda value: value[0],
+        )
+        return [
+            Candidate(
+                text=entry.text,
+                pinyin=entry.pinyin,
+                consumed_keys=entry.consumed_keys,
+                score=score,
+                context_epoch=response_epoch,
+                coverage=False,
+                completes_input=entry.completes_input,
+                syllables=entry.syllables,
+                token_id=entry.token_id,
+                constraint_kind="pinyin",
+                script="han",
+                model_score=score,
+                total_score=score,
+                token_path=(entry.token_id,),
+                predicted_syllables=entry.predicted_syllables,
+            )
+            for _, entry, score in selected
+        ]
 
     def _root_latin_candidates(
         self,
@@ -722,26 +786,14 @@ class NeuralCandidatePageManager:
             ]
             return chosen
 
-        first = han[0]
-        chosen = [first]
-        used = {(first.text, first.consumed_keys, first.token_path)}
-        for candidate in freezable:
-            if len(chosen) >= page_size:
-                break
-            key = (candidate.text, candidate.consumed_keys, candidate.token_path)
-            if key in used:
-                continue
-            chosen.append(candidate)
-            used.add(key)
-
-        # Chinese page 0 must keep at least one neural Latin slot when available.
-        if latin and not any(candidate.script == "latin" for candidate in chosen):
-            replacement = latin[0]
-            if len(chosen) < page_size:
-                chosen.append(replacement)
-            elif len(chosen) > 1:
-                chosen[-1] = replacement
-            used.add((replacement.text, replacement.consumed_keys, replacement.token_path))
+        # Latin has its own explicit five-item mode. Keep one neural Latin
+        # escape hatch on the Chinese homepage without allowing high-scoring
+        # ASCII tokens to evict all but the first Han candidate.
+        han_limit = page_size - 1 if latin else page_size
+        chosen = [
+            *han[:han_limit],
+            *latin[: max(0, page_size - min(len(han), han_limit))],
+        ]
 
         selected_set = set(chosen)
         session.pending = [

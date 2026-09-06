@@ -138,7 +138,7 @@ def test_bilingual_engine_keeps_old_epoch_queryable(make_index) -> None:
     assert engine.has_snapshot(second.epoch)
 
 
-def test_background_prewarm_memoizes_slow_initial_prefixes(
+def test_legacy_candidate_query_remains_lazy_and_memoized(
     make_index,
     monkeypatch,
 ) -> None:
@@ -153,16 +153,20 @@ def test_background_prewarm_memoizes_slow_initial_prefixes(
     monkeypatch.setattr(engine.constraint_engine, "query", counting_query)
     epoch = engine.request_context_update("中文上下文")
     assert engine.wait_for_epoch(epoch, timeout_seconds=1.0)
-    assert observed_keys[:2] == ["n", "ni"]
+    assert observed_keys == []
 
-    calls_after_prewarm = len(observed_keys)
     assert engine.query("n", 5, context_epoch=epoch)
     assert engine.query("ni", 5, context_epoch=epoch)
-    assert len(observed_keys) == calls_after_prewarm
+    assert observed_keys == ["n", "ni"]
+
+    calls_after_lazy_queries = len(observed_keys)
+    assert engine.query("n", 5, context_epoch=epoch)
+    assert engine.query("ni", 5, context_epoch=epoch)
+    assert len(observed_keys) == calls_after_lazy_queries
 
     engine.commit("English")
     engine.query("n", 5, context_epoch=epoch)
-    assert len(observed_keys) == calls_after_prewarm + 1
+    assert len(observed_keys) == calls_after_lazy_queries + 1
 
 
 def test_query_candidates_protocol_uses_unified_engine(make_index) -> None:

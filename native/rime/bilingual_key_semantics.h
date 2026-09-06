@@ -30,6 +30,11 @@ enum class KeyOutcome {
   kRequestPreviousPage,
 };
 
+bool ShouldToggleLanguageMode(bool shift_pressed,
+                              bool shift_used_as_modifier,
+                              bool started_while_idle,
+                              bool composing_on_release) noexcept;
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,

@@ -37,6 +37,18 @@ class FakeTokenizer:
 
 
 @dataclass
+class ObservedCompletion:
+    value: str
+    token_path: tuple[int, ...]
+    text_reads: int = 0
+
+    @property
+    def text(self) -> str:
+        self.text_reads += 1
+        return self.value
+
+
+@dataclass
 class LatinContinuationRuntime:
     logits: np.ndarray
     continuation_calls: int = 0
@@ -115,7 +127,9 @@ def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization(
     engine, runtime = _engine()
 
     first = _page(engine, "asymmetry", 1)
-    assert first.candidates == ()
+    assert len(first.candidates) == 1
+    assert first.candidates[0].text == "asymmetry"
+    assert first.candidates[0].constraint_kind == "literal"
     assert first.has_more is True
     assert runtime.continuation_calls == 0
 
@@ -188,3 +202,31 @@ def test_scored_multitoken_baseline_refreshes_prewarm_and_rebinds_current_raw() 
     assert exact.consumed_keys == len("asymmetry")
     assert exact.completes_input is True
     assert runtime.continuation_calls == calls_after_search
+
+
+def test_page_zero_does_not_rescan_unrelated_latin_initials() -> None:
+    matching = ObservedCompletion("native", (10,))
+    unrelated = [
+        ObservedCompletion(f"apple{suffix}", (token_id,))
+        for token_id, suffix in enumerate(range(1_000), start=20)
+    ]
+    latin = NeuralLatinPrefixConstraint(
+        [matching, *unrelated],
+        continuation_fragments={},
+    )
+    logits = np.full(1_020, -20.0, dtype=np.float32)
+    logits[10] = 5.0
+    runtime = LatinContinuationRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        latin_prefix_constraint=latin,
+    )
+    engine.initialize_neural_baseline()
+    matching.text_reads = 0
+    for completion in unrelated:
+        completion.text_reads = 0
+
+    page = _page(engine, "na", 1)
+
+    assert any(candidate.text == "native" for candidate in page.candidates)
+    assert sum(completion.text_reads for completion in unrelated) == 0

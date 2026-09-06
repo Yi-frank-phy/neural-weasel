@@ -4,7 +4,6 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
-from itertools import product
 
 from pypinyin import Style, pinyin
 
@@ -82,18 +81,26 @@ def _normalize_syllable(value: str) -> str:
 def pronunciation_paths(text: str, max_paths: int = 256) -> tuple[tuple[str, ...], ...]:
     if not is_all_han(text):
         return ()
-    per_character: list[tuple[str, ...]] = []
+
+    # A multi-character model token is a phrase, not an independent choice of
+    # one heteronym per character. The Cartesian product admitted impossible
+    # paths such as 谷歌 -> yu'ge. Let pypinyin's phrase dictionary choose one
+    # coherent path; single-character tokens still retain every legal reading.
+    if len(text) > 1:
+        path: list[str] = []
+        for readings in pinyin(text, style=Style.NORMAL, heteronym=False, strict=False):
+            clean = tuple(_normalize_syllable(value) for value in readings if value)
+            if not clean:
+                return ()
+            path.append(clean[0])
+        return (tuple(path),)
+
+    paths: list[tuple[str, ...]] = []
     for readings in pinyin(text, style=Style.NORMAL, heteronym=True, strict=False):
         clean = tuple(dict.fromkeys(_normalize_syllable(value) for value in readings if value))
         if not clean:
             return ()
-        per_character.append(clean)
-
-    paths: list[tuple[str, ...]] = []
-    for path in product(*per_character):
-        paths.append(tuple(path))
-        if len(paths) >= max_paths:
-            break
+        paths.extend((value,) for value in clean[:max_paths])
     return tuple(paths)
 
 

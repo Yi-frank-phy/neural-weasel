@@ -15,4 +15,8 @@ HRESULT CaptureWeaselContext(ITfContext* context, TfClientId client_id) noexcept
 // Invalidates the current source and queues a text-free clear frame.
 void ClearWeaselContext() noexcept;
 
+// True only after an owner-thread TSF edit session has proved a normal,
+// prediction-eligible input scope for the current focus capability.
+bool IsWeaselPredictionAllowed() noexcept;
+
 }  // namespace neural_weasel::tsf

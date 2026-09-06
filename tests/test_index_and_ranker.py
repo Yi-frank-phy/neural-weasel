@@ -55,6 +55,7 @@ def test_default_index_path_changes_with_revision_and_pypinyin_version(
     assert base != new_pinyin
     assert "commit-a" in base.name
     assert "pypinyin-0.55" in base.name
+    assert base.name.endswith("-v3.sqlite3")
 
 
 def test_builder_persists_tokens_polyphones_coverage_and_metadata(
@@ -84,14 +85,14 @@ def test_builder_persists_tokens_polyphones_coverage_and_metadata(
     assert loaded.metadata["model_id"] == "test/base-model"
     assert loaded.metadata["revision"] == "abc123"
     assert loaded.metadata["tokenizer_hash"] == tokenizer_fingerprint(tokenizer)
-    assert loaded.stats() == {"model": 4, "coverage": 1}
+    assert loaded.stats() == {"model": 4}
 
     ni_entries = loaded.compatible(index_module.ParsedPinyinInput("ni", "ni", frozenset()))
     assert {(entry.text, entry.coverage) for entry in ni_entries} >= {
         ("你", False),
         ("你好", False),
-        ("妳", True),
     }
+    assert all(entry.text != "妳" for entry in ni_entries)
     parsed_hang = index_module.ParsedPinyinInput("hang", "hang", frozenset())
     assert {entry.pinyin for entry in loaded.compatible(parsed_hang)} == {"hang"}
 
@@ -140,13 +141,40 @@ def test_index_returns_completed_prefixes_and_longer_prefix_matches(make_index) 
     assert index.compatible(parsed_z) == []
 
 
+def test_index_rejects_traditional_han_from_existing_physical_indexes(make_index) -> None:
+    index = make_index(
+        [
+            (1, "后台", "houtai", "hou'tai", 2, 0),
+            (2, "後臺", "houtai", "hou'tai", 2, 0),
+            (3, "backend", "houtai", "hou'tai", 2, 0),
+        ]
+    )
+
+    parsed = index_module.ParsedPinyinInput("houtai", "houtai", frozenset())
+
+    assert {entry.text for entry in index.compatible(parsed)} == {"后台"}
+
+
+def test_builder_does_not_index_cartesian_polyphone_paths(tmp_path: Path) -> None:
+    tokenizer = FakeTokenizer()
+    tokenizer._tokens = ["<special>", "谷歌"]
+    path = PinyinIndexBuilder(tokenizer, "test/base-model").build(tmp_path / "phrase-aware.sqlite3")
+    loaded = index_module.PinyinIndex(path)
+
+    guge = index_module.ParsedPinyinInput("guge", "guge", frozenset())
+    yuge = index_module.ParsedPinyinInput("yuge", "yuge", frozenset())
+
+    assert "谷歌" in {entry.text for entry in loaded.compatible(guge)}
+    assert all(entry.text != "谷歌" for entry in loaded.compatible(yuge))
+
+
 def test_ranker_prefers_exact_then_more_syllables_then_model_score(make_index) -> None:
     index = make_index(
         [
             (1, "你好", "nihao", 2, 0),
             (2, "拟好", "nihao", 2, 0),
             (3, "你", "ni", 1, 0),
-            (None, "妳", "ni", 1, 1),
+            (None, "尼", "ni", 1, 1),
             (4, "年", "nian", 1, 0),
         ]
     )
@@ -160,7 +188,7 @@ def test_ranker_prefers_exact_then_more_syllables_then_model_score(make_index) -
         limit=5,
     )
 
-    assert [candidate.text for candidate in candidates] == ["拟好", "你好", "你", "妳"]
+    assert [candidate.text for candidate in candidates] == ["拟好", "你好", "你", "尼"]
     assert candidates[0].completes_input
     assert candidates[0].consumed_keys == 5
     assert candidates[0].score == 8.0

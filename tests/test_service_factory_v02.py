@@ -8,6 +8,7 @@ import pytest
 
 from neural_weasel.backends import RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
+from neural_weasel.index import SCHEMA_VERSION
 from neural_weasel.internal_cli import _parser
 from neural_weasel.service_factory import build_bilingual_engine
 
@@ -59,7 +60,7 @@ class EmptyPinyinIndex:
     root = SimpleNamespace(children={}, terminals=[])
     syllables: set[str] = set()
     metadata = {
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
         "model_id": FakeRuntime.model_id,
         "revision": FakeRuntime.tokenizer_revision,
         "tokenizer_hash": FakeRuntime.tokenizer_fingerprint,

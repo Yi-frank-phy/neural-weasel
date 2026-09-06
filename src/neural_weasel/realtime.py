@@ -10,8 +10,6 @@ from .backends import BackendState, ModelBackend
 from .candidate import Candidate
 from .unified import UnifiedConstraintEngine
 
-_CANDIDATE_PREWARM_KEYS = ("n", "ni")
-
 
 class SnapshotCoordinator:
     """Publish only the newest requested backend state.
@@ -110,45 +108,12 @@ class SnapshotCoordinator:
                             continue
                         self._last_refresh_error = None
                         self._last_prewarm_error = None
-                        # Publication is the readiness boundary. Any compatibility
-                        # prewarm happens only after the epoch is already queryable.
                         self._publish(state)
             except Exception as error:
                 with self._request_lock:
                     if requested_epoch == self._requested_epoch:
                         self._last_refresh_error = type(error).__name__
                 continue
-
-            prewarm_error = self._prewarm_candidate_path(before, after, state)
-            with self._request_lock:
-                if requested_epoch == self._requested_epoch:
-                    self._last_prewarm_error = prewarm_error
-
-    def _prewarm_candidate_path(
-        self,
-        before: str,
-        after: str,
-        state: BackendState,
-    ) -> str | None:
-        """Warm only the legacy query path after snapshot publication.
-
-        The new page protocol has its own permanent empty-context prewarm and
-        does not depend on this compatibility optimization. This method may not
-        delay publication of an editor context epoch.
-        """
-
-        try:
-            for raw_keys in _CANDIDATE_PREWARM_KEYS:
-                self._candidate_query(
-                    before,
-                    raw_keys,
-                    state=state,
-                    after_text=after,
-                    limit=5,
-                )
-        except Exception as error:
-            return type(error).__name__
-        return None
 
     def _publish(self, state: BackendState) -> None:
         with self._state_lock:

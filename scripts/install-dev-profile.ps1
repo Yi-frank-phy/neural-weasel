@@ -206,6 +206,7 @@ $Required = @(
     $ProfileToolName,
     $ActivatorName,
     $ServerName,
+    'rime.dll',
     'NeuralWeaselRimeModule.lib',
     'build-manifest.json',
     'install-dev-profile.ps1',

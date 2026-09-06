@@ -2,6 +2,14 @@
 
 namespace neural_weasel::rime_plugin {
 
+bool ShouldToggleLanguageMode(bool shift_pressed,
+                              bool shift_used_as_modifier,
+                              bool started_while_idle,
+                              bool composing_on_release) noexcept {
+  return shift_pressed && !shift_used_as_modifier && started_while_idle &&
+         !composing_on_release;
+}
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,

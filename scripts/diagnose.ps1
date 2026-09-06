@@ -44,6 +44,7 @@ $RequiredFiles = @(
     'NeuralWeaselExperimentalTSF.dll',
     'NeuralWeaselProfileTool.exe',
     'NeuralWeaselServer.exe',
+    'rime.dll',
     'NeuralWeaselRimeModule.lib',
     'data\neural_weasel.schema.yaml'
 )

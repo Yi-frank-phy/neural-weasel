@@ -4,8 +4,9 @@ import hashlib
 import json
 import sqlite3
 import time
+import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +14,9 @@ import numpy as np
 
 from .paths import indexes_root
 from .pinyin import ParsedPinyinInput, concatenate_path, is_all_han, pronunciation_paths
+from .simplified_chinese import is_simplified_han
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,10 +27,12 @@ class IndexedPronunciation:
     syllable_path: tuple[str, ...]
     syllables: int
     coverage: bool
+    display_pinyin: str = field(init=False)
+    normalized_text: str = field(init=False)
 
-    @property
-    def display_pinyin(self) -> str:
-        return "'".join(self.syllable_path)
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "display_pinyin", "'".join(self.syllable_path))
+        object.__setattr__(self, "normalized_text", unicodedata.normalize("NFKC", self.text))
 
     @property
     def boundaries(self) -> frozenset[int]:
@@ -189,7 +193,7 @@ class PinyinIndexBuilder:
                 skip_special_tokens=False,
                 clean_up_tokenization_spaces=False,
             )
-            if not is_all_han(text):
+            if not is_all_han(text) or not is_simplified_han(text):
                 continue
             for path in pronunciation_paths(text):
                 rows.append((token_id, text, concatenate_path(path), "'".join(path), len(path), 0))
@@ -226,7 +230,7 @@ class PinyinIndexBuilder:
         rows: list[tuple[None, str, str, str, int, int]] = []
         for codepoint in PINYIN_DICT:
             char = chr(codepoint)
-            if char in direct_characters or not is_all_han(char):
+            if char in direct_characters or not is_all_han(char) or not is_simplified_han(char):
                 continue
             for path in pronunciation_paths(char):
                 rows.append((None, char, concatenate_path(path), "'".join(path), 1, 1))
@@ -294,6 +298,11 @@ class PinyinIndex:
                 ORDER BY pinyin, coverage, token_id
                 """
             ):
+                # Old physical indexes may predate the Simplified-only service
+                # invariant. Filter them while loading so deployment does not
+                # depend on mutating or rebuilding a user's cached index first.
+                if not is_simplified_han(text):
+                    continue
                 entry = IndexedPronunciation(
                     token_id=token_id,
                     text=text,

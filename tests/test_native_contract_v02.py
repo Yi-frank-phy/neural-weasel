@@ -92,6 +92,20 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     assert "verify-windows-bundle.py" in workflow
 
 
+def test_windows_bundle_requires_librime_runtime_dependency() -> None:
+    """The server must never ship without its dynamically linked rime.dll."""
+    build = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts/verify-windows-bundle.py").read_text(encoding="utf-8")
+    installer = (ROOT / "scripts/install-dev-profile.ps1").read_text(encoding="utf-8")
+    diagnose = (ROOT / "scripts/diagnose.ps1").read_text(encoding="utf-8")
+    launcher = (ROOT / "scripts/launch-neural-weasel.ps1").read_text(encoding="utf-8")
+
+    for contract in (build, verifier, installer, diagnose, launcher):
+        assert "rime.dll" in contract
+    assert "Resolve-RequiredBuildArtifact" in build
+    assert "Copy-RequiredFile -Source $RimeRuntimeArtifact" in build
+
+
 def test_plugin_build_generates_librime_build_config_header() -> None:
     """Source-only librime checkouts receive their generated header."""
     cmake = (ROOT / "native/CMakeLists.txt").read_text(encoding="utf-8")

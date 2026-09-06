@@ -106,6 +106,13 @@ def test_runtime_requests_full_cuda_offload_and_exposes_full_logits(tmp_path: Pa
     assert FakeLlama.created_kwargs["main_gpu"] == 0
     assert FakeLlama.created_kwargs["logits_all"] is False
     assert FakeLlama.created_kwargs["offload_kqv"] is True
+    # The model is fully offloaded to CUDA, while candidate IPC still needs a
+    # Python server thread to run inside the same process.  Never inherit
+    # llama-cpp-python's all-logical-CPU batch default: it can starve the
+    # foreground pipe for the entire context forward.
+    assert FakeLlama.created_kwargs["n_threads"] == 4
+    assert FakeLlama.created_kwargs["n_threads_batch"] == 4
+    assert FakeLlama.created_kwargs["_parallel_sequences"] == 4
 
     snapshot = backend.create_snapshot("你")
     assert np.array_equal(snapshot.logits, np.array([0.1, 2.0, 0.3, -1.0], dtype=np.float32))
@@ -144,7 +151,7 @@ def test_runtime_exposes_only_refresh_metadata_and_explicit_limits(tmp_path: Pat
     )
 
     assert FakeLlama.created_kwargs is not None
-    assert FakeLlama.created_kwargs["n_ctx"] == 8
+    assert FakeLlama.created_kwargs["n_ctx"] == 32
     assert FakeLlama.created_kwargs["n_batch"] == 4
 
     diagnostics = backend.diagnostics()

@@ -11,6 +11,7 @@
 #include <rime/key_table.h>
 
 #include "rime/bilingual_key_semantics.h"
+#include "rime/neural_refresh_key.h"
 
 namespace neural_weasel::rime_plugin {
 namespace {
@@ -98,20 +99,35 @@ void RefreshPage(::rime::Context* context,
     return ::rime::kNoop;
   }
 
+  if (key_event.keycode() == kNeuralRefreshKeycode &&
+      key_event.modifier() == 0) {
+    if (!context->IsComposing()) {
+      return ::rime::kAccepted;
+    }
+    context->set_property(kNeuralForceRefreshProperty, "1");
+    context->RefreshNonConfirmedComposition();
+    return ::rime::kAccepted;
+  }
+
   if (IsShiftKey(key_event)) {
     if (key_event.ctrl() || key_event.alt() || key_event.super()) {
       shift_pressed_ = false;
       shift_used_as_modifier_ = false;
+      shift_started_while_idle_ = false;
       return ::rime::kNoop;
     }
     if (!key_event.release()) {
       shift_pressed_ = true;
       shift_used_as_modifier_ = false;
+      shift_started_while_idle_ = !context->IsComposing();
       return ::rime::kAccepted;
     }
-    const bool toggle = shift_pressed_ && !shift_used_as_modifier_;
+    const bool toggle = ShouldToggleLanguageMode(
+        shift_pressed_, shift_used_as_modifier_, shift_started_while_idle_,
+        context->IsComposing());
     shift_pressed_ = false;
     shift_used_as_modifier_ = false;
+    shift_started_while_idle_ = false;
     if (!toggle) {
       return ::rime::kAccepted;
     }
@@ -124,9 +140,6 @@ void RefreshPage(::rime::Context* context,
     context->set_property("neural_page_index", "0");
     context->set_property("neural_has_more", "0");
     context->set_property("neural_candidate_fresh", "0");
-    if (context->IsComposing()) {
-      context->RefreshNonConfirmedComposition();
-    }
     return ::rime::kAccepted;
   }
 

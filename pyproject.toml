@@ -13,6 +13,7 @@ dependencies = [
     "pywin32>=311; sys_platform == 'win32'",
     "torch>=2.8",
     "transformers>=5.0",
+    "zhconv>=1.4.3",
 ]
 
 [project.optional-dependencies]

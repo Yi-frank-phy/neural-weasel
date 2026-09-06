@@ -168,6 +168,7 @@ $RequiredSourceFiles = @(
     'install-dev-profile.ps1',
     'start-model-service.ps1',
     'NeuralWeaselServer.exe',
+    'rime.dll',
     'NeuralWeaselSessionActivator.exe',
     'tools\uv.exe',
     'build-manifest.json'
@@ -197,8 +198,9 @@ Assert-LastExitCode -Operation 'One-click installation'
 
 $ServiceScript = Join-Path $InstallRoot 'start-model-service.ps1'
 $Server = Join-Path $InstallRoot 'NeuralWeaselServer.exe'
+$RimeRuntime = Join-Path $InstallRoot 'rime.dll'
 $Activator = Join-Path $InstallRoot 'NeuralWeaselSessionActivator.exe'
-foreach ($Path in @($ServiceScript, $Server, $Activator)) {
+foreach ($Path in @($ServiceScript, $Server, $RimeRuntime, $Activator)) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Installed runtime file is missing: $Path"
     }

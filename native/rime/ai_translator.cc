@@ -1,4 +1,5 @@
 #include "rime/ai_translator.h"
+#include "rime/neural_refresh_key.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -145,11 +146,13 @@ void AiTranslator::ResetCompositionBoundary() {
 
 void AiTranslator::OnContextUpdate(::rime::Context* context) {
   const bool composing = context && context->IsComposing();
-  if (!composing && (observed_composing_ || !composition_input_.empty())) {
+  const bool composition_ended =
+      !composing && (observed_composing_ || !composition_input_.empty());
+  observed_composing_ = composing;
+  if (composition_ended) {
     ResetCompositionBoundary();
     TraceAiTranslator(L"event=composition-boundary");
   }
-  observed_composing_ = composing;
 }
 
 ::rime::an<::rime::Translation> AiTranslator::Query(
@@ -174,6 +177,10 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
   context->set_property("neural_candidate_fresh", "0");
 
   try {
+    if (context->get_property(kNeuralForceRefreshProperty) == "1") {
+      context->set_property(kNeuralForceRefreshProperty, "0");
+      force_new_revision_ = true;
+    }
     const std::string language_mode = CurrentLanguageMode(context);
     const AcceptedEditorContext latest_context =
         EditorContextEpoch::Instance().LoadAccepted();

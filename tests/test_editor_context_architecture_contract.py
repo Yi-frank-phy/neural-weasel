@@ -110,6 +110,32 @@ def test_rime_candidate_revision_resets_across_identical_compositions() -> None:
     assert "composition_revision_ = 0" not in translator
     assert "::rime::connection context_update_connection_" in header
 
+    boundary = translator[
+        translator.index("void AiTranslator::OnContextUpdate") : translator.index(
+            "::rime::an<::rime::Translation> AiTranslator::Query"
+        )
+    ]
+    # A bare Shift chosen before composition is a persistent input-mode switch.
+    # Ending one word must not silently drop the user back into Chinese mode.
+    assert 'context->set_property("neural_language_mode", "chinese_first")' not in boundary
+
+
+def test_shift_language_mode_is_idle_only_and_persistent() -> None:
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(
+        encoding="utf-8"
+    )
+    header = (ROOT / "native/rime/bilingual_key_processor.h").read_text(
+        encoding="utf-8"
+    )
+    semantics = (ROOT / "native/rime/bilingual_key_semantics.cc").read_text(
+        encoding="utf-8"
+    )
+
+    assert "shift_started_while_idle_" in header
+    assert "ShouldToggleLanguageMode" in processor
+    assert "ShouldToggleLanguageMode" in semantics
+    assert "!composing_on_release" in semantics
+
 
 def test_rime_cancel_uses_pinned_context_clear() -> None:
     processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
@@ -131,3 +157,42 @@ def test_context_sender_and_broker_have_no_raw_context_read_api() -> None:
     )
     for operation in ("get_context", "dump_context", "list_contexts"):
         assert operation not in sources
+
+
+def test_private_refresh_event_forces_a_new_revision_without_editing_input() -> None:
+    refresh_key = (ROOT / "native/rime/neural_refresh_key.h").read_text(encoding="utf-8")
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(
+        encoding="utf-8"
+    )
+    translator = (ROOT / "native/rime/ai_translator.cc").read_text(encoding="utf-8")
+
+    assert "kNeuralRefreshKeycode = 0xFDD0" in refresh_key
+    refresh_block = processor[processor.index("kNeuralRefreshKeycode") :]
+    assert "PushInput" not in refresh_block.split("if (IsShiftKey", 1)[0]
+    assert 'set_property(kNeuralForceRefreshProperty, "1")' in refresh_block
+    assert "RefreshNonConfirmedComposition()" in refresh_block
+    assert 'get_property(kNeuralForceRefreshProperty) == "1"' in translator
+    assert "force_new_revision_ = true" in translator
+
+
+def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() -> None:
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    adapter = (ROOT / "native/tsf/weasel_context_adapter.cc").read_text(encoding="utf-8")
+
+    assert "HWND_MESSAGE" in overlay
+    assert "SetTimer" in overlay
+    assert "KillTimer" in overlay
+    assert "_ScheduleNeuralRefresh" in overlay
+    assert "_CancelNeuralRefresh" in overlay
+    assert "_RunNeuralRefresh" in overlay
+    assert "IsWeaselPredictionAllowed()" in overlay
+    assert "kNeuralRefreshKeycode" in overlay
+    assert "kNeuralRefreshMaxAttempts = 1" in overlay
+    refresh_block = overlay[overlay.index("void WeaselTSF::_RunNeuralRefresh()") :]
+    refresh_block = refresh_block.split("static void error_message", 1)[0]
+    assert "_HideUI" not in refresh_block
+    assert "Destroy" not in refresh_block
+    assert "std::thread" not in overlay
+    assert "prediction_allowed{false}" in adapter
+    assert "policy.allow_prediction" in adapter
+    assert "memory_order_acquire" in adapter
