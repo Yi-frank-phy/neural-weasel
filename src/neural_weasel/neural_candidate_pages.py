@@ -8,6 +8,27 @@ from .neural_candidates import CandidatePage, NeuralLanguageMode, _SearchIdentit
 class NeuralCandidatePageManager(_ScoredPageManager):
     """Publish completed background work only on an explicit presentation pull."""
 
+    def presentation_update_pending(self, candidate_set_id: str) -> bool:
+        """Report whether this immutable snapshot still has a newer presentation.
+
+        A completed async result remains pending until a presentation refresh has
+        published a new candidate set that includes it.  This closes the race in
+        which the worker leaves ``_background_searches`` just before the pipe
+        response is serialized while the caller still holds the older page.
+        """
+
+        with self._state_lock:
+            session = self._sessions.get(candidate_set_id)
+            if session is None:
+                return False
+            if candidate_set_id in self._background_searches:
+                return True
+            identity_key = self._async_identity_key(session.identity)
+            return (
+                identity_key in self._async_han_cache
+                and not self._session_includes_async_han.get(candidate_set_id, False)
+            )
+
     def query_page(
         self,
         *,
