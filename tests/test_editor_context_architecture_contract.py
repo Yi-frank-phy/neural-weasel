@@ -3,6 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+OVERLAY = ROOT / "scripts" / "prepare-weasel-overlay.ps1"
+OVERLAY_CORE = ROOT / "scripts" / "prepare-weasel-overlay-core.ps1"
+
+
+def _overlay_text() -> str:
+    return OVERLAY_CORE.read_text(encoding="utf-8-sig") + "\n" + OVERLAY.read_text(
+        encoding="utf-8-sig"
+    )
 
 
 def test_tsf_context_sender_is_authenticated_one_way_and_nonblocking() -> None:
@@ -28,7 +36,7 @@ def test_tsf_context_sender_is_authenticated_one_way_and_nonblocking() -> None:
 
 
 def test_server_owns_context_broker_and_tsf_does_not_own_backend() -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    overlay = _overlay_text()
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")
     tsf_block = overlay[tsf_start:server_start]
@@ -165,6 +173,7 @@ def test_private_refresh_event_advances_presentation_without_editing_input() -> 
     assert "PushInput" not in refresh_block
     assert 'set_property(kNeuralPresentationRefreshProperty, "1")' in refresh_block
     assert "RefreshNonConfirmedComposition()" in refresh_block
+    assert "kRejected" not in refresh_block
 
     presentation_start = translator.index('get_property(kNeuralPresentationRefreshProperty) == "1"')
     presentation_end = translator.index("const std::string language_mode", presentation_start)
@@ -176,7 +185,7 @@ def test_private_refresh_event_advances_presentation_without_editing_input() -> 
 
 
 def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    overlay = _overlay_text()
     adapter = (ROOT / "native/tsf/weasel_context_adapter.cc").read_text(encoding="utf-8")
 
     assert "HWND_MESSAGE" in overlay
@@ -188,6 +197,8 @@ def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() 
     assert "IsWeaselPredictionAllowed()" in overlay
     assert "kNeuralRefreshKeycode" in overlay
     assert "constexpr unsigned int kNeuralRefreshMaxAttempts = 16;" in overlay
+    assert "const bool presentation_ready = !_status.neural_candidate_pending;" in overlay
+    assert 'status.neural_candidate_pending=' in overlay
     refresh_block = overlay[overlay.index("void WeaselTSF::_RunNeuralRefresh()") :]
     refresh_block = refresh_block.split("static void error_message", 1)[0]
     assert "_HideUI" not in refresh_block
