@@ -166,9 +166,7 @@ def test_private_refresh_event_advances_presentation_without_editing_input() -> 
     assert 'set_property(kNeuralPresentationRefreshProperty, "1")' in refresh_block
     assert "RefreshNonConfirmedComposition()" in refresh_block
 
-    presentation_start = translator.index(
-        'get_property(kNeuralPresentationRefreshProperty) == "1"'
-    )
+    presentation_start = translator.index('get_property(kNeuralPresentationRefreshProperty) == "1"')
     presentation_end = translator.index("const std::string language_mode", presentation_start)
     presentation_block = translator[presentation_start:presentation_end]
     assert "presentation_refresh = true;" in presentation_block
