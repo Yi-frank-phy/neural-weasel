@@ -280,6 +280,18 @@ def _page(engine, raw: str, mode: str = "chinese_first", **kwargs):
     return engine.query_candidate_page(**values)
 
 
+def _wait_for_page_preparation(
+    engine: BilingualImeEngine,
+    candidate_set_id: str,
+    timeout: float = 1.0,
+) -> None:
+    manager = engine.candidate_pages
+    with manager._state_lock:
+        event = manager._page_preparation_events.get(candidate_set_id)
+    assert event is not None
+    assert event.wait(timeout)
+
+
 def test_empty_context_baseline_is_ready_before_editor_context(make_index) -> None:
     engine, runtime = _engine(make_index)
 
@@ -772,6 +784,10 @@ def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> Non
     engine, runtime = _continuation_engine(make_index)
     first = _page(engine, "n")
 
+    # C2 prepares page 1 in the background. Let the blocked first attempt finish,
+    # then verify that navigation itself does not retry the model.
+    _wait_for_page_preparation(engine, first.candidate_set_id)
+    assert runtime.continuation_calls == 1
     with pytest.raises(CandidatePageTimeout):
         _page(
             engine,
@@ -780,9 +796,12 @@ def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> Non
             candidate_set_id=first.candidate_set_id,
             deadline_ms=120.0,
         )
-
     assert runtime.continuation_calls == 1
+
     runtime.blocked = False
+    replay = _page(engine, "n")
+    assert replay.candidate_set_id == first.candidate_set_id
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     second = _page(
         engine,
         "n",
@@ -809,6 +828,7 @@ def test_context_session_never_hybridizes_with_baseline_continuation(make_index)
     )
     assert first.score_source == "context"
 
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     second = _page(
         engine,
         "n",

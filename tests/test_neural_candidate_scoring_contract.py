@@ -131,12 +131,12 @@ def test_baseline_multitoken_han_path_becomes_page_zero_supplement(make_index) -
     assert learned[0].model_score is not None
     assert learned[0].model_score <= 0.0
 
-    continuation_calls = runtime.continuation_calls
     replacement = _page(engine, 2)
     cached = [candidate for candidate in replacement.candidates if candidate.text == "你好"]
     assert cached
     assert cached[0].token_path == (1, 2)
-    assert runtime.continuation_calls == continuation_calls
+    # C2 may immediately continue preparing later pages in the background, so
+    # total continuation-call count is intentionally not stable after page 0.
     assert runtime.full_logits_calls == 1
 
 
