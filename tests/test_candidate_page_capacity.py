@@ -42,8 +42,7 @@ def test_capacity_zero_rejects_before_search_or_pending_mutation() -> None:
         pending=list(pending),
         exhausted=False,
         frozen_pages={
-            page_index: SimpleNamespace(candidates=tuple(range(9)))
-            for page_index in range(20)
+            page_index: SimpleNamespace(candidates=tuple(range(9))) for page_index in range(20)
         },
         score_source="baseline",
         search_depth=1,
@@ -66,8 +65,7 @@ def test_capacity_zero_rejects_before_search_or_pending_mutation() -> None:
 def test_last_capacity_slot_freezes_only_one_candidate_and_ends_paging() -> None:
     pending = [_candidate(index) for index in range(9)]
     frozen_pages = {
-        page_index: SimpleNamespace(candidates=tuple(range(9)))
-        for page_index in range(19)
+        page_index: SimpleNamespace(candidates=tuple(range(9))) for page_index in range(19)
     }
     frozen_pages[19] = SimpleNamespace(candidates=tuple(range(8)))
     session = SimpleNamespace(
