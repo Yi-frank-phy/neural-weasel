@@ -102,6 +102,7 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
     replay = server.handle_message(request)
     assert replay["ok"] is True
     assert replay["candidate_set_id"] == first["candidate_set_id"]
+    assert replay["background_pending"] is True
     assert tuple(item["candidate_id"] for item in replay["candidates"]) == tuple(
         item["candidate_id"] for item in first["candidates"]
     )
