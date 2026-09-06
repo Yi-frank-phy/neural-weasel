@@ -121,15 +121,9 @@ def test_rime_candidate_revision_resets_across_identical_compositions() -> None:
 
 
 def test_shift_language_mode_is_idle_only_and_persistent() -> None:
-    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(
-        encoding="utf-8"
-    )
-    header = (ROOT / "native/rime/bilingual_key_processor.h").read_text(
-        encoding="utf-8"
-    )
-    semantics = (ROOT / "native/rime/bilingual_key_semantics.cc").read_text(
-        encoding="utf-8"
-    )
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
+    header = (ROOT / "native/rime/bilingual_key_processor.h").read_text(encoding="utf-8")
+    semantics = (ROOT / "native/rime/bilingual_key_semantics.cc").read_text(encoding="utf-8")
 
     assert "shift_started_while_idle_" in header
     assert "ShouldToggleLanguageMode" in processor
@@ -161,9 +155,7 @@ def test_context_sender_and_broker_have_no_raw_context_read_api() -> None:
 
 def test_private_refresh_event_forces_a_new_revision_without_editing_input() -> None:
     refresh_key = (ROOT / "native/rime/neural_refresh_key.h").read_text(encoding="utf-8")
-    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(
-        encoding="utf-8"
-    )
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
     translator = (ROOT / "native/rime/ai_translator.cc").read_text(encoding="utf-8")
 
     assert "kNeuralRefreshKeycode = 0xFDD0" in refresh_key

@@ -174,9 +174,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             raw_keys=raw_keys,
         )
         wait_event: threading.Event | None = None
-        wait_budget_ms = (
-            NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
-        )
+        wait_budget_ms = NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
         wait_started = time.monotonic()
         with self._state_lock:
             if page_index == 0:
@@ -248,18 +246,18 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         if remaining_ms <= 0:
             raise CandidatePageTimeout("candidate page deadline expired")
         return self.query_page(
-                client_session_id=client_session_id,
-                composition_revision=composition_revision,
-                context_epoch=context_epoch,
-                context_session=context_session,
-                source_revision=source_revision,
-                mode=normalized_mode,
-                raw_keys=raw_keys,
-                page_index=page_index,
-                candidate_set_id=candidate_set_id,
-                state=state,
-                deadline_ms=remaining_ms,
-            )
+            client_session_id=client_session_id,
+            composition_revision=composition_revision,
+            context_epoch=context_epoch,
+            context_session=context_session,
+            source_revision=source_revision,
+            mode=normalized_mode,
+            raw_keys=raw_keys,
+            page_index=page_index,
+            candidate_set_id=candidate_set_id,
+            state=state,
+            deadline_ms=remaining_ms,
+        )
 
     @staticmethod
     def _async_identity_key(
@@ -518,9 +516,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         )
         async_han: list[Candidate] = []
         if self._building_identity is not None:
-            cached = self._async_han_cache.get(
-                self._async_identity_key(self._building_identity)
-            )
+            cached = self._async_han_cache.get(self._async_identity_key(self._building_identity))
             if cached is not None:
                 async_han = [
                     replace(candidate, context_epoch=response_epoch) for candidate in cached
@@ -636,9 +632,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             legal_token_ids = tuple(sorted(han_edges))
             if not legal_token_ids:
                 continue
-            selected.append(
-                (parent, self._path_key(parent), legal_token_ids, han_edges)
-            )
+            selected.append((parent, self._path_key(parent), legal_token_ids, han_edges))
             if len(selected) >= max_parents:
                 break
         if not selected:

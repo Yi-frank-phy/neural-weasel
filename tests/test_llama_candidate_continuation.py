@@ -163,9 +163,7 @@ def test_production_context_replays_multiple_roots_through_parallel_decoder(
     root = snapshot.continuation_root
     assert root is not None
     backend.llama._ctx.ctx = object()
-    calls: list[
-        tuple[tuple[int, ...], tuple[tuple[int, ...], ...], float]
-    ] = []
+    calls: list[tuple[tuple[int, ...], tuple[tuple[int, ...], ...], float]] = []
 
     def parallel_replay(
         replay_token_ids,

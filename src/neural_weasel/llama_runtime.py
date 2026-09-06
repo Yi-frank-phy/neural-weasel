@@ -223,9 +223,7 @@ class LlamaCppBackend:
         logits.flags.writeable = False
         return logits
 
-    def _capture_continuation_root(
-        self, token_ids: Sequence[int]
-    ) -> LlamaContinuationRoot | None:
+    def _capture_continuation_root(self, token_ids: Sequence[int]) -> LlamaContinuationRoot | None:
         """Capture sequence 0 without copying llama-cpp-python's score matrix."""
 
         replay_token_ids = tuple(int(token_id) for token_id in token_ids)
@@ -467,9 +465,7 @@ class LlamaCppBackend:
             raise RuntimeError("llama.cpp raw context is unavailable for parallel replay")
         available_sequences = int(llama_cpp.llama_n_seq_max(raw_context))
         if available_sequences < DEFAULT_PARALLEL_SEQUENCES:
-            raise RuntimeError(
-                "llama.cpp context does not expose the required parallel sequences"
-            )
+            raise RuntimeError("llama.cpp context does not expose the required parallel sequences")
 
         vocabulary_size = len(self.tokenizer)
         outputs: list[np.ndarray] = []
@@ -479,9 +475,7 @@ class LlamaCppBackend:
                 return None
             group_paths = [
                 tuple(int(token_id) for token_id in path)
-                for path in token_paths[
-                    group_start : group_start + DEFAULT_PARALLEL_SEQUENCES
-                ]
+                for path in token_paths[group_start : group_start + DEFAULT_PARALLEL_SEQUENCES]
             ]
             group_allowed = allowed_token_sets[
                 group_start : group_start + DEFAULT_PARALLEL_SEQUENCES

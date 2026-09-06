@@ -737,11 +737,7 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
                 candidate_set_id=refreshed.candidate_set_id,
             )
         )
-    assert any(
-        candidate.text == "明显不对"
-        for page in pages
-        for candidate in page.candidates
-    )
+    assert any(candidate.text == "明显不对" for page in pages for candidate in page.candidates)
 
 
 def test_focus_invalidation_discards_background_continuation_result(make_index) -> None:
