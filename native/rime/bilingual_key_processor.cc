@@ -105,14 +105,18 @@ void RefreshPage(::rime::Context* context,
       return ::rime::kAccepted;
     }
     // Never replace a candidate list while the user has moved the selection.
-    // Pending state is returned through Weasel status metadata rather than the
-    // ProcessResult, so the private noncharacter never enters commit history.
+    // This event is injected only through Weasel IPC.  kRejected therefore
+    // becomes a private "still pending" false return to the owner-thread timer;
+    // it also stops the Rime processor chain, so the noncharacter cannot enter
+    // the composition or commit history.
     if (SelectedIndex(context) != 0) {
       return ::rime::kAccepted;
     }
     context->set_property(kNeuralPresentationRefreshProperty, "1");
     context->RefreshNonConfirmedComposition();
-    return ::rime::kAccepted;
+    return context->get_property(kNeuralCandidatePendingProperty) == "1"
+               ? ::rime::kRejected
+               : ::rime::kAccepted;
   }
 
   if (IsShiftKey(key_event)) {
