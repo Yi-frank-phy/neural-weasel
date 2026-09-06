@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -7,15 +8,10 @@ TRANSLATOR = ROOT / "native" / "rime" / "ai_translator.cc"
 PROCESSOR = ROOT / "native" / "rime" / "bilingual_key_processor.cc"
 REFRESH_HEADER = ROOT / "native" / "rime" / "neural_refresh_key.h"
 OVERLAY = ROOT / "scripts" / "prepare-weasel-overlay.ps1"
-OVERLAY_CORE = ROOT / "scripts" / "prepare-weasel-overlay-core.ps1"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
-
-
-def _overlay_text() -> str:
-    return _read(OVERLAY_CORE) + "\n" + _read(OVERLAY)
 
 
 def test_presentation_refresh_does_not_create_an_input_revision() -> None:
@@ -38,16 +34,13 @@ def test_presentation_refresh_does_not_create_an_input_revision() -> None:
     assert 'request["presentation_refresh"] = true;' in translator
 
 
-def test_background_readiness_uses_status_metadata_and_bounded_owner_thread_pulls() -> None:
-    overlay = _overlay_text()
+def test_background_readiness_uses_bounded_owner_thread_pulls() -> None:
+    overlay = _read(OVERLAY)
 
     assert "constexpr UINT kNeuralRefreshDelayMs = 850;" in overlay
     assert "constexpr UINT kNeuralRefreshRetryDelayMs = 250;" in overlay
     assert "constexpr unsigned int kNeuralRefreshMaxAttempts = 16;" in overlay
-    assert "if (!m_client.ProcessKeyEvent(refresh))" in overlay
-    assert "const bool presentation_ready = !_status.neural_candidate_pending;" in overlay
-    assert "status.neural_candidate_pending=" in overlay
-    assert 'get_property(session_id, "neural_candidate_pending"' in overlay
+    assert "const bool presentation_ready = m_client.ProcessKeyEvent(refresh);" in overlay
     assert "if (presentation_ready ||" in overlay
     assert "kNeuralRefreshRetryDelayMs" in overlay
     assert "GetCurrentThreadId() != _neuralRefreshOwnerThreadId" in overlay
@@ -55,22 +48,28 @@ def test_background_readiness_uses_status_metadata_and_bounded_owner_thread_pull
 
 
 def test_backspace_and_apostrophe_schedule_the_same_identity_bound_refresh() -> None:
-    overlay = _overlay_text()
+    overlay = _read(OVERLAY)
 
     assert "wParam == VK_BACK" in overlay
     assert "wParam == VK_OEM_7" in overlay
     assert "(wParam >= 'A' && wParam <= 'Z')" in overlay
 
 
-def test_refresh_never_reorders_an_explicit_user_selection_or_enters_commit_history() -> None:
+def test_refresh_pending_signal_uses_a_non_printable_private_key() -> None:
     processor = _read(PROCESSOR)
+    refresh_header = _read(REFRESH_HEADER)
+
+    key_match = re.search(r"kNeuralRefreshKeycode\s*=\s*(0x[0-9A-Fa-f]+)", refresh_header)
+    assert key_match is not None
+    assert int(key_match.group(1), 16) > 0x7E
 
     refresh_start = processor.index("kNeuralRefreshKeycode")
     refresh_end = processor.index("if (IsShiftKey", refresh_start)
     refresh_block = processor[refresh_start:refresh_end]
     assert "if (SelectedIndex(context) != 0)" in refresh_block
     assert "kNeuralPresentationRefreshProperty" in refresh_block
+    assert "kNeuralCandidatePendingProperty" in refresh_block
     assert "RefreshNonConfirmedComposition()" in refresh_block
-    assert "kRejected" not in refresh_block
-    assert "return ::rime::kAccepted;" in refresh_block
+    assert "kRejected" in refresh_block
+    assert "kAccepted" in refresh_block
     assert "PushInput" not in refresh_block
