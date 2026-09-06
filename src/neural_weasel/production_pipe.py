@@ -205,14 +205,19 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 value["context_epoch"] = context_epoch
                 values.append(value)
 
-            # This is identity-bound readiness metadata only. It contains no raw
-            # editor context or candidate text and lets the native owner thread
-            # retry a presentation pull only while this exact candidate set is
-            # still being prepared.
+            # This is identity-bound presentation readiness metadata only. It
+            # contains no raw editor context or candidate text. A completed async
+            # result remains pending until a new immutable presentation snapshot
+            # has actually published it; checking only worker membership would
+            # lose the completion race between the query and response encoding.
             pages = getattr(self.engine, "candidate_pages", None)
-            background_pending = pages is not None and page.candidate_set_id in getattr(
-                pages, "_background_searches", ()
-            )
+            pending_provider = getattr(pages, "presentation_update_pending", None)
+            if callable(pending_provider):
+                background_pending = bool(pending_provider(page.candidate_set_id))
+            else:
+                background_pending = pages is not None and page.candidate_set_id in getattr(
+                    pages, "_background_searches", ()
+                )
             response: dict[str, Any] = {
                 "type": "candidate_page",
                 "ok": True,
