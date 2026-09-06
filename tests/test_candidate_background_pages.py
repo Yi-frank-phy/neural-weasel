@@ -65,10 +65,7 @@ class BlockingPageRuntime:
 def _engine(make_index):
     han = ("你", "泥", "拟", "逆", "妮", "倪", "霓", "腻", "匿", "溺")
     index = make_index(
-        [
-            (token_id, text, "ni", "ni", 1, 0)
-            for token_id, text in enumerate(han, start=1)
-        ]
+        [(token_id, text, "ni", "ni", 1, 0) for token_id, text in enumerate(han, start=1)]
     )
     logits = np.full(32, -20.0, dtype=np.float32)
     for token_id in range(1, 11):
