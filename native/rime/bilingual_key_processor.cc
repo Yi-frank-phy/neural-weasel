@@ -105,18 +105,15 @@ void RefreshPage(::rime::Context* context,
       return ::rime::kAccepted;
     }
     // Never replace a candidate list while the user has moved the selection.
-    // This event is injected only through Weasel IPC.  kRejected therefore
-    // becomes a private "still pending" false return to the owner-thread timer;
-    // it also stops the Rime processor chain, so the noncharacter cannot enter
-    // the composition or commit history.
+    // The owner-thread retry decision travels through Weasel status metadata;
+    // this private noncharacter must remain handled so librime never appends it
+    // to commit history or exposes it to the rest of the processor chain.
     if (SelectedIndex(context) != 0) {
       return ::rime::kAccepted;
     }
     context->set_property(kNeuralPresentationRefreshProperty, "1");
     context->RefreshNonConfirmedComposition();
-    return context->get_property(kNeuralCandidatePendingProperty) == "1"
-               ? ::rime::kRejected
-               : ::rime::kAccepted;
+    return ::rime::kAccepted;
   }
 
   if (IsShiftKey(key_event)) {
