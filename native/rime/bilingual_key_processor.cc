@@ -105,15 +105,18 @@ void RefreshPage(::rime::Context* context,
       return ::rime::kAccepted;
     }
     // Never replace a candidate list while the user has moved the selection.
-    // The owner-thread retry decision travels through Weasel status metadata;
-    // this private noncharacter must remain handled so librime never appends it
-    // to commit history or exposes it to the rest of the processor chain.
     if (SelectedIndex(context) != 0) {
       return ::rime::kAccepted;
     }
     context->set_property(kNeuralPresentationRefreshProperty, "1");
     context->RefreshNonConfirmedComposition();
-    return ::rime::kAccepted;
+    // The owner-thread timer uses Weasel's handled bit only for this private
+    // noncharacter.  kRejected means "presentation still pending". Pinned
+    // librime records only unmodified printable ASCII (plus Backspace/Return)
+    // in CommitHistory, so U+FDD0 is intentionally outside that mutation set.
+    return context->get_property(kNeuralCandidatePendingProperty) == "1"
+               ? ::rime::kRejected
+               : ::rime::kAccepted;
   }
 
   if (IsShiftKey(key_event)) {
