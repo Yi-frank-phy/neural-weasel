@@ -122,6 +122,45 @@ def _run_in_thread(target):
     return thread, done, result
 
 
+@pytest.mark.parametrize("stage", ["_han_edges_for", "_expand_han_constrained"])
+def test_background_cpu_work_does_not_block_invalidation(make_index, monkeypatch, stage):
+    engine, runtime = _engine(make_index)
+    runtime.release.set()
+    manager = engine.candidate_pages
+    entered, release = threading.Event(), threading.Event()
+    finished = threading.Event()
+    run_background = manager._run_background_continuation
+
+    def run(*args):
+        try:
+            return run_background(*args)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(manager, "_run_background_continuation", run)
+    original = getattr(manager, stage)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(manager, stage, blocked)
+    _page(engine, client="cpu", revision=1, raw="nh")
+    assert entered.wait(1)
+    thread, done, result = _run_in_thread(manager.clear_sessions)
+    try:
+        assert done.wait(0.5), "background CPU work holds the state lock"
+        assert "error" not in result
+    finally:
+        release.set()
+        thread.join(3)
+    assert finished.wait(3)
+    assert not manager._sessions
+    assert not manager._async_han_cache
+    assert not manager._baseline_han_cache
+
+
 def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_index) -> None:
     engine, runtime = _engine(make_index)
     first = _page(engine, client="active", revision=1, raw="ni")
