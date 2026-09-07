@@ -5,22 +5,46 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_native_translator_uses_unified_protocol_and_mode() -> None:
-    """AT-UC-01/RT-06: native request and response use the v0.2 contract."""
+def test_native_translator_uses_frozen_candidate_page_protocol() -> None:
+    """Native candidates use the revision-scoped pure-neural page contract."""
     source = (ROOT / "native/rime/ai_translator.cc").read_text(encoding="utf-8")
-    header = (ROOT / "native/rime/epoch_semantics.h").read_text(encoding="utf-8")
 
-    assert '"query_candidates"' in source
-    assert '"query_pinyin"' not in source
-    assert '"input_mode"' in source
-    assert '"constraint_kind"' in source
-    assert "neural_input_mode" in source
-    assert "requested_epoch == 0" in header
-    assert "IsResponseEpochAcceptable" in source
+    assert '"query_candidate_page"' in source
+    assert '"query_candidates"' not in source
+    assert '"candidate_set_id"' in source
+    assert '"composition_revision"' in source
+    assert '"page_index"' in source
+    assert '"neural_language_mode"' in source
+    assert '"chinese_first"' in source
+    assert '"latin_first"' in source
+    assert "frozen_pages_" in source
+    assert "model_epoch == 0" not in source
+
+
+def test_native_candidate_query_deadlines_cover_page_contract() -> None:
+    header = (ROOT / "native/rime/ai_translator.h").read_text(encoding="utf-8")
+
+    assert "query_timeout_{50}" in header
+    assert "next_page_timeout_{120}" in header
+    assert "query_timeout_{6}" not in header
+
+
+def test_schema_keeps_mouse_english_in_neural_candidate_pipeline() -> None:
+    schema = (ROOT / "assets/rime/neural_weasel.schema.yaml").read_text(encoding="utf-8")
+
+    assert "- bilingual_key_processor" in schema
+    assert "- ascii_composer" not in schema
+    assert "- ascii_segmentor" not in schema
+    for filename in ("bilingual_key_processor.cc", "ai_translator.cc"):
+        source = (ROOT / "native/rime" / filename).read_text(encoding="utf-8")
+        assert 'context->get_option("ascii_mode")' in source
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
+    assert 'context->set_option("ascii_mode", mode == NeuralLanguageMode::kLatinFirst)' in processor
+    assert "page_size: 9" in schema
 
 
 def test_native_build_includes_bilingual_processor_and_test() -> None:
-    """AT-KS-01..06: compiled integration includes the tested processor."""
+    """Compiled integration includes the tested processor."""
     cmake = (ROOT / "native/CMakeLists.txt").read_text(encoding="utf-8")
 
     assert "rime/bilingual_key_semantics.cc" in cmake
@@ -29,12 +53,15 @@ def test_native_build_includes_bilingual_processor_and_test() -> None:
 
 
 def test_processor_has_no_model_or_pipe_dependency() -> None:
-    """AT-RT-01: acceptance keys are pure local state transitions."""
+    """Acceptance keys and page requests are pure local Rime transitions."""
     source = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
 
     assert "NamedPipeClient" not in source
     assert "TryQuery" not in source
     assert "model" not in source.casefold()
+    assert "XK_Shift_L" in source
+    assert '"neural_requested_page"' in source
+    assert "RefreshNonConfirmedComposition" in source
 
 
 def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
@@ -72,8 +99,22 @@ def test_ci_compiles_native_plugin_and_tests_on_windows() -> None:
     assert "verify-windows-bundle.py" in workflow
 
 
+def test_windows_bundle_requires_librime_runtime_dependency() -> None:
+    """The server must never ship without its dynamically linked rime.dll."""
+    build = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts/verify-windows-bundle.py").read_text(encoding="utf-8")
+    installer = (ROOT / "scripts/install-dev-profile.ps1").read_text(encoding="utf-8")
+    diagnose = (ROOT / "scripts/diagnose.ps1").read_text(encoding="utf-8")
+    launcher = (ROOT / "scripts/launch-neural-weasel.ps1").read_text(encoding="utf-8")
+
+    for contract in (build, verifier, installer, diagnose, launcher):
+        assert "rime.dll" in contract
+    assert "Resolve-RequiredBuildArtifact" in build
+    assert "Copy-RequiredFile -Source $RimeRuntimeArtifact" in build
+
+
 def test_plugin_build_generates_librime_build_config_header() -> None:
-    """AT-WIN-06: source-only librime checkouts receive their generated header."""
+    """Source-only librime checkouts receive their generated header."""
     cmake = (ROOT / "native/CMakeLists.txt").read_text(encoding="utf-8")
 
     assert "src/rime/build_config.h.in" in cmake
@@ -82,8 +123,43 @@ def test_plugin_build_generates_librime_build_config_header() -> None:
     assert "${RIME_ROOT}/include" in cmake
 
 
+def test_weasel_resource_overlay_declares_utf8_code_page() -> None:
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+
+    assert "#pragma code_page(65001)" in overlay
+    assert "StartsWith('#pragma code_page(65001)')" in overlay
+
+
+def test_weasel_runtime_explicitly_registers_the_neural_rime_module() -> None:
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    module = (ROOT / "native/rime/ai_translator_module.cc").read_text(encoding="utf-8")
+
+    assert "rime_register_module_ai_translator_explicit();" in overlay
+    assert "void rime_register_module_ai_translator_explicit()" in module
+    setup = overlay[overlay.index("void RimeWithWeaselHandler::_Setup()") :]
+    assert setup.index("rime_register_module_ai_translator_explicit();") < setup.index(
+        "RIME_STRUCT(RimeTraits, weasel_traits);"
+    )
+
+
+def test_weasel_runtime_initializes_librime_with_neural_modules_and_paths() -> None:
+    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+
+    assert r"rime_api->initialize\(NULL\);" in overlay
+    assert "rime_api->initialize(&init_traits);" in overlay
+    assert 'RIME_MODULE_LIST(neural_weasel_init_modules, "default", "ai_translator")' in overlay
+    for field in (
+        "init_traits.shared_data_dir",
+        "init_traits.user_data_dir",
+        "init_traits.prebuilt_data_dir",
+        "init_traits.app_name",
+        "init_traits.log_dir",
+        "init_traits.modules",
+    ):
+        assert field in overlay
+
+
 def test_safe_tsf_shell_contains_capture_but_no_backend_runtime() -> None:
-    """The TSF may capture/send bounded context but never own backend work."""
     overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")

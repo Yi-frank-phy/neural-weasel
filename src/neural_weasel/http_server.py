@@ -3,12 +3,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import os
 import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
 
 MAX_REQUEST_BYTES = 65_536
@@ -18,13 +16,6 @@ MAX_CONSTRAINT_CHARS = 32
 FIRST_PAGE_CANDIDATES = 5
 MAX_CANDIDATES = 50
 FIRST_PAGE_CONTEXT_WAIT_SECONDS = 0.012
-BRIDGE_POLL_SECONDS = 0.005
-
-
-def _encode_bridge_candidates(candidates: list[Any]) -> str:
-    return "\n".join(
-        f"{candidate.consumed_keys}\t{candidate.text.strip()}" for candidate in candidates
-    )
 
 
 class WisdomHttpServer(ThreadingHTTPServer):
@@ -288,72 +279,10 @@ def _validate_request(request: object) -> tuple[str, str, int]:
     return prompt, "".join(constraints).lower(), candidate_count
 
 
-def _serve_file_bridge(
-    server: WisdomHttpServer,
-    bridge_root: Path,
-    stopping: threading.Event,
-) -> None:
-    bridge_root.mkdir(parents=True, exist_ok=True)
-    while not stopping.is_set():
-        handled = False
-        for request_path in bridge_root.glob("*.request"):
-            handled = True
-            started = time.perf_counter()
-            prompt_chars = 0
-            response_path = request_path.with_suffix(".response")
-            temporary_response = response_path.with_suffix(".response.tmp")
-            send_response = True
-            try:
-                if request_path.stat().st_size > MAX_REQUEST_BYTES:
-                    raise ValueError("invalid request")
-                request = json.loads(request_path.read_text(encoding="utf-8"))
-                operation = request.get("operation", "query")
-                clean_request = {key: value for key, value in request.items() if key != "operation"}
-                prompt, raw_keys, candidate_count = _validate_request(clean_request)
-                prompt_chars = len(prompt)
-                if operation == "context":
-                    send_response = False
-                    server.request_context(prompt)
-                elif operation == "query":
-                    candidates, _ = server.query_candidates(prompt, raw_keys, candidate_count)
-                    responses = _encode_bridge_candidates(candidates)
-                    temporary_response.write_text(responses, encoding="utf-8")
-                    os.replace(temporary_response, response_path)
-                else:
-                    raise ValueError("invalid operation")
-                success = True
-            except Exception:
-                success = False
-                temporary_response.unlink(missing_ok=True)
-                if send_response:
-                    response_path.write_bytes(b"")
-            finally:
-                request_path.unlink(missing_ok=True)
-                elapsed_ms = round((time.perf_counter() - started) * 1000)
-                server.record_request(
-                    success=success,
-                    latency_ms=elapsed_ms,
-                    prompt_chars=prompt_chars,
-                )
-        if not handled:
-            stopping.wait(BRIDGE_POLL_SECONDS)
-
-
 def serve_wisdom_http(engine: Any, host: str = "127.0.0.1", port: int = 8000) -> None:
     server = WisdomHttpServer((host, port), engine)
     server.request_context("")
-    bridge_root = Path(os.environ["LOCALAPPDATA"]) / "NeuralWeasel" / "Bridge"
-    stopping = threading.Event()
-    bridge_thread = threading.Thread(
-        target=_serve_file_bridge,
-        args=(server, bridge_root, stopping),
-        name="neural-weasel-file-bridge",
-        daemon=True,
-    )
-    bridge_thread.start()
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
-        stopping.set()
-        bridge_thread.join(timeout=2)
         server.server_close()

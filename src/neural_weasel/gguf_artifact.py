@@ -19,6 +19,10 @@ class ProductionGgufArtifact:
     revision: str
     format: str
     quantization: str
+    # When set, the exact local GGUF bytes must hash to this digest. The
+    # digest is the trust anchor for locally verified artifacts; Hub-anchored
+    # artifacts keep relying on the immutable Hugging Face commit instead.
+    expected_sha256: str | None = None
 
 
 PRODUCTION_GGUF = ProductionGgufArtifact(
@@ -29,6 +33,40 @@ PRODUCTION_GGUF = ProductionGgufArtifact(
     format="gguf",
     quantization="Q8_0",
 )
+
+# The target machine's local Q4_K_M copy was verified by SHA-256, but no Hub
+# commit is pinned for it yet. Empty repo_id/revision force the locally
+# verified acquisition route until that commit is recorded here.
+PRODUCTION_GGUF_Q4_K_M = ProductionGgufArtifact(
+    model_id="Qwen/Qwen3.5-4B-Base",
+    repo_id="",
+    filename="Qwen3.5-4B-Q4_K_M.gguf",
+    revision="",
+    format="gguf",
+    quantization="Q4_K_M",
+    expected_sha256=("00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"),
+)
+
+# Closed set of supported quant runtime selectors. Functional contracts stay
+# quantization-independent; the hardware VRAM guards in gpu.py apply to every
+# entry in this mapping.
+QUANTIZATION_ARTIFACTS = {
+    "Q4_K_M": PRODUCTION_GGUF_Q4_K_M,
+    "Q8_0": PRODUCTION_GGUF,
+}
+
+
+def resolve_quantization_artifact(selector: str) -> ProductionGgufArtifact:
+    """Resolve a user-facing quant selector to its pinned production artifact."""
+
+    normalized = selector.strip().upper()
+    try:
+        return QUANTIZATION_ARTIFACTS[normalized]
+    except KeyError:
+        supported = ", ".join(sorted(QUANTIZATION_ARTIFACTS))
+        raise GgufArtifactError(
+            f"unsupported quantization selector {selector!r}; supported: {supported}"
+        ) from None
 
 
 def _sha256_file(path: Path) -> str:

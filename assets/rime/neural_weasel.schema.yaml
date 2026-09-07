@@ -1,7 +1,7 @@
 schema:
   schema_id: neural_weasel
   name: 神经小狼毫（实验）
-  version: "0.1"
+  version: "0.2"
   author:
     - Neural Weasel contributors
   description: >-
@@ -15,17 +15,15 @@ switches:
 
 engine:
   processors:
-    - ascii_composer
+    - bilingual_key_processor
     - recognizer
     - key_binder
-    - speller
-    - bilingual_key_processor
-    - punctuator
     - selector
+    - speller
+    - punctuator
     - navigator
     - express_editor
   segmentors:
-    - ascii_segmentor
     - matcher
     - abc_segmentor
     - punct_segmentor

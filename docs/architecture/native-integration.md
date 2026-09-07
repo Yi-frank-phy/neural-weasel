@@ -107,7 +107,14 @@ byte[byte_length] UTF-8 JSON
 
 `TryQuery` uses an absolute deadline across connect, write and read, returns
 `kBusy` rather than waiting for a concurrent caller, and cancels pending
-overlapped I/O at expiry. The translator uses a 6 ms deadline. A timeout,
+overlapped I/O at expiry. The translator uses a 50 ms deadline, which covers
+the measured steady-state path plus the first uncached longer-prefix query
+while remaining bounded.
+A separate `ContextUpdateBridge` worker uses a 1000 ms per-exchange allowance
+inside its 3000 ms readiness deadline. That background allowance covers cold
+pipe acknowledgement and model prewarm without extending the keystroke-thread
+candidate deadline.
+A timeout,
 malformed response or epoch/revision mismatch produces no AI translation; it
 must never block the Windows keystroke thread waiting for a model forward.
 
@@ -217,7 +224,7 @@ dry-run install safety cases. Required manual follow-up checks:
   editors;
 - test whether selected text and reversed selections yield the intended active
   caret;
-- test 6 ms cancellation under partial header/body reads and server restart;
+- test 25 ms cancellation under partial header/body reads and server restart;
 - verify at runtime that `ai_translator` is loaded before the schema
   instantiates it;
 - confirm the experimental schema does not include translators that reorder AI

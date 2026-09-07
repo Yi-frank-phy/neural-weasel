@@ -138,6 +138,37 @@ def test_bilingual_engine_keeps_old_epoch_queryable(make_index) -> None:
     assert engine.has_snapshot(second.epoch)
 
 
+def test_legacy_candidate_query_remains_lazy_and_memoized(
+    make_index,
+    monkeypatch,
+) -> None:
+    engine = make_engine(make_index)
+    original_query = engine.constraint_engine.query
+    observed_keys: list[str] = []
+
+    def counting_query(before, raw_keys, **kwargs):
+        observed_keys.append(raw_keys)
+        return original_query(before, raw_keys, **kwargs)
+
+    monkeypatch.setattr(engine.constraint_engine, "query", counting_query)
+    epoch = engine.request_context_update("中文上下文")
+    assert engine.wait_for_epoch(epoch, timeout_seconds=1.0)
+    assert observed_keys == []
+
+    assert engine.query("n", 5, context_epoch=epoch)
+    assert engine.query("ni", 5, context_epoch=epoch)
+    assert observed_keys == ["n", "ni"]
+
+    calls_after_lazy_queries = len(observed_keys)
+    assert engine.query("n", 5, context_epoch=epoch)
+    assert engine.query("ni", 5, context_epoch=epoch)
+    assert len(observed_keys) == calls_after_lazy_queries
+
+    engine.commit("English")
+    engine.query("n", 5, context_epoch=epoch)
+    assert len(observed_keys) == calls_after_lazy_queries + 1
+
+
 def test_query_candidates_protocol_uses_unified_engine(make_index) -> None:
     """AT-UC-01/RT-06: service publishes unified candidates with exact epoch."""
     engine = make_engine(make_index)

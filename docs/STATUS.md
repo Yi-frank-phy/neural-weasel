@@ -18,7 +18,7 @@ The experimental slice is not production ready.
 - Independent CLSID, profile GUID, display name, process name, Weasel IPC
   identity, model pipe, registry root, install root, Rime user directory, and
   log directory.
-- An identity-locked per-user COM/TSF profile tool. It refuses identifiers
+- An identity-locked machine-wide COM/per-user TSF profile tool. It refuses identifiers
   outside the reserved pair and verifies TSF identity exports.
 - Hash-verified, idempotent install/uninstall scripts with staging, dry runs,
   no default-profile activation, and no identifier override.

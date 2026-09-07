@@ -76,10 +76,11 @@ def test_pronunciation_paths_contains_multiple_readings_for_polyphone() -> None:
     assert len(paths) == len(set(paths))
 
 
-def test_pronunciation_paths_forms_cartesian_product_and_honors_limit() -> None:
-    paths = pronunciation_paths("行行", max_paths=3)
-    assert len(paths) == 3
-    assert all(len(path) == 2 for path in paths)
+def test_pronunciation_paths_uses_one_phrase_aware_reading_for_multichar_text() -> None:
+    paths = pronunciation_paths("谷歌")
+
+    assert paths == (("gu", "ge"),)
+    assert ("yu", "ge") not in paths
 
 
 def test_pronunciation_paths_rejects_non_han_text() -> None:

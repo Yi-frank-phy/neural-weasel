@@ -106,6 +106,13 @@ def test_runtime_requests_full_cuda_offload_and_exposes_full_logits(tmp_path: Pa
     assert FakeLlama.created_kwargs["main_gpu"] == 0
     assert FakeLlama.created_kwargs["logits_all"] is False
     assert FakeLlama.created_kwargs["offload_kqv"] is True
+    # The model is fully offloaded to CUDA, while candidate IPC still needs a
+    # Python server thread to run inside the same process.  Never inherit
+    # llama-cpp-python's all-logical-CPU batch default: it can starve the
+    # foreground pipe for the entire context forward.
+    assert FakeLlama.created_kwargs["n_threads"] == 4
+    assert FakeLlama.created_kwargs["n_threads_batch"] == 4
+    assert FakeLlama.created_kwargs["_parallel_sequences"] == 4
 
     snapshot = backend.create_snapshot("你")
     assert np.array_equal(snapshot.logits, np.array([0.1, 2.0, 0.3, -1.0], dtype=np.float32))
@@ -128,6 +135,92 @@ def test_runtime_reuses_prefix_without_replaying_full_context(tmp_path: Path) ->
     backend.create_snapshot("你好")
 
     assert backend.llama.eval_calls == [[0], [1], [2]]
+
+
+def test_runtime_exposes_only_refresh_metadata_and_explicit_limits(tmp_path: Path) -> None:
+    probe = FakeProbe()
+    backend = LlamaCppBackend(
+        _acquired(tmp_path),
+        max_before_tokens=2,
+        n_ctx=8,
+        n_batch=4,
+        llama_factory=FakeLlama,
+        cuda_backend_probe=lambda: True,
+        gpu_before_probe=probe.before,
+        gpu_after_probe=probe.after,
+    )
+
+    assert FakeLlama.created_kwargs is not None
+    assert FakeLlama.created_kwargs["n_ctx"] == 32
+    assert FakeLlama.created_kwargs["n_batch"] == 4
+
+    diagnostics = backend.diagnostics()
+    assert diagnostics["max_before_tokens"] == 2
+    assert diagnostics["n_ctx"] == 8
+    assert diagnostics["n_batch"] == 4
+    assert diagnostics["last_refresh_context_tokens"] is None
+    assert diagnostics["last_refresh_evaluated_tokens"] is None
+    assert diagnostics["last_refresh_latency_ms"] is None
+
+    backend.create_snapshot("你")
+    diagnostics = backend.diagnostics()
+    assert diagnostics["last_refresh_context_tokens"] == 1
+    assert diagnostics["last_refresh_evaluated_tokens"] == 1
+    assert isinstance(diagnostics["last_refresh_latency_ms"], float)
+    assert diagnostics["last_refresh_latency_ms"] >= 0.0
+
+    backend.create_snapshot("你好")
+    diagnostics = backend.diagnostics()
+    assert diagnostics["last_refresh_context_tokens"] == 2
+    assert diagnostics["last_refresh_evaluated_tokens"] == 1
+
+    backend.create_snapshot("你好")
+    diagnostics = backend.diagnostics()
+    assert diagnostics["last_refresh_context_tokens"] == 2
+    assert diagnostics["last_refresh_evaluated_tokens"] == 0
+
+    backend.invalidate_private_state()
+    diagnostics = backend.diagnostics()
+    assert diagnostics["last_refresh_context_tokens"] is None
+    assert diagnostics["last_refresh_evaluated_tokens"] is None
+    assert diagnostics["last_refresh_latency_ms"] is None
+
+    expected = {
+        "max_before_tokens": 2,
+        "n_ctx": 8,
+        "n_batch": 4,
+        "last_refresh_context_tokens": None,
+        "last_refresh_evaluated_tokens": None,
+        "last_refresh_latency_ms": None,
+    }
+    assert backend.performance_diagnostics() == expected
+
+    def fail_gpu_probe() -> NvidiaGpu:
+        raise AssertionError("performance diagnostics must not probe the GPU")
+
+    backend._gpu_probe = fail_gpu_probe
+    assert backend.performance_diagnostics() == expected
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"max_before_tokens": 0}, "max_before_tokens must be positive"),
+        ({"n_ctx": 0}, "n_ctx must be positive"),
+        ({"n_batch": 0}, "n_batch must be positive"),
+        (
+            {"max_before_tokens": 9, "n_ctx": 8},
+            "max_before_tokens must not exceed n_ctx",
+        ),
+    ],
+)
+def test_runtime_rejects_invalid_context_limits(
+    tmp_path: Path,
+    kwargs: dict[str, int],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        LlamaCppBackend(_acquired(tmp_path), **kwargs)
 
 
 def test_runtime_rejects_cpu_only_llama_cpp(tmp_path: Path) -> None:

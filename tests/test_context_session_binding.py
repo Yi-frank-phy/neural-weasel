@@ -117,6 +117,86 @@ def test_model_epoch_is_bound_to_editor_capability_and_revision() -> None:
     assert len(engine.queries) == 1
 
 
+def test_bound_update_deduplicates_by_capability_revision_after_bridge_restart() -> None:
+    engine = RecordingEngine()
+    server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\unused-binding-restart")
+    capability = "a" * 32
+
+    before_restart = _update(
+        server,
+        client_epoch=18,
+        context_session=capability,
+        source_revision=4,
+    )
+    assert before_restart["accepted"] is True
+
+    after_restart = _update(
+        server,
+        client_epoch=1,
+        context_session=capability,
+        source_revision=5,
+    )
+    assert after_restart["accepted"] is True
+
+    duplicate_revision = _update(
+        server,
+        client_epoch=2,
+        context_session=capability,
+        source_revision=5,
+    )
+    assert duplicate_revision["accepted"] is False
+    assert duplicate_revision["stale"] is True
+
+    older_revision = _update(
+        server,
+        client_epoch=3,
+        context_session=capability,
+        source_revision=4,
+    )
+    assert older_revision["accepted"] is False
+    assert older_revision["stale"] is True
+
+    new_capability = _update(
+        server,
+        client_epoch=1,
+        context_session="b" * 32,
+        source_revision=1,
+    )
+    assert new_capability["accepted"] is True
+    assert len(engine.updates) == 3
+
+    stale_identity_on_new_epoch = _query(
+        server,
+        epoch=int(new_capability["context_epoch"]),
+        context_session=capability,
+        source_revision=5,
+    )
+    assert stale_identity_on_new_epoch["ok"] is False
+    assert stale_identity_on_new_epoch["error"]["code"] == "context_session_mismatch"
+
+
+def test_unbound_legacy_updates_keep_global_client_epoch_ordering() -> None:
+    engine = RecordingEngine()
+    server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\unused-binding-legacy")
+
+    def update(client_epoch: int) -> dict[str, object]:
+        return server.handle_message(
+            {
+                "type": "context_update",
+                "context_epoch": client_epoch,
+                "before": "legacy context",
+                "after": "",
+            }
+        )
+
+    assert update(18)["accepted"] is True
+    stale = update(1)
+    assert stale["accepted"] is False
+    assert stale["stale"] is True
+    assert update(19)["accepted"] is True
+    assert len(engine.updates) == 2
+
+
 def test_context_binding_rejects_malformed_identity_and_password_payload() -> None:
     engine = RecordingEngine()
     server = NamedPipeServer(engine, pipe_name=r"\\.\pipe\unused-binding-invalid")
@@ -157,6 +237,14 @@ def test_context_binding_is_bounded_and_epoch_zero_never_reuses_old_context() ->
         assert accepted["ok"] is True
         if index == 0:
             oldest_epoch = int(accepted["context_epoch"])
+
+    evicted_revision = _update(
+        server,
+        client_epoch=1,
+        context_session=f"{1:032x}",
+        source_revision=1,
+    )
+    assert evicted_revision["accepted"] is True
 
     expired = _query(
         server,

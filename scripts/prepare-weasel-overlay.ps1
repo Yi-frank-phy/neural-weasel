@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string]$WeaselRoot,
@@ -26,12 +26,30 @@ static const GUID c_guidProfile = {
     {0x80, 0xe8, 0xac, 0xd9, 0x88, 0xc5, 0x7b, 0x0d}};
 '@
 
+# Upstream resource files are UTF-16 while sources are UTF-8; remember the
+# encoding of each read so Write-SourceFile can restore it byte-for-byte.
+$Global:LastSourceEncoding = 'utf-8'
+
 function Read-SourceFile {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Required upstream file is missing: $Path"
     }
-    return [IO.File]::ReadAllText($Path)
+    $Bytes = [IO.File]::ReadAllBytes($Path)
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+        $Global:LastSourceEncoding = 'unicode'
+        return [Text.Encoding]::Unicode.GetString($Bytes, 2, $Bytes.Length - 2)
+    }
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+        $Global:LastSourceEncoding = 'bigendianunicode'
+        return [Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $Bytes.Length - 2)
+    }
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        $Global:LastSourceEncoding = 'utf-8'
+        return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes, 3, $Bytes.Length - 3)
+    }
+    $Global:LastSourceEncoding = 'utf-8'
+    return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
 }
 
 function Write-SourceFile {
@@ -39,20 +57,27 @@ function Write-SourceFile {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Content
     )
-    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+    switch ($Global:LastSourceEncoding) {
+        'unicode' { [IO.File]::WriteAllText($Path, $Content, [Text.Encoding]::Unicode) }
+        'bigendianunicode' { [IO.File]::WriteAllText($Path, $Content, [Text.Encoding]::BigEndianUnicode) }
+        default { [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false)) }
+    }
 }
 
 function Replace-Literal {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Old,
-        [Parameter(Mandatory)][string]$New
+        [Parameter(Mandatory)][AllowEmptyString()][string]$New
     )
     $Content = Read-SourceFile -Path $Path
-    if (-not $Content.Contains($Old)) {
+    $Newline = if ($Content.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $NormalizedOld = [regex]::Replace($Old, "`r?`n", $Newline)
+    $NormalizedNew = [regex]::Replace($New, "`r?`n", $Newline)
+    if (-not $Content.Contains($NormalizedOld)) {
         throw "Pinned upstream seam changed in $Path; missing expected text: $Old"
     }
-    Write-SourceFile -Path $Path -Content $Content.Replace($Old, $New)
+    Write-SourceFile -Path $Path -Content $Content.Replace($NormalizedOld, $NormalizedNew)
 }
 
 function Replace-RegexOnce {
@@ -144,18 +169,362 @@ Replace-Literal -Path $TsfXmake `
     -Old '  add_shflags("/DEBUG /OPT:REF /OPT:ICF")' `
     -New '  add_shflags("/DEBUG /OPT:REF /OPT:ICF /LTCG")'
 
+$WeaselUiSource = Join-Path $ResolvedWeaselRoot 'WeaselUI/WeaselUI.cpp'
+$RobustCandidateWindowCreate = @'
+bool UI::Create(HWND parent) {
+  if (!pimpl_) {
+    pimpl_ = new UIImpl(*this);
+    if (!pimpl_)
+      return false;
+  } else if (pimpl_->panel.IsWindow()) {
+    return true;
+  }
+
+  HWND created = pimpl_->panel.Create(
+      parent, 0, 0, WS_POPUP,
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+      0U, 0);
+  if (created == nullptr && parent != nullptr) {
+    // Some modern editor hosts expose a transient TSF view HWND that cannot
+    // own a popup. Keep the candidate panel process-local and retry unowned.
+    created = pimpl_->panel.Create(
+        nullptr, 0, 0, WS_POPUP,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE |
+            WS_EX_TRANSPARENT,
+        0U, 0);
+  }
+  return created != nullptr;
+}
+'@
+Replace-RegexOnce -Path $WeaselUiSource `
+    -Pattern 'bool UI::Create\(HWND parent\) \{.*?\}\s+(?=void UI::Destroy)' `
+    -Replacement $RobustCandidateWindowCreate
+
+$CandidateUiSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/CandidateList.cpp'
+Copy-Item -LiteralPath (
+    Join-Path $ResolvedRepositoryRoot 'native/tsf/ui_lifecycle_trace.h'
+) -Destination (
+    Join-Path $ResolvedWeaselRoot 'WeaselTSF/UiLifecycleTrace.h'
+) -Force
+Replace-Literal -Path $CandidateUiSource `
+    -Old '#include "CandidateList.h"' `
+    -New @'
+#include "CandidateList.h"
+#include "UiLifecycleTrace.h"
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^STDMETHODIMP CCandidateList::Show\(BOOL showCandidateWindow\) \{.*?^\}' `
+    -Replacement @'
+STDMETHODIMP CCandidateList::Show(BOOL showCandidateWindow) {
+  if (showCandidateWindow)
+    _ui->Show();
+  else
+    _ui->Hide();
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-window-visibility requested=%d actual=%d",
+      showCandidateWindow ? 1 : 0, _ui->IsShown() ? 1 : 0);
+  return S_OK;
+}
+'@
+Replace-Literal -Path $CandidateUiSource `
+    -Old 'void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {' `
+    -New @'
+void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-update candidates=%llu composing=%d pbShow=%d",
+      static_cast<unsigned long long>(ctx.cinfo.candies.size()),
+      status.composing ? 1 : 0, _pbShow ? 1 : 0);
+'@
+$TracedStartUi = @'
+void CCandidateList::StartUI() {
+  neural_weasel::tsf::TraceUiLifecycle(L"event=candidate-ui-start begin");
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  if (!pThreadMgr) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=no-thread-manager");
+    return;
+  }
+
+  com_ptr<ITfUIElementMgr> pUIElementMgr;
+  auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  if (FAILED(hr)) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=query-failed hr=%ld", hr);
+    return;
+  }
+
+  if (pUIElementMgr == NULL) {
+    neural_weasel::tsf::TraceUiLifecycle(
+        L"event=candidate-ui-start result=null-ui-manager");
+    return;
+  }
+
+  if (!_ui->uiCallback())
+    _ui->SetUICallBack([this](size_t* const sel, size_t* const hov,
+                              bool* const next, bool* const scroll_next) {
+      _tsf->HandleUICallback(sel, hov, next, scroll_next);
+    });
+  hr = pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-start result=registered hr=%ld pbShow=%d uiid=%lu",
+      hr, _pbShow ? 1 : 0, uiid);
+  // pUIElementMgr->UpdateUIElement(uiid);
+  if (_pbShow) {
+    _ui->style() = _style;
+    _MakeUIWindow();
+  }
+}
+
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^void CCandidateList::StartUI\(\) \{.*?^\}\r?\n\r?\n(?=void CCandidateList::EndUI)' `
+    -Replacement $TracedStartUi
+Replace-Literal -Path $CandidateUiSource `
+    -Old 'void CCandidateList::EndUI() {' `
+    -New @'
+void CCandidateList::EndUI() {
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-ui-end uiid-valid=%d",
+      uiid == TF_INVALID_UIELEMENTID ? 0 : 1);
+'@
+Replace-RegexOnce -Path $CandidateUiSource `
+    -Pattern '(?ms)^void CCandidateList::_MakeUIWindow\(\) \{.*?^\}' `
+    -Replacement @'
+void CCandidateList::_MakeUIWindow() {
+  HWND p = _GetActiveWnd();
+  const bool created = _ui->Create(p);
+  neural_weasel::tsf::TraceUiLifecycle(
+      L"event=candidate-window-create result=%d owner=%d", created ? 1 : 0,
+      p ? 1 : 0);
+}
+'@
+
+$WeaselTsfHeader = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.h'
+Replace-RegexOnce -Path $WeaselTsfHeader `
+    -Pattern '(?m)^(\s*weasel::Client m_client;\r?\n)(\s*DWORD _activateFlags;)' `
+    -Replacement @'
+$1  ULONGLONG _nextReconnectTick = 0;
+  HWND _neuralRefreshWindow = nullptr;
+  UINT_PTR _neuralRefreshTimer = 0;
+  DWORD _neuralRefreshOwnerThreadId = 0;
+  unsigned int _neuralRefreshAttempts = 0;
+  com_ptr<ITfContext> _neuralRefreshContext;
+$2
+'@
+Replace-Literal -Path $WeaselTsfHeader -Old @'
+  BOOL _InitPreservedKey();
+'@ -New @'
+  BOOL _InitNeuralRefreshWindow();
+  void _UninitNeuralRefreshWindow();
+  void _ScheduleNeuralRefresh(com_ptr<ITfContext> pContext);
+  void _CancelNeuralRefresh();
+  void _RunNeuralRefresh();
+  void _ConsiderNeuralRefresh(com_ptr<ITfContext> pContext,
+                              WPARAM wParam,
+                              BOOL eaten);
+  static LRESULT CALLBACK _NeuralRefreshWndProc(HWND hwnd,
+                                                UINT message,
+                                                WPARAM wParam,
+                                                LPARAM lParam);
+
+  BOOL _InitPreservedKey();
+'@
+
 $WeaselTsfSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.cpp'
+$BoundedReconnect = @'
+bool WeaselTSF::_EnsureServerConnected() {
+  if (m_client.Echo()) {
+    _nextReconnectTick = 0;
+    return true;
+  }
+
+  // The launcher owns server lifetime. Never launch or wait from an
+  // application-hosted TSF DLL; return promptly and retry at a bounded rate.
+  const ULONGLONG now = GetTickCount64();
+  if (now < _nextReconnectTick) {
+    return false;
+  }
+  _nextReconnectTick = now + 1000;
+  _Reconnect();
+  if (!m_client.Echo()) {
+    return false;
+  }
+  _nextReconnectTick = 0;
+  return true;
+}
+'@
+# WeaselTSF.cpp bounded reconnect rewrite count is enforced once against the
+# pinned upstream revision. This removes process launch, sleeping and detached
+# callbacks from every editor process that loads the experimental TSF.
+Replace-RegexOnce -Path $WeaselTsfSource `
+    -Pattern '(?ms)^static unsigned int retry = 0;\r?\n\r?\nbool WeaselTSF::_EnsureServerConnected\(\) \{.*?^\}\s*\z' `
+    -Replacement $BoundedReconnect
+
 Replace-Literal -Path $WeaselTsfSource -Old '#include "WeaselTSF.h"' -New @'
 #include "WeaselTSF.h"
+#include "rime/neural_refresh_key.h"
 #include "tsf/weasel_context_adapter.h"
+'@
+Replace-Literal -Path $WeaselTsfSource -Old @'
+static void error_message(const WCHAR* msg) {
+'@ -New @'
+namespace {
+constexpr wchar_t kNeuralRefreshWindowClass[] =
+    L"NeuralWeasel.Experimental.RefreshWindow";
+constexpr UINT_PTR kNeuralRefreshTimerId = 1;
+constexpr UINT kNeuralRefreshDelayMs = 850;
+constexpr UINT kNeuralRefreshRetryDelayMs = 250;
+// The first pull is delayed to keep page zero responsive. Further pulls are
+// issued only when the Rime processor reports that the exact presentation is
+// still being prepared; they are bounded so the editor-hosted DLL never polls
+// indefinitely.
+constexpr unsigned int kNeuralRefreshMaxAttempts = 16;
+}  // namespace
+
+LRESULT CALLBACK WeaselTSF::_NeuralRefreshWndProc(
+    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+  if (message == WM_NCCREATE) {
+    const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+    SetWindowLongPtrW(
+        hwnd, GWLP_USERDATA,
+        reinterpret_cast<LONG_PTR>(create == nullptr ? nullptr
+                                                     : create->lpCreateParams));
+  }
+  auto* self = reinterpret_cast<WeaselTSF*>(
+      GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (message == WM_TIMER && wParam == kNeuralRefreshTimerId && self != nullptr) {
+    self->_RunNeuralRefresh();
+    return 0;
+  }
+  if (message == WM_NCDESTROY) {
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+  }
+  return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+BOOL WeaselTSF::_InitNeuralRefreshWindow() {
+  if (_neuralRefreshWindow != nullptr) {
+    return TRUE;
+  }
+  WNDCLASSEXW window_class = {};
+  window_class.cbSize = sizeof(window_class);
+  window_class.lpfnWndProc = &WeaselTSF::_NeuralRefreshWndProc;
+  window_class.hInstance = g_hInst;
+  window_class.lpszClassName = kNeuralRefreshWindowClass;
+  if (RegisterClassExW(&window_class) == 0 &&
+      GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    return FALSE;
+  }
+  _neuralRefreshOwnerThreadId = GetCurrentThreadId();
+  _neuralRefreshWindow = CreateWindowExW(
+      0, kNeuralRefreshWindowClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
+      nullptr, g_hInst, this);
+  if (_neuralRefreshWindow == nullptr) {
+    _neuralRefreshOwnerThreadId = 0;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+void WeaselTSF::_CancelNeuralRefresh() {
+  if (_neuralRefreshWindow != nullptr && _neuralRefreshTimer != 0) {
+    KillTimer(_neuralRefreshWindow, kNeuralRefreshTimerId);
+  }
+  _neuralRefreshTimer = 0;
+  _neuralRefreshAttempts = 0;
+  _neuralRefreshContext.Release();
+}
+
+void WeaselTSF::_UninitNeuralRefreshWindow() {
+  _CancelNeuralRefresh();
+  if (_neuralRefreshWindow != nullptr) {
+    DestroyWindow(_neuralRefreshWindow);
+    _neuralRefreshWindow = nullptr;
+  }
+  _neuralRefreshOwnerThreadId = 0;
+}
+
+void WeaselTSF::_ScheduleNeuralRefresh(com_ptr<ITfContext> pContext) {
+  _CancelNeuralRefresh();
+  if (pContext == nullptr || _neuralRefreshWindow == nullptr ||
+      GetCurrentThreadId() != _neuralRefreshOwnerThreadId) {
+    return;
+  }
+  _neuralRefreshContext = pContext;
+  _neuralRefreshTimer = SetTimer(
+      _neuralRefreshWindow, kNeuralRefreshTimerId, kNeuralRefreshDelayMs,
+      nullptr);
+  if (_neuralRefreshTimer == 0) {
+    _neuralRefreshContext.Release();
+  }
+}
+
+void WeaselTSF::_ConsiderNeuralRefresh(
+    com_ptr<ITfContext> pContext, WPARAM wParam, BOOL eaten) {
+  const bool edits_composition =
+      (wParam >= 'A' && wParam <= 'Z') || wParam == VK_BACK ||
+      wParam == VK_OEM_7;
+  if (!eaten || !edits_composition ||
+      (GetKeyState(VK_SHIFT) & 0x8000) != 0 ||
+      (GetKeyState(VK_CONTROL) & 0x8000) != 0 ||
+      (GetKeyState(VK_MENU) & 0x8000) != 0) {
+    _CancelNeuralRefresh();
+    return;
+  }
+  _ScheduleNeuralRefresh(pContext);
+}
+
+void WeaselTSF::_RunNeuralRefresh() {
+  if (_neuralRefreshWindow != nullptr && _neuralRefreshTimer != 0) {
+    KillTimer(_neuralRefreshWindow, kNeuralRefreshTimerId);
+  }
+  _neuralRefreshTimer = 0;
+  const auto context = _neuralRefreshContext;
+  if (context == nullptr || GetCurrentThreadId() != _neuralRefreshOwnerThreadId ||
+      !_status.composing ||
+      !neural_weasel::tsf::IsWeaselPredictionAllowed() ||
+      !_EnsureServerConnected()) {
+    _CancelNeuralRefresh();
+    return;
+  }
+
+  ++_neuralRefreshAttempts;
+  const weasel::KeyEvent refresh(
+      neural_weasel::rime_plugin::kNeuralRefreshKeycode, 0);
+  const bool presentation_ready = m_client.ProcessKeyEvent(refresh);
+  _UpdateComposition(context);
+
+  if (presentation_ready ||
+      _neuralRefreshAttempts >= kNeuralRefreshMaxAttempts) {
+    _CancelNeuralRefresh();
+    return;
+  }
+  _neuralRefreshTimer = SetTimer(
+      _neuralRefreshWindow, kNeuralRefreshTimerId,
+      kNeuralRefreshRetryDelayMs, nullptr);
+  if (_neuralRefreshTimer == 0) {
+    _CancelNeuralRefresh();
+  }
+}
+
+static void error_message(const WCHAR* msg) {
 '@
 Replace-Literal -Path $WeaselTsfSource -Old @'
 STDAPI WeaselTSF::Deactivate() {
   m_client.EndSession();
 '@ -New @'
 STDAPI WeaselTSF::Deactivate() {
+  _UninitNeuralRefreshWindow();
   neural_weasel::tsf::ClearWeaselContext();
   m_client.EndSession();
+'@
+Replace-Literal -Path $WeaselTsfSource -Old @'
+  _pThreadMgr = pThreadMgr;
+  _tfClientId = tfClientId;
+'@ -New @'
+  _pThreadMgr = pThreadMgr;
+  _tfClientId = tfClientId;
+  _InitNeuralRefreshWindow();
 '@
 Replace-Literal -Path $WeaselTsfSource -Old @'
 STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
@@ -170,6 +539,7 @@ STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
   _AbortComposition();
 '@ -New @'
 STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
+  _CancelNeuralRefresh();
   neural_weasel::tsf::ClearWeaselContext();
   _AbortComposition();
 '@
@@ -187,6 +557,7 @@ STDAPI WeaselTSF::OnSetFocus(ITfDocumentMgr* pDocMgrFocus,
 STDAPI WeaselTSF::OnSetFocus(ITfDocumentMgr* pDocMgrFocus,
                              ITfDocumentMgr* pDocMgrPrevFocus) {
   if (pDocMgrFocus != pDocMgrPrevFocus) {
+    _CancelNeuralRefresh();
     neural_weasel::tsf::ClearWeaselContext();
     if (pDocMgrFocus != nullptr) {
       neural_weasel::tsf::BeginWeaselContextFocus();
@@ -211,6 +582,66 @@ Replace-Literal -Path $TextEditSource -Old @'
   neural_weasel::tsf::CaptureWeaselContext(pContext, _tfClientId);
   return S_OK;
 }
+'@
+
+$KeyEventSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/KeyEventSink.cpp'
+Replace-Literal -Path $KeyEventSource -Old @'
+  _ProcessKeyEvent(wParam, lParam, pfEaten);
+  _UpdateComposition(pContext);
+  if (*pfEaten)
+    _fTestKeyDownPending = TRUE;
+'@ -New @'
+  _ProcessKeyEvent(wParam, lParam, pfEaten);
+  _UpdateComposition(pContext);
+  _ConsiderNeuralRefresh(pContext, wParam, *pfEaten);
+  if (*pfEaten)
+    _fTestKeyDownPending = TRUE;
+'@
+Replace-Literal -Path $KeyEventSource -Old @'
+  } else {
+    _ProcessKeyEvent(wParam, lParam, pfEaten);
+    _UpdateComposition(pContext);
+  }
+  return S_OK;
+}
+
+STDAPI WeaselTSF::OnTestKeyUp(ITfContext* pContext,
+'@ -New @'
+  } else {
+    _ProcessKeyEvent(wParam, lParam, pfEaten);
+    _UpdateComposition(pContext);
+    _ConsiderNeuralRefresh(pContext, wParam, *pfEaten);
+  }
+  return S_OK;
+}
+
+STDAPI WeaselTSF::OnTestKeyUp(ITfContext* pContext,
+'@
+
+$CompositionSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/Composition.cpp'
+Replace-Literal -Path $CompositionSource -Old @'
+void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext, BOOL clear) {
+  CEndCompositionEditSession* pEditSession;
+'@ -New @'
+void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext, BOOL clear) {
+  _CancelNeuralRefresh();
+  CEndCompositionEditSession* pEditSession;
+'@
+Replace-Literal -Path $CompositionSource -Old @'
+void WeaselTSF::_AbortComposition(bool clear) {
+  m_client.ClearComposition();
+'@ -New @'
+void WeaselTSF::_AbortComposition(bool clear) {
+  _CancelNeuralRefresh();
+  m_client.ClearComposition();
+'@
+Replace-Literal -Path $CompositionSource -Old @'
+void WeaselTSF::_FinalizeComposition() {
+  _pComposition = nullptr;
+'@ -New @'
+void WeaselTSF::_FinalizeComposition() {
+  _CancelNeuralRefresh();
+  _pComposition = nullptr;
 '@
 
 $LanguageBarSource = Join-Path $ResolvedWeaselRoot 'WeaselTSF/LanguageBar.cpp'
@@ -251,6 +682,20 @@ Replace-Literal -Path $ServerSource -Old '#include "WeaselService.h"' -New @'
 #include "WeaselService.h"
 #include "context/context_capture_broker.h"
 '@
+# Experimental builds must never initialize the upstream updater or expose its
+# /update command. The official feed can replace binaries outside this isolated
+# profile, which violates the target-machine safety boundary.
+Replace-Literal -Path $ServerSource -Old '#include <winsparkle.h>' -New ''
+Replace-Literal -Path $ServerSource -Old @'
+  bool check_updates = !wcscmp(L"/update", lpstrCmdLine);
+  if (check_updates) {
+    WeaselServerApp::check_update();
+  }
+'@ -New @'
+  if (!wcscmp(L"/update", lpstrCmdLine)) {
+    return 0;
+  }
+'@
 Replace-Literal -Path $ServerSource -Old @'
   try {
     WeaselServerApp app;
@@ -267,6 +712,33 @@ Replace-Literal -Path $ServerSource -Old @'
     context_broker.Stop();
   } catch (...) {
 '@
+
+$ServerAppSource = Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServerApp.cpp'
+Replace-Literal -Path $ServerAppSource -Old @'
+  // win_sparkle_set_appcast_url("http://localhost:8000/weasel/update/appcast.xml");
+  win_sparkle_set_registry_path("Software\\Rime\\Weasel\\Updates");
+  if (GetThreadUILanguage() ==
+      MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL))
+    win_sparkle_set_lang("zh-TW");
+  else if (GetThreadUILanguage() ==
+           MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED))
+    win_sparkle_set_lang("zh-CN");
+  else
+    win_sparkle_set_lang("en");
+  win_sparkle_init();
+'@ -New @'
+  // Upstream WinSparkle is intentionally disabled for this isolated profile.
+'@
+Replace-Literal -Path $ServerAppSource -Old '  win_sparkle_cleanup();' -New ''
+Replace-Literal -Path $ServerAppSource `
+    -Old '  m_server.AddMenuHandler(ID_WEASELTRAY_CHECKUPDATE, check_update);' `
+    -New ''
+
+$ServerAppHeader = Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServerApp.h'
+Replace-Literal -Path $ServerAppHeader -Old '#include <winsparkle.h>' -New ''
+Replace-RegexOnce -Path $ServerAppHeader `
+    -Pattern '\r?\n  static bool check_update\(\) \{.*?\r?\n  \}\r?\n\r?\n(?=  static fs::path install_dir\(\))' `
+    -Replacement "`r`n"
 
 $RimeXmake = Join-Path $ResolvedWeaselRoot 'RimeWithWeasel/xmake.lua'
 $RimeOverlay = @'
@@ -300,12 +772,31 @@ Replace-RegexOnce -Path $RimeWithWeasel `
     -Pattern 'void RimeWithWeaselHandler::_Setup\(\) \{\s+RIME_STRUCT\(RimeTraits, weasel_traits\);' `
     -Replacement @'
 void rime_require_module_ai_translator();
+void rime_register_module_ai_translator_explicit();
 
 void RimeWithWeaselHandler::_Setup() {
   rime_require_module_ai_translator();
+  rime_register_module_ai_translator_explicit();
   RIME_STRUCT(RimeTraits, weasel_traits);
   RIME_MODULE_LIST(neural_weasel_modules, "default", "ai_translator");
   weasel_traits.modules = neural_weasel_modules;
+'@
+Replace-RegexOnce -Path $RimeWithWeasel `
+    -Pattern 'LOG\(INFO\) << "Initializing la rime\.";\s+rime_api->initialize\(NULL\);' `
+    -Replacement @'
+LOG(INFO) << "Initializing la rime.";
+  RIME_MODULE_LIST(neural_weasel_init_modules, "default", "ai_translator");
+  std::string init_shared_dir = wtou8(WeaselSharedDataPath().wstring());
+  std::string init_user_dir = wtou8(WeaselUserDataPath().wstring());
+  std::string init_log_dir = WeaselLogPath().u8string();
+  RIME_STRUCT(RimeTraits, init_traits);
+  init_traits.shared_data_dir = init_shared_dir.c_str();
+  init_traits.user_data_dir = init_user_dir.c_str();
+  init_traits.prebuilt_data_dir = init_shared_dir.c_str();
+  init_traits.app_name = "rime.neural_weasel_experimental";
+  init_traits.log_dir = init_log_dir.c_str();
+  init_traits.modules = neural_weasel_init_modules;
+  rime_api->initialize(&init_traits);
 '@
 
 $TextExtensions = @('.cpp', '.h', '.rc', '.lua', '.def')
@@ -373,11 +864,15 @@ $UtilityContent = $UtilityContent.Replace('L"小狼毫"', 'L"神经小狼毫（�
 $UtilityContent = $UtilityContent.Replace('L"Weasel"', 'L"Neural Weasel Safe"')
 Write-SourceFile -Path $UtilityHeader -Content $UtilityContent
 
+$ServerResource = Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServer.rc'
 foreach ($ResourcePath in @(
     (Join-Path $ResolvedWeaselRoot 'WeaselTSF/WeaselTSF.rc'),
-    (Join-Path $ResolvedWeaselRoot 'WeaselServer/WeaselServer.rc')
+    $ServerResource
 )) {
     $Resource = Read-SourceFile -Path $ResourcePath
+    if (-not $Resource.StartsWith('#pragma code_page(65001)')) {
+        $Resource = "#pragma code_page(65001)`r`n$Resource"
+    }
     $Resource = $Resource.Replace('weaselx64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM64.dll', 'NeuralWeaselExperimentalTSF.dll')
     $Resource = $Resource.Replace('weaselARM.dll', 'NeuralWeaselExperimentalTSF.dll')
@@ -387,6 +882,19 @@ foreach ($ResourcePath in @(
     $Resource = $Resource.Replace('"Weasel"', '"Neural Weasel Safe"')
     $Resource = $Resource.Replace('"小狼毫TSF"', '"神经小狼毫（安全版）TSF"')
     $Resource = $Resource.Replace('"小狼毫"', '"神经小狼毫（安全版）"')
+    if ($ResourcePath -eq $ServerResource) {
+        $UpdateMenuPattern = '(?m)^[ \t]*MENUITEM[^\r\n]*ID_WEASELTRAY_CHECKUPDATE[^\r\n]*(?:\r?\n|$)'
+        if ([regex]::Matches($Resource, $UpdateMenuPattern).Count -ne 3) {
+            throw 'Pinned upstream update menu surface changed.'
+        }
+        $Resource = [regex]::Replace($Resource, $UpdateMenuPattern, '')
+
+        $AppcastPattern = '(?ms)^(?:FEEDURL|MANUALUPDATEFEEDURL|TESTINGFEEDURL|TESTINGMANUALUPDATEFEEDURL)[ \t]+APPCAST[ \t]*\r?\nBEGIN[ \t]*\r?\n.*?^END[ \t]*(?:\r?\n|$)'
+        if ([regex]::Matches($Resource, $AppcastPattern).Count -ne 4) {
+            throw 'Pinned upstream appcast resource surface changed.'
+        }
+        $Resource = [regex]::Replace($Resource, $AppcastPattern, '')
+    }
     Write-SourceFile -Path $ResourcePath -Content $Resource
 }
 

@@ -12,9 +12,11 @@
 
 namespace {
 
-using neural_weasel::rime_plugin::InputMode;
 using neural_weasel::rime_plugin::KeyIntent;
 using neural_weasel::rime_plugin::KeyOutcome;
+using neural_weasel::rime_plugin::LatinLiteralCharacter;
+using neural_weasel::rime_plugin::NeuralLanguageMode;
+using neural_weasel::rime_plugin::ShouldToggleLanguageMode;
 
 std::vector<std::string> Split(const std::string& line) {
   std::vector<std::string> fields;
@@ -26,8 +28,9 @@ std::vector<std::string> Split(const std::string& line) {
   return fields;
 }
 
-InputMode ParseMode(const std::string& value) {
-  return value == "english" ? InputMode::kEnglish : InputMode::kChinese;
+NeuralLanguageMode ParseMode(const std::string& value) {
+  return value == "latin_first" ? NeuralLanguageMode::kLatinFirst
+                                : NeuralLanguageMode::kChineseFirst;
 }
 
 KeyIntent ParseIntent(const std::string& value) {
@@ -43,29 +46,38 @@ KeyIntent ParseIntent(const std::string& value) {
     return KeyIntent::kBackspace;
   if (value == "numbered_selection")
     return KeyIntent::kNumberedSelection;
+  if (value == "page_next")
+    return KeyIntent::kPageNext;
+  if (value == "page_previous")
+    return KeyIntent::kPagePrevious;
   return KeyIntent::kOther;
 }
 
-std::string ObservableOutcome(InputMode mode,
+std::string ObservableOutcome(NeuralLanguageMode mode,
                               KeyIntent intent,
                               bool effective_completion,
                               KeyOutcome outcome) {
   switch (outcome) {
+    case KeyOutcome::kAcceptCompletionSpace:
+      return "accept_completion_space";
     case KeyOutcome::kCommitLiteralSpace:
       return "commit_literal_space";
     case KeyOutcome::kAcceptCompletion:
       return "accept_completion";
-    case KeyOutcome::kDismissCompletion:
-      return "dismiss_completion";
-    case KeyOutcome::kCommitLiteralAndForwardEnter:
-      return "commit_literal_enter";
+    case KeyOutcome::kCancelComposition:
+      return "cancel";
+    case KeyOutcome::kCommitLiteral:
+      return "commit_literal";
     case KeyOutcome::kKeepLiteral:
       return "keep_literal";
+    case KeyOutcome::kRequestNextPage:
+      return "page_next";
+    case KeyOutcome::kRequestPreviousPage:
+      return "page_previous";
     case KeyOutcome::kUseRimeDefault:
-      if (mode == InputMode::kChinese && intent == KeyIntent::kSpace)
+      if (mode == NeuralLanguageMode::kChineseFirst &&
+          intent == KeyIntent::kSpace)
         return "commit_selected";
-      if (mode == InputMode::kChinese && intent == KeyIntent::kEscape)
-        return "cancel";
       if (intent == KeyIntent::kBackspace)
         return "update_literal";
       if (intent == KeyIntent::kNumberedSelection)
@@ -78,6 +90,32 @@ std::string ObservableOutcome(InputMode mode,
 }  // namespace
 
 int main() {
+  if (!ShouldToggleLanguageMode(true, false, true, false) ||
+      ShouldToggleLanguageMode(true, false, false, false) ||
+      ShouldToggleLanguageMode(true, false, true, true) ||
+      ShouldToggleLanguageMode(true, true, true, false) ||
+      ShouldToggleLanguageMode(false, false, true, false)) {
+    std::cerr << "Shift language-mode toggle escaped its idle-only contract\n";
+    return 1;
+  }
+
+  std::string latin_input = "abc";
+  for (const int keycode : {'-', '='}) {
+    const char literal =
+        LatinLiteralCharacter(NeuralLanguageMode::kLatinFirst, keycode);
+    if (literal == '\0') {
+      std::cerr << "Latin minus/equal was routed away from literal input\n";
+      return 1;
+    }
+    latin_input.push_back(literal);
+  }
+  if (latin_input != "abc-=" ||
+      LatinLiteralCharacter(NeuralLanguageMode::kChineseFirst, '-') != '\0' ||
+      LatinLiteralCharacter(NeuralLanguageMode::kChineseFirst, '=') != '\0') {
+    std::cerr << "Latin literal punctuation changed Chinese paging semantics\n";
+    return 1;
+  }
+
   std::ifstream fixture(NEURAL_WEASEL_KEY_FIXTURE_PATH);
   if (!fixture) {
     std::cerr << "shared key fixture is unavailable\n";
@@ -96,8 +134,7 @@ int main() {
     }
     const auto mode = ParseMode(fields[1]);
     const auto intent = ParseIntent(fields[2]);
-    const bool has_completion =
-        fields[3] == "1" && fields[4] == "1";
+    const bool has_completion = fields[3] == "1" && fields[4] == "1";
     const bool candidate_fresh = fields[5] == "1";
     const bool service_available = fields[6] == "1";
     const bool effective_completion =
@@ -113,7 +150,7 @@ int main() {
     }
     ++checked;
   }
-  if (checked < 12) {
+  if (checked < 16) {
     std::cerr << "shared key fixture did not cover all required vectors\n";
     return 1;
   }

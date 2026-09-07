@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "context/context_ipc_protocol.h"
+#include "context/metadata_trace.h"
 #include "context/source_context_identity.h"
 #include "tsf/context_capture_client.h"
 #include "tsf/input_scope_policy.h"
@@ -134,6 +135,7 @@ struct CaptureState final {
   std::mutex mutex;
   context::SourceContextIdentity identity;
   ContextCaptureClient client;
+  std::atomic<bool> prediction_allowed{false};
 };
 
 CaptureState& State() {
@@ -236,8 +238,14 @@ class ContextCaptureSession final : public ITfEditSession {
     try {
       const InputScopePolicyResult policy =
           ReadInputScopePolicy(context_, edit_cookie);
+      neural_weasel::context::TraceContextPipeline(
+          L"tsf-capture", L"event=edit-session policy=%d allow=%d",
+          static_cast<int>(policy.state), policy.allow_capture ? 1 : 0);
       if (policy.state == InputScopeState::kPassword || !policy.allow_capture ||
           IsBlacklistedProcess() || !IsInputDesktop()) {
+        State().prediction_allowed.store(false, std::memory_order_release);
+        neural_weasel::context::TraceContextPipeline(
+            L"tsf-capture", L"event=edit-session result=denied");
         ClearReservedCapability(
             reserved_, context::ContextScopeLabel::kPassword);
         return S_OK;
@@ -246,7 +254,14 @@ class ContextCaptureSession final : public ITfEditSession {
       SurroundingTextSnapshot snapshot = CaptureSurroundingText(
           context_, edit_cookie, {8192, 4096},
           {true, CaptureDenyReason::kNone});
+      neural_weasel::context::TraceContextPipeline(
+          L"tsf-capture",
+          L"event=snapshot hr=%ld before-len=%llu after-len=%llu",
+          static_cast<long>(snapshot.result),
+          static_cast<unsigned long long>(snapshot.before.size()),
+          static_cast<unsigned long long>(snapshot.after.size()));
       if (FAILED(snapshot.result)) {
+        State().prediction_allowed.store(false, std::memory_order_release);
         return snapshot.result;
       }
 
@@ -264,9 +279,17 @@ class ContextCaptureSession final : public ITfEditSession {
       if (!state.identity.IsCurrent(reserved_)) {
         return S_OK;
       }
-      state.client.TryPush(std::move(frame));
+      state.prediction_allowed.store(
+          policy.allow_prediction, std::memory_order_release);
+      const ContextPushResult push_result =
+          state.client.TryPush(std::move(frame));
+      neural_weasel::context::TraceContextPipeline(
+          L"tsf-capture", L"event=push result=%d revision=%llu",
+          static_cast<int>(push_result),
+          static_cast<unsigned long long>(reserved_.revision));
       return S_OK;
     } catch (...) {
+      State().prediction_allowed.store(false, std::memory_order_release);
       return S_OK;
     }
   }
@@ -285,7 +308,10 @@ void BeginWeaselContextFocus() noexcept {
   try {
     auto& state = State();
     std::lock_guard lock(state.mutex);
-    state.identity.BeginFocus();
+    state.prediction_allowed.store(false, std::memory_order_release);
+    const bool began = state.identity.BeginFocus();
+    neural_weasel::context::TraceContextPipeline(
+        L"tsf-capture", L"event=focus-begin result=%d", began ? 1 : 0);
   } catch (...) {
   }
 }
@@ -300,6 +326,10 @@ HRESULT CaptureWeaselContext(
     {
       auto& state = State();
       std::lock_guard lock(state.mutex);
+      // A previous normal-scope proof must never authorize a later capture.
+      // The asynchronous edit session below is the only place that can set
+      // this true again after reclassifying the current TSF context.
+      state.prediction_allowed.store(false, std::memory_order_release);
       if (!state.identity.active() && !state.identity.BeginFocus()) {
         return S_OK;
       }
@@ -315,8 +345,14 @@ HRESULT CaptureWeaselContext(
     const HRESULT result = context->RequestEditSession(
         client_id, session, TF_ES_ASYNCDONTCARE | TF_ES_READ, &edit_result);
     session->Release();
+    neural_weasel::context::TraceContextPipeline(
+        L"tsf-capture",
+        L"event=capture-request request-hr=%ld edit-hr=%ld revision=%llu",
+        static_cast<long>(result), static_cast<long>(edit_result),
+        static_cast<unsigned long long>(reserved.revision));
     return result;
   } catch (...) {
+    State().prediction_allowed.store(false, std::memory_order_release);
     return S_OK;
   }
 }
@@ -325,15 +361,24 @@ void ClearWeaselContext() noexcept {
   try {
     auto& state = State();
     std::lock_guard lock(state.mutex);
+    state.prediction_allowed.store(false, std::memory_order_release);
     const auto clear_stamp = state.identity.Capture();
     if (!clear_stamp) {
       return;
     }
     state.identity.EndFocus();
-    state.client.TryPush(
+    const ContextPushResult push_result = state.client.TryPush(
         ClearFrame(*clear_stamp, context::ContextScopeLabel::kNormal));
+    neural_weasel::context::TraceContextPipeline(
+        L"tsf-capture", L"event=focus-clear push-result=%d revision=%llu",
+        static_cast<int>(push_result),
+        static_cast<unsigned long long>(clear_stamp->revision));
   } catch (...) {
   }
+}
+
+bool IsWeaselPredictionAllowed() noexcept {
+  return State().prediction_allowed.load(std::memory_order_acquire);
 }
 
 }  // namespace neural_weasel::tsf

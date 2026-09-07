@@ -1,4 +1,0 @@
-patch:
-  "engine/translators":
-    - punct_translator
-    - "lua_translator@*neural_translator"

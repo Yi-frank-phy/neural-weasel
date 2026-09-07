@@ -7,7 +7,8 @@ TSF profile or prove real typing behavior in an interactive Windows session.
 
 ## Preconditions
 
-- 64-bit Windows 11 with PowerShell 7.
+- 64-bit Windows 11 with PowerShell 7. Run the real install from an elevated
+  PowerShell; dry-run verification does not require elevation.
 - A disposable account that can open Windows language/input settings.
 - `uv` installed and available on `PATH`.
 - Enough disk and network access to download the configured Base checkpoint.
@@ -98,16 +99,17 @@ correction; they are outside this slice.
 With an English/Latin candidate visible:
 
 1. Type a literal prefix and confirm the literal remains visible.
-2. Press Space. It must commit the literal prefix followed by one space; it
-   must never accept top-1 completion.
+2. Press Space. It must commit the current valid candidate and one space;
+   without a valid candidate, commit the literal prefix and one space.
 3. Type another prefix and press Tab. Tab may explicitly accept the selected
    completion.
 4. Press Escape. The completion must close while the literal prefix remains.
 5. Press Enter. The literal prefix must commit and the editor must still
    receive its normal Enter behavior.
 6. Use Backspace and confirm the literal updates.
-7. Use number or direction keys and confirm they do not silently replace the
-   literal with a stale/unselected completion.
+7. Press 1 through 5 to commit the corresponding valid English candidate.
+   Move the highlight with arrows and verify Space accepts that candidate.
+   Stale candidates must not commit.
 
 This slice provides only the current single-token live baseline. It does not
 claim complete multi-token causal rescoring.

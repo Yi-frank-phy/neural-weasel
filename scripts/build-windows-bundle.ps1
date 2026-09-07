@@ -110,6 +110,15 @@ $ServerArtifact = Resolve-RequiredBuildArtifact `
         (Join-Path $WeaselRoot 'output'),
         (Join-Path $WeaselRoot 'build')
     )
+$RimeRuntimeArtifact = Resolve-RequiredBuildArtifact `
+    -FileName 'rime.dll' `
+    -Candidates @(
+        (Join-Path $WeaselRoot 'output/rime.dll'),
+        (Join-Path $WeaselRoot 'output/Win32/rime.dll')
+    ) `
+    -SearchRoots @(
+        (Join-Path $WeaselRoot 'output')
+    )
 $ProfileToolArtifact = Resolve-RequiredBuildArtifact `
     -FileName 'NeuralWeaselProfileTool.exe' `
     -Candidates @(
@@ -127,6 +136,8 @@ Copy-RequiredFile -Source $TsfArtifact `
     -Destination (Join-Path $OutputRoot 'NeuralWeaselExperimentalTSF.dll')
 Copy-RequiredFile -Source $ServerArtifact `
     -Destination (Join-Path $OutputRoot 'NeuralWeaselServer.exe')
+Copy-RequiredFile -Source $RimeRuntimeArtifact `
+    -Destination (Join-Path $OutputRoot 'rime.dll')
 Copy-RequiredFile -Source $ProfileToolArtifact `
     -Destination (Join-Path $OutputRoot 'NeuralWeaselProfileTool.exe')
 Copy-RequiredFile -Source $ActivatorArtifact `
@@ -165,7 +176,8 @@ Copy-RequiredFile -Source $RimeLibrary `
 Get-ChildItem -LiteralPath (Join-Path $WeaselRoot 'output') -Filter '*.dll' -File |
     Where-Object {
         $_.Name -notmatch '^(?i:weasel.*\.dll)$' -and
-        $_.Name -ne 'NeuralWeaselExperimentalTSF.dll'
+        $_.Name -ne 'NeuralWeaselExperimentalTSF.dll' -and
+        $_.Name -ne 'WinSparkle.dll'
     } |
     ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $OutputRoot -Force
@@ -223,6 +235,8 @@ Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'pyproject.toml') `
     -Destination (Join-Path $PythonService 'pyproject.toml')
 Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'uv.lock') `
     -Destination (Join-Path $PythonService 'uv.lock')
+Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'README.md') `
+    -Destination (Join-Path $PythonService 'README.md')
 Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'src') `
     -Destination (Join-Path $PythonService 'src') -Recurse -Force
 

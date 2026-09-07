@@ -11,6 +11,11 @@ class BilingualKeyProcessor final : public ::rime::Processor {
 
   ::rime::ProcessResult ProcessKeyEvent(
       const ::rime::KeyEvent& key_event) override;
+
+ private:
+  bool shift_pressed_ = false;
+  bool shift_used_as_modifier_ = false;
+  bool shift_started_while_idle_ = false;
 };
 
 }  // namespace neural_weasel::rime_plugin

@@ -24,6 +24,7 @@ REQUIRED = (
     "NeuralWeaselProfileTool.exe",
     "NeuralWeaselSessionActivator.exe",
     "NeuralWeaselServer.exe",
+    "rime.dll",
     "NeuralWeaselRimeModule.lib",
     "install-dev-profile.ps1",
     "uninstall-dev-profile.ps1",
@@ -36,6 +37,14 @@ REQUIRED = (
     "build-manifest.json",
     "README-INSTALL-TEST.md",
     "data/neural_weasel.schema.yaml",
+    "python-service/README.md",
+)
+
+FORBIDDEN_UPDATE_ARTIFACTS = ("WinSparkle.dll",)
+FORBIDDEN_UPDATE_LITERALS = (
+    "win_sparkle_",
+    "http://rime.github.io/release/weasel/appcast.xml",
+    "http://rime.github.io/testing/weasel/appcast.xml",
 )
 
 
@@ -52,6 +61,17 @@ def verify(root: Path) -> list[str]:
     for relative in REQUIRED:
         if not (root / relative).is_file():
             errors.append(f"missing required artifact: {relative}")
+
+    for relative in FORBIDDEN_UPDATE_ARTIFACTS:
+        if (root / relative).exists():
+            errors.append(f"forbidden upstream update artifact: {relative}")
+
+    server_path = root / "NeuralWeaselServer.exe"
+    if server_path.is_file():
+        server_bytes = server_path.read_bytes()
+        for literal in FORBIDDEN_UPDATE_LITERALS:
+            if any(encoded in server_bytes for encoded in _encodings(literal)):
+                errors.append(f"server retains upstream update literal: {literal}")
 
     manifest_path = root / "build-manifest.json"
     if not manifest_path.is_file():

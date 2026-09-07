@@ -180,7 +180,7 @@ The production GGUF path keeps its existing realtime invariant: **keypress handl
 - Keypress candidate queries read only published state associated with the active source session/revision policy.
 - Missing, dropped, stale, private, or protected context must fail toward reduced-context prediction, not toward synchronous inference on the keypress path.
 
-Right-of-caret context may be retained for future suffix-aware/background rescoring, but this feature must not add synchronous suffix scoring to the 6 ms native path.
+Right-of-caret context may be retained for future suffix-aware/background rescoring, but this feature must not add synchronous suffix scoring to the bounded 50 ms native path.
 
 ## Failure handling
 

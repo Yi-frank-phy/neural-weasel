@@ -86,6 +86,29 @@ def test_stale_completion_cannot_overwrite_newer_requested_epoch() -> None:
     assert coordinator.latest_state.before_hash == "newest"
 
 
+def test_background_refresh_never_runs_legacy_candidate_prewarm() -> None:
+    """Context publication may not start GIL-heavy compatibility work."""
+
+    class RecordingEngine:
+        def __init__(self) -> None:
+            self.called = threading.Event()
+
+        def query(self, *args: object, **kwargs: object) -> list[object]:
+            self.called.set()
+            return []
+
+    runtime = BlockingRuntime(threading.Event(), threading.Event())
+    backend = FullLogitsSnapshotBackend(runtime)
+    engine = RecordingEngine()
+    coordinator = SnapshotCoordinator(backend=backend, engine=engine)
+
+    epoch = coordinator.request_context_update("context")
+
+    assert coordinator.wait_for_epoch(epoch, timeout_seconds=1.0)
+    assert not engine.called.wait(0.05)
+    assert coordinator.diagnostics()["last_prewarm_error"] is None
+
+
 def test_snapshot_age_over_100ms_is_reported_but_queryable() -> None:
     """AT-RT-04: stale age is a metric, not a query rejection."""
     runtime = BlockingRuntime(threading.Event(), threading.Event())

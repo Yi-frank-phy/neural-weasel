@@ -6,6 +6,8 @@
 #include <string>
 #include <utility>
 
+#include "context/metadata_trace.h"
+
 namespace neural_weasel::tsf {
 namespace {
 
@@ -99,6 +101,8 @@ ContextPushResult ContextCaptureClient::TryPush(
     context::ContextFrame frame) noexcept {
   std::vector<std::uint8_t> bytes;
   if (!context::EncodeContextFrame(frame, &bytes)) {
+    context::TraceContextPipeline(
+        L"tsf-client", L"event=push result=encode-failure");
     return ContextPushResult::kDropped;
   }
 
@@ -109,13 +113,21 @@ ContextPushResult ContextCaptureClient::TryPush(
       // Latest wins. A clear frame naturally replaces an older pending normal
       // frame without waiting for the in-flight write to finish.
       pending_ = std::move(bytes);
+      context::TraceContextPipeline(
+          L"tsf-client", L"event=push result=coalesced");
       return ContextPushResult::kCoalesced;
     }
     if (pipe_ == INVALID_HANDLE_VALUE && !ConnectVerified()) {
       pending_.reset();
+      context::TraceContextPipeline(
+          L"tsf-client", L"event=push result=unverified error=%lu",
+          GetLastError());
       return ContextPushResult::kUnverified;
     }
-    return StartWriteLocked(std::move(bytes));
+    const ContextPushResult result = StartWriteLocked(std::move(bytes));
+    context::TraceContextPipeline(
+        L"tsf-client", L"event=push result=%d", static_cast<int>(result));
+    return result;
   } catch (...) {
     return ContextPushResult::kDropped;
   }
@@ -139,13 +151,21 @@ bool ContextCaptureClient::ConnectVerified() noexcept {
       pipe_name.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
       FILE_FLAG_OVERLAPPED, nullptr);
   if (pipe == INVALID_HANDLE_VALUE) {
+    context::TraceContextPipeline(
+        L"tsf-client", L"event=connect result=open-failure error=%lu",
+        GetLastError());
     return false;
   }
   if (!VerifyServerIdentity(pipe)) {
+    context::TraceContextPipeline(
+        L"tsf-client", L"event=connect result=identity-failure error=%lu",
+        GetLastError());
     CloseHandle(pipe);
     return false;
   }
   pipe_ = pipe;
+  context::TraceContextPipeline(
+      L"tsf-client", L"event=connect result=verified");
   return true;
 }
 

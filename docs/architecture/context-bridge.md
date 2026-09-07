@@ -145,7 +145,8 @@ been compiled. Required Windows CI checks are:
 
 - build the standalone target with the Weasel-supported Windows SDK;
 - fake-transport tests for coalescing, stale responses, exact epoch readiness,
-  invalidation races and 200 ms timeout;
+  invalidation races, the 1000 ms background pipe allowance and the 3000 ms
+  readiness deadline;
 - secure snapshots containing sentinel text and an assertion that the sentinel
   never occurs in the serialized request;
 - pipe-server PID failure, inaccessible process token and unequal SID tests;

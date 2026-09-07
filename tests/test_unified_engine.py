@@ -177,6 +177,64 @@ def test_cross_script_penalty_is_fixed_configurable_and_not_margin_driven() -> N
     assert configured_policy.language_prior("chinese", Script.LATIN, "Qwen3.5") == 0.0
 
 
+def test_exact_pinyin_outranks_extension_regardless_of_logits(make_index) -> None:
+    index = make_index(
+        [
+            (10, "世界", "shijie", "shi'jie", 2, 0),
+            (11, "世界观", "shijieguan", "shi'jie'guan", 3, 0),
+        ]
+    )
+    backend, state = make_backend({10: -10.0, 11: 100.0})
+    engine = UnifiedConstraintEngine(
+        backend=backend,
+        pinyin_constraint=PinyinConstraint(index),
+    )
+
+    candidates = engine.query("今天", "shijie", state=state)
+
+    assert [candidate.text for candidate in candidates[:2]] == ["世界", "世界观"]
+    assert candidates[0].ranking_tier < candidates[1].ranking_tier
+
+
+def test_exact_pinyin_outranks_fuzzy_and_latin_regardless_of_logits(make_index) -> None:
+    index = make_index(
+        [
+            (10, "今天", "jintian", "jin'tian", 2, 0),
+            (11, "惊天", "jingtian", "jing'tian", 2, 0),
+        ]
+    )
+    backend, state = make_backend({10: -20.0, 11: 100.0, 20: 200.0})
+    engine = UnifiedConstraintEngine(
+        backend=backend,
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint([LatinCompletion("jintian", (20,))]),
+    )
+
+    candidates = engine.query("中文上下文", "jintian", state=state)
+
+    assert candidates[0].text == "今天"
+    assert candidates[0].ranking_tier == 0
+    assert next(candidate for candidate in candidates if candidate.text == "惊天").ranking_tier > 0
+
+
+def test_english_context_keeps_latin_candidate_ahead_of_han(make_index) -> None:
+    index = make_index([(10, "阿西", "asy", "a'sy", 2, 0)])
+    backend, state = make_backend({10: 100.0, 20: -10.0})
+    engine = UnifiedConstraintEngine(
+        backend=backend,
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint([LatinCompletion("asymmetric", (20,))]),
+    )
+
+    candidates = engine.query(
+        "The receiver-centred placement is operationally",
+        "asy",
+        state=state,
+    )
+
+    assert candidates[0].text == "asymmetric"
+
+
 def test_retyping_uses_only_the_current_prefix() -> None:
     """AT-EN-06: Latin constraint has no hidden composition history."""
     backend, state = make_backend({1: 3.0, 2: 2.0})
