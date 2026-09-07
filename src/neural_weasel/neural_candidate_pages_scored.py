@@ -897,7 +897,16 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             if key in session.expanded_paths:
                 continue
             if candidate.script == "han":
-                han_edges = self._han_edges_for(session, candidate)
+                # The matcher walks an immutable index but may still take
+                # hundreds of milliseconds on a cold shorthand path. Do not
+                # hold the paging lock while doing that CPU work.
+                self._state_lock.release()
+                try:
+                    han_edges = self._han_edges_for(session, candidate)
+                finally:
+                    self._state_lock.acquire()
+                if self._sessions.get(session.candidate_set_id) is not session:
+                    raise CandidatePageError("candidate set was invalidated during search")
                 allowed = tuple(sorted(han_edges))
             else:
                 allowed = self._latin_continuation_token_ids
