@@ -3,6 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+OVERLAY = ROOT / "scripts" / "prepare-weasel-overlay.ps1"
+
+
+def _overlay_text() -> str:
+    return OVERLAY.read_text(encoding="utf-8-sig")
 
 
 def test_tsf_context_sender_is_authenticated_one_way_and_nonblocking() -> None:
@@ -28,7 +33,7 @@ def test_tsf_context_sender_is_authenticated_one_way_and_nonblocking() -> None:
 
 
 def test_server_owns_context_broker_and_tsf_does_not_own_backend() -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    overlay = _overlay_text()
     tsf_start = overlay.index("$TsfXmake")
     server_start = overlay.index("$ServerXmake")
     tsf_block = overlay[tsf_start:server_start]
@@ -153,22 +158,32 @@ def test_context_sender_and_broker_have_no_raw_context_read_api() -> None:
         assert operation not in sources
 
 
-def test_private_refresh_event_forces_a_new_revision_without_editing_input() -> None:
+def test_private_refresh_event_advances_presentation_without_editing_input() -> None:
     refresh_key = (ROOT / "native/rime/neural_refresh_key.h").read_text(encoding="utf-8")
     processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
     translator = (ROOT / "native/rime/ai_translator.cc").read_text(encoding="utf-8")
 
     assert "kNeuralRefreshKeycode = 0xFDD0" in refresh_key
+    assert "kNeuralPresentationRefreshProperty" in refresh_key
     refresh_block = processor[processor.index("kNeuralRefreshKeycode") :]
-    assert "PushInput" not in refresh_block.split("if (IsShiftKey", 1)[0]
-    assert 'set_property(kNeuralForceRefreshProperty, "1")' in refresh_block
+    refresh_block = refresh_block.split("if (IsShiftKey", 1)[0]
+    assert "PushInput" not in refresh_block
+    assert 'set_property(kNeuralPresentationRefreshProperty, "1")' in refresh_block
     assert "RefreshNonConfirmedComposition()" in refresh_block
-    assert 'get_property(kNeuralForceRefreshProperty) == "1"' in translator
-    assert "force_new_revision_ = true" in translator
+    assert "kNeuralCandidatePendingProperty" in refresh_block
+    assert "kRejected" in refresh_block
+
+    presentation_start = translator.index('get_property(kNeuralPresentationRefreshProperty) == "1"')
+    presentation_end = translator.index("const std::string language_mode", presentation_start)
+    presentation_block = translator[presentation_start:presentation_end]
+    assert "presentation_refresh = true;" in presentation_block
+    assert "++composition_revision_" not in presentation_block
+    assert "force_new_revision_ = true" not in presentation_block
+    assert 'request["presentation_refresh"] = true;' in translator
 
 
 def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() -> None:
-    overlay = (ROOT / "scripts/prepare-weasel-overlay.ps1").read_text(encoding="utf-8")
+    overlay = _overlay_text()
     adapter = (ROOT / "native/tsf/weasel_context_adapter.cc").read_text(encoding="utf-8")
 
     assert "HWND_MESSAGE" in overlay
@@ -179,7 +194,8 @@ def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() 
     assert "_RunNeuralRefresh" in overlay
     assert "IsWeaselPredictionAllowed()" in overlay
     assert "kNeuralRefreshKeycode" in overlay
-    assert "kNeuralRefreshMaxAttempts = 1" in overlay
+    assert "constexpr unsigned int kNeuralRefreshMaxAttempts = 16;" in overlay
+    assert "const bool presentation_ready = m_client.ProcessKeyEvent(refresh);" in overlay
     refresh_block = overlay[overlay.index("void WeaselTSF::_RunNeuralRefresh()") :]
     refresh_block = refresh_block.split("static void error_message", 1)[0]
     assert "_HideUI" not in refresh_block

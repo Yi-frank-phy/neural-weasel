@@ -126,9 +126,11 @@ def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_
     engine, runtime = _engine(make_index)
     first = _page(engine, client="active", revision=1, raw="ni")
     assert first.has_more is True
+    assert runtime.started.wait(0.5)
 
-    primary_thread, primary_done, primary = _run_in_thread(
-        lambda: _page(
+    calls_while_background_blocked = runtime.continuation_calls
+    with pytest.raises(CandidatePageTimeout):
+        _page(
             engine,
             client="active",
             revision=1,
@@ -137,12 +139,12 @@ def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_
             candidate_set_id=first.candidate_set_id,
             deadline_ms=1_000.0,
         )
-    )
-    assert runtime.started.wait(0.5)
-    assert primary_done.is_set() is False
+    assert runtime.continuation_calls == calls_while_background_blocked
+    diagnostics = engine.runtime_performance_diagnostics()
+    assert diagnostics["candidate_page_timeout_count"] == 1
 
-    # A duplicate unfinished page request for the same candidate set must not
-    # queue behind the uninterruptible decode. It is retryable immediately.
+    # A duplicate unfinished page request remains retryable immediately and
+    # must not queue another model call behind the background preparation.
     duplicate_thread, duplicate_done, duplicate = _run_in_thread(
         lambda: _page(
             engine,
@@ -156,12 +158,10 @@ def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_
     )
     if not duplicate_done.wait(0.5):
         runtime.release.set()
-        primary_thread.join(1.0)
         duplicate_thread.join(1.0)
         pytest.fail("duplicate later-page request queued behind continuation")
     assert isinstance(duplicate.get("error"), CandidatePageTimeout)
-    diagnostics = engine.runtime_performance_diagnostics()
-    assert diagnostics["candidate_page_timeout_count"] == 1
+    assert runtime.continuation_calls == calls_while_background_blocked
 
     # A different composition's page 0 is baseline-only and must remain
     # responsive even while the first candidate set is still inside CUDA work.
@@ -170,7 +170,6 @@ def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_
     )
     if not page0_done.wait(0.5):
         runtime.release.set()
-        primary_thread.join(1.0)
         page0_thread.join(1.0)
         pytest.fail("page zero queued behind continuation")
     assert "error" not in page0_result
@@ -185,13 +184,19 @@ def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_
     )
     if not invalidate_done.wait(0.5):
         runtime.release.set()
-        primary_thread.join(1.0)
         invalidate_thread.join(1.0)
         pytest.fail("candidate session invalidation queued behind continuation")
     assert "error" not in invalidate
 
     runtime.release.set()
-    primary_thread.join(1.0)
-    assert primary_done.is_set() is True
-    assert isinstance(primary.get("error"), CandidatePageError)
+    with pytest.raises(CandidatePageError):
+        _page(
+            engine,
+            client="active",
+            revision=1,
+            raw="ni",
+            page_index=1,
+            candidate_set_id=first.candidate_set_id,
+            deadline_ms=120.0,
+        )
     assert runtime.continuation_calls == 1

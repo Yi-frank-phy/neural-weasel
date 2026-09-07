@@ -29,10 +29,17 @@ def test_native_candidate_query_deadlines_cover_page_contract() -> None:
     assert "query_timeout_{6}" not in header
 
 
-def test_schema_runs_neural_shift_processor_before_ascii_composer() -> None:
+def test_schema_keeps_mouse_english_in_neural_candidate_pipeline() -> None:
     schema = (ROOT / "assets/rime/neural_weasel.schema.yaml").read_text(encoding="utf-8")
 
-    assert schema.index("- bilingual_key_processor") < schema.index("- ascii_composer")
+    assert "- bilingual_key_processor" in schema
+    assert "- ascii_composer" not in schema
+    assert "- ascii_segmentor" not in schema
+    for filename in ("bilingual_key_processor.cc", "ai_translator.cc"):
+        source = (ROOT / "native/rime" / filename).read_text(encoding="utf-8")
+        assert 'context->get_option("ascii_mode")' in source
+    processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
+    assert 'context->set_option("ascii_mode", mode == NeuralLanguageMode::kLatinFirst)' in processor
     assert "page_size: 9" in schema
 
 

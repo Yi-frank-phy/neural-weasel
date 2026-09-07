@@ -329,6 +329,10 @@ def main() -> int:
             # immutable published snapshots while newer context is refreshed in
             # the background by the service engine.
             engine.update_context("", "")
+            from .service_gc import freeze_startup_objects
+
+            # No editor context has entered this dedicated process yet.
+            freeze_startup_objects()
             if args.command == "serve":
                 from .production_pipe import ProductionNamedPipeServer
 

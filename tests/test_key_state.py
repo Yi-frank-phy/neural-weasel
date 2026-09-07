@@ -35,12 +35,12 @@ def chinese_state() -> CompositionState:
     )
 
 
-def test_latin_space_commits_literal_plus_space() -> None:
-    """AT-KS-01: Space never silently accepts the model completion."""
+def test_latin_space_accepts_completion_plus_space() -> None:
+    """AT-KS-01: Space accepts the selected completion and separates words."""
     transition = reduce_key(latin_state(), KeyAction.SPACE)
 
-    assert transition.committed_text == "asy "
-    assert transition.committed_text != "asymmetric "
+    assert transition.committed_text == "asymmetric "
+    assert transition.committed_text != "asy "
     assert transition.state.is_idle
 
 
@@ -71,11 +71,11 @@ def test_chinese_space_and_number_commit_candidates() -> None:
     assert number.committed_text == "就产"
 
 
-def test_latin_number_key_never_commits_completion() -> None:
+def test_latin_number_key_commits_corresponding_completion() -> None:
     transition = reduce_key(latin_state(), KeyAction.SELECT_1)
 
-    assert transition.committed_text is None
-    assert transition.state.literal == "asy"
+    assert transition.committed_text == "asymmetric"
+    assert transition.state.is_idle
 
 
 def test_enter_commits_literal_in_both_modes_without_forwarding_enter() -> None:
@@ -154,6 +154,8 @@ def test_shared_python_cpp_key_state_vectors(vector: dict[str, str]) -> None:
     expected = vector["expected"]
     if expected == "commit_literal_space":
         assert transition.committed_text == literal + " "
+    elif expected == "accept_completion_space":
+        assert transition.committed_text == candidate + " "
     elif expected == "accept_completion":
         assert transition.committed_text == candidate
     elif expected == "commit_literal":

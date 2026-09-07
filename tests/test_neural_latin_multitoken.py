@@ -123,6 +123,14 @@ def _page(engine: BilingualImeEngine, raw: str, revision: int, **kwargs):
     return engine.query_candidate_page(**values)
 
 
+def _wait_for_page_preparation(engine: BilingualImeEngine, candidate_set_id: str) -> None:
+    manager = engine.candidate_pages
+    with manager._state_lock:
+        event = manager._page_preparation_events.get(candidate_set_id)
+    assert event is not None
+    assert event.wait(1.0)
+
+
 def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization() -> None:
     engine, runtime = _engine()
 
@@ -131,8 +139,8 @@ def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization(
     assert first.candidates[0].text == "asymmetry"
     assert first.candidates[0].constraint_kind == "literal"
     assert first.has_more is True
-    assert runtime.continuation_calls == 0
 
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     second = _page(
         engine,
         "asymmetry",
@@ -160,11 +168,12 @@ def test_multitoken_latin_path_sums_base_log_probs_without_length_normalization(
 
 
 def test_scored_multitoken_baseline_refreshes_prewarm_and_rebinds_current_raw() -> None:
-    engine, runtime = _engine()
+    engine, _ = _engine()
     prewarm_key = ("a", NeuralLanguageMode.LATIN_FIRST)
     assert prewarm_key in engine.candidate_pages._baseline_single_letter
 
     first = _page(engine, "asymmetry", 1)
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     _page(
         engine,
         "asymmetry",
@@ -173,7 +182,6 @@ def test_scored_multitoken_baseline_refreshes_prewarm_and_rebinds_current_raw() 
         candidate_set_id=first.candidate_set_id,
         deadline_ms=120.0,
     )
-    calls_after_search = runtime.continuation_calls
 
     # Learning a reusable empty-context path refreshes the permanent first-letter
     # prewarm instead of deleting it and forcing a future first-key rebuild.
@@ -193,15 +201,14 @@ def test_scored_multitoken_baseline_refreshes_prewarm_and_rebinds_current_raw() 
     assert completion.token_path == (10, 11)
     assert completion.consumed_keys == len("a")
     assert completion.completes_input is False
-    assert runtime.continuation_calls == calls_after_search
 
     # The same cached Base-model path rebinds to the full raw word when queried
-    # as an exact completion in a later revision.
+    # as an exact completion in a later revision. C2 may concurrently prepare
+    # later pages, so total continuation-call count is intentionally not stable.
     exact_page = _page(engine, "asymmetry", 3)
     exact = next(candidate for candidate in exact_page.candidates if candidate.text == "asymmetry")
     assert exact.consumed_keys == len("asymmetry")
     assert exact.completes_input is True
-    assert runtime.continuation_calls == calls_after_search
 
 
 def test_page_zero_does_not_rescan_unrelated_latin_initials() -> None:

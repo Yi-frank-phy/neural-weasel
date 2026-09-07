@@ -131,6 +131,30 @@ def test_context_free_continuation_replays_only_short_candidate_paths(tmp_path: 
     assert np.array_equal(scores[1], np.array([33.0, 34.0], dtype=np.float32))
 
 
+def test_shared_allowed_vocabulary_is_materialized_once_per_batch(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+
+    class Vocabulary(list):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return super().__iter__()
+
+    vocabulary = Vocabulary([1, 3])
+    scores = backend.continue_from_root(
+        root,
+        [(2,)] * 8,
+        [vocabulary] * 8,
+        deadline_ms=1000.0,
+    )
+    assert scores is not None and len(scores) == 8
+    assert all(np.array_equal(scores[0], item) for item in scores)
+    assert vocabulary.iterations == 1
+
+
 def test_snapshot_root_restores_exact_context_before_candidate_branch(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
     snapshot = backend.create_snapshot("你")

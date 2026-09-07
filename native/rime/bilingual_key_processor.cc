@@ -17,7 +17,10 @@ namespace neural_weasel::rime_plugin {
 namespace {
 
 NeuralLanguageMode CurrentLanguageMode(::rime::Context* context) {
-  if (context->get_property("neural_language_mode") == "latin_first") {
+  // The language bar and Shift share Rime's status option. The experimental
+  // schema deliberately omits the ASCII bypass processors in either mode.
+  if (context->get_option("ascii_mode")) {
+    context->set_property("neural_language_mode", "latin_first");
     return NeuralLanguageMode::kLatinFirst;
   }
   context->set_property("neural_language_mode", "chinese_first");
@@ -25,6 +28,7 @@ NeuralLanguageMode CurrentLanguageMode(::rime::Context* context) {
 }
 
 void SetLanguageMode(::rime::Context* context, NeuralLanguageMode mode) {
+  context->set_option("ascii_mode", mode == NeuralLanguageMode::kLatinFirst);
   context->set_property(
       "neural_language_mode",
       mode == NeuralLanguageMode::kLatinFirst ? "latin_first" :
@@ -104,9 +108,19 @@ void RefreshPage(::rime::Context* context,
     if (!context->IsComposing()) {
       return ::rime::kAccepted;
     }
-    context->set_property(kNeuralForceRefreshProperty, "1");
+    // Never replace a candidate list while the user has moved the selection.
+    if (SelectedIndex(context) != 0) {
+      return ::rime::kAccepted;
+    }
+    context->set_property(kNeuralPresentationRefreshProperty, "1");
     context->RefreshNonConfirmedComposition();
-    return ::rime::kAccepted;
+    // The owner-thread timer uses Weasel's handled bit only for this private
+    // noncharacter.  kRejected means "presentation still pending". Pinned
+    // librime records only unmodified printable ASCII (plus Backspace/Return)
+    // in CommitHistory, so U+FDD0 is intentionally outside that mutation set.
+    return context->get_property(kNeuralCandidatePendingProperty) == "1"
+               ? ::rime::kRejected
+               : ::rime::kAccepted;
   }
 
   if (IsShiftKey(key_event)) {
@@ -152,7 +166,13 @@ void RefreshPage(::rime::Context* context,
   if (key_event.ctrl() || key_event.alt() || key_event.super()) {
     return ::rime::kNoop;
   }
+  const auto mode = CurrentLanguageMode(context);
   if (!context->IsComposing()) {
+    // Reject idle digits before the speller can start a numeric composition.
+    // The host inserts them directly; active candidate selection stays below.
+    if (key_event.keycode() >= XK_0 && key_event.keycode() <= XK_9) {
+      return ::rime::kRejected;
+    }
     return ::rime::kNoop;
   }
 
@@ -165,13 +185,23 @@ void RefreshPage(::rime::Context* context,
     return ::rime::kNoop;
   }
 
-  const auto mode = CurrentLanguageMode(context);
+  if (const char literal = LatinLiteralCharacter(mode, key_event.keycode());
+      literal != '\0') {
+    context->PushInput(literal);
+    context->BeginEditing();
+    return ::rime::kAccepted;
+  }
+
   auto selected = context->GetSelectedCandidate();
   const bool candidate_fresh =
       context->get_property("neural_candidate_fresh") == "1";
   const auto outcome = ResolveKeyOutcome(
       mode, intent, IsCompletion(selected), candidate_fresh, candidate_fresh);
   switch (outcome) {
+    case KeyOutcome::kAcceptCompletionSpace:
+      engine_->CommitText(selected->text() + " ");
+      context->Clear();
+      return ::rime::kAccepted;
     case KeyOutcome::kCommitLiteralSpace:
       engine_->CommitText(context->input() + " ");
       context->Clear();

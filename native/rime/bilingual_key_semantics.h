@@ -22,6 +22,7 @@ enum class KeyIntent {
 enum class KeyOutcome {
   kUseRimeDefault,
   kCommitLiteralSpace,
+  kAcceptCompletionSpace,
   kAcceptCompletion,
   kCancelComposition,
   kCommitLiteral,
@@ -34,6 +35,8 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
                               bool shift_used_as_modifier,
                               bool started_while_idle,
                               bool composing_on_release) noexcept;
+
+char LatinLiteralCharacter(NeuralLanguageMode mode, int keycode) noexcept;
 
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,

@@ -10,6 +10,14 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
          !composing_on_release;
 }
 
+char LatinLiteralCharacter(NeuralLanguageMode mode, int keycode) noexcept {
+  if (mode != NeuralLanguageMode::kLatinFirst)
+    return '\0';
+  if (keycode == '-' || keycode == '=')
+    return static_cast<char>(keycode);
+  return '\0';
+}
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,
@@ -33,12 +41,14 @@ KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
   if (mode == NeuralLanguageMode::kLatinFirst) {
     switch (intent) {
       case KeyIntent::kSpace:
-        return KeyOutcome::kCommitLiteralSpace;
+        return effective_completion ? KeyOutcome::kAcceptCompletionSpace
+                                    : KeyOutcome::kCommitLiteralSpace;
       case KeyIntent::kTab:
         return effective_completion ? KeyOutcome::kAcceptCompletion
                                     : KeyOutcome::kKeepLiteral;
       case KeyIntent::kNumberedSelection:
-        return KeyOutcome::kKeepLiteral;
+        return effective_completion ? KeyOutcome::kUseRimeDefault
+                                    : KeyOutcome::kKeepLiteral;
       case KeyIntent::kBackspace:
       case KeyIntent::kOther:
         return KeyOutcome::kUseRimeDefault;

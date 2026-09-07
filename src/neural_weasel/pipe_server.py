@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .protocol import MAX_MESSAGE_BYTES, ProtocolError, decode_message, encode_message
+from .response_workers import after_response
 
 PIPE_PREFIX = r"\\.\pipe\NeuralWeasel-v1-"
 MAX_PINYIN_KEYS = 512
@@ -334,8 +335,9 @@ class NamedPipeServer:
             while not self._stop_event.is_set():
                 try:
                     request = _read_message(handle)
-                    response = self.handle_message(request)
-                    _write_message(handle, response)
+                    with after_response():
+                        response = self.handle_message(request)
+                        _write_message(handle, response)
                 except EOFError:
                     break
                 except ProtocolError as error:

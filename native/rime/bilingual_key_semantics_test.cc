@@ -14,6 +14,7 @@ namespace {
 
 using neural_weasel::rime_plugin::KeyIntent;
 using neural_weasel::rime_plugin::KeyOutcome;
+using neural_weasel::rime_plugin::LatinLiteralCharacter;
 using neural_weasel::rime_plugin::NeuralLanguageMode;
 using neural_weasel::rime_plugin::ShouldToggleLanguageMode;
 
@@ -57,6 +58,8 @@ std::string ObservableOutcome(NeuralLanguageMode mode,
                               bool effective_completion,
                               KeyOutcome outcome) {
   switch (outcome) {
+    case KeyOutcome::kAcceptCompletionSpace:
+      return "accept_completion_space";
     case KeyOutcome::kCommitLiteralSpace:
       return "commit_literal_space";
     case KeyOutcome::kAcceptCompletion:
@@ -93,6 +96,23 @@ int main() {
       ShouldToggleLanguageMode(true, true, true, false) ||
       ShouldToggleLanguageMode(false, false, true, false)) {
     std::cerr << "Shift language-mode toggle escaped its idle-only contract\n";
+    return 1;
+  }
+
+  std::string latin_input = "abc";
+  for (const int keycode : {'-', '='}) {
+    const char literal =
+        LatinLiteralCharacter(NeuralLanguageMode::kLatinFirst, keycode);
+    if (literal == '\0') {
+      std::cerr << "Latin minus/equal was routed away from literal input\n";
+      return 1;
+    }
+    latin_input.push_back(literal);
+  }
+  if (latin_input != "abc-=" ||
+      LatinLiteralCharacter(NeuralLanguageMode::kChineseFirst, '-') != '\0' ||
+      LatinLiteralCharacter(NeuralLanguageMode::kChineseFirst, '=') != '\0') {
+    std::cerr << "Latin literal punctuation changed Chinese paging semantics\n";
     return 1;
   }
 

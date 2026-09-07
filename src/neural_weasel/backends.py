@@ -23,6 +23,14 @@ class RuntimeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuationAttempt:
+    """One bounded continuation attempt with an optional retry generation."""
+
+    result: Any = field(default=None, repr=False)
+    retry_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class BackendState:
     epoch: int
     backend_kind: str
@@ -162,6 +170,8 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         super().__init__(runtime)
         self._continuation_gate = threading.Lock()
         self._continuation_active = False
+        self._continuation_generation = 0
+        self._continuation_idle_waiters: set[threading.Event] = set()
 
     def update_context(self, before: str, after: str = "") -> BackendState:
         generation = self._capture_generation()
@@ -182,40 +192,73 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         token_ids = self._validated_token_ids(allowed_token_ids, logits.size)
         return np.asarray(logits[token_ids], dtype=np.float32)
 
-    def _continue_from_root_bounded(
+    def _finish_continuation_slot(self) -> None:
+        with self._continuation_gate:
+            self._continuation_active = False
+            self._continuation_generation += 1
+            waiters = tuple(self._continuation_idle_waiters)
+            self._continuation_idle_waiters.clear()
+        for waiter in waiters:
+            waiter.set()
+
+    def register_continuation_idle_wait(
+        self,
+        generation: int,
+        event: threading.Event,
+    ) -> None:
+        """Wake ``event`` once the continuation occupying ``generation`` is gone."""
+
+        with self._continuation_gate:
+            if not self._continuation_active or generation != self._continuation_generation:
+                event.set()
+                return
+            self._continuation_idle_waiters.add(event)
+
+    def cancel_continuation_idle_wait(self, event: threading.Event) -> None:
+        with self._continuation_gate:
+            self._continuation_idle_waiters.discard(event)
+
+    def continuation_busy_generation(self) -> int | None:
+        """Return the generation currently occupying continuation, if any."""
+
+        with self._continuation_gate:
+            if not self._continuation_active:
+                return None
+            return self._continuation_generation
+
+    def _continue_from_root_attempt(
         self,
         root: Any,
         token_paths: Sequence[Sequence[int]],
         allowed_token_sets: Sequence[Sequence[int]],
         *,
         deadline_ms: float,
-    ) -> Any:
-        """Run one exact-root continuation single-flight behind a hard caller bound.
-
-        Some CUDA llama.cpp decodes cannot be interrupted once launched. The
-        provider therefore runs on its own worker thread. The pipe/request thread
-        waits only until its absolute deadline and then returns ``None`` while a
-        late CUDA call finishes and cleans its runtime state in the background.
-        New continuation attempts never queue behind that worker: while it is
-        active they immediately return ``None`` and the frozen-page protocol
-        keeps the current page for a later retry.
-        """
+    ) -> ContinuationAttempt:
+        """Run one continuation and identify retryable single-flight misses."""
 
         if deadline_ms <= 0:
-            return None
+            return ContinuationAttempt()
         provider = getattr(self.runtime, "continue_from_root", None)
         if not callable(provider):
-            return None
+            return ContinuationAttempt()
 
-        # Snapshot caller-owned sequences before the request thread can return.
         paths = tuple(tuple(int(token_id) for token_id in path) for path in token_paths)
-        allowed_sets = tuple(
-            tuple(int(token_id) for token_id in allowed) for allowed in allowed_token_sets
-        )
+        # Full-vocabulary scoring shares the same immutable token set across
+        # every beam. Convert it once, avoiding millions of Python operations
+        # that contend with the foreground pipe threads for the GIL.
+        converted_sets: dict[int, tuple[int, ...]] = {}
+        allowed_sets_list = []
+        for allowed in allowed_token_sets:
+            key = id(allowed)
+            if key not in converted_sets:
+                converted_sets[key] = tuple(int(token_id) for token_id in allowed)
+            allowed_sets_list.append(converted_sets[key])
+        allowed_sets = tuple(allowed_sets_list)
         deadline = time.monotonic() + deadline_ms / 1000.0
         with self._continuation_gate:
+            generation = self._continuation_generation
             if self._continuation_active:
-                return None
+                return ContinuationAttempt(retry_generation=generation)
             self._continuation_active = True
 
         done = threading.Event()
@@ -239,8 +282,7 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
             except Exception as error:  # Re-raised only if the caller is still waiting.
                 box["error"] = error
             finally:
-                with self._continuation_gate:
-                    self._continuation_active = False
+                self._finish_continuation_slot()
                 done.set()
 
         thread = threading.Thread(
@@ -251,17 +293,35 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         try:
             thread.start()
         except Exception:
-            with self._continuation_gate:
-                self._continuation_active = False
+            self._finish_continuation_slot()
             raise
 
         remaining = max(0.0, deadline - time.monotonic())
         if remaining <= 0 or not done.wait(remaining):
-            return None
+            return ContinuationAttempt(retry_generation=generation)
         error = box.get("error")
         if isinstance(error, Exception):
             raise error
-        return box.get("result")
+        return ContinuationAttempt(result=box.get("result"))
+
+    def _continue_from_root_bounded(
+        self,
+        root: Any,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> Any:
+        """Compatibility wrapper returning only the bounded attempt result."""
+
+        return self._continue_from_root_attempt(
+            root, token_paths, allowed_token_sets, deadline_ms=deadline_ms
+        ).result
+
+    @property
+    def continue_from_root_attempt(self) -> Any:
+        provider = getattr(self.runtime, "continue_from_root", None)
+        return self._continue_from_root_attempt if callable(provider) else None
 
     @property
     def continue_from_root(self) -> Any:

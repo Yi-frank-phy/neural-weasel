@@ -112,7 +112,7 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
 
     if action == KeyAction.SPACE:
         if state.mode == CompositionMode.LATIN_FIRST:
-            return _commit(state, state.literal + " ")
+            return _commit(state, (_selected_candidate(state) or state.literal) + " ")
         return _commit(state, _selected_candidate(state) or state.literal)
 
     if action == KeyAction.TAB:
@@ -125,8 +125,6 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
         return _commit(state, state.literal)
 
     if action in _NUMBER_ACTIONS:
-        if state.mode == CompositionMode.LATIN_FIRST:
-            return KeyTransition(state)
         candidate = _selected_candidate(state, _NUMBER_ACTIONS[action])
         return _commit(state, candidate) if candidate is not None else KeyTransition(state)
 

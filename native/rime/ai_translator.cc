@@ -77,14 +77,10 @@ std::string CandidateComment(const Json& item) {
 }
 
 std::string CurrentLanguageMode(::rime::Context* context) {
-  const std::string value = context->get_property("neural_language_mode");
-  if (value == "latin_first") {
-    return value;
-  }
-  if (value != "chinese_first") {
-    context->set_property("neural_language_mode", "chinese_first");
-  }
-  return "chinese_first";
+  const std::string value = context->get_option("ascii_mode")
+                                ? "latin_first" : "chinese_first";
+  context->set_property("neural_language_mode", value);
+  return value;
 }
 
 std::uint32_t RequestedPage(::rime::Context* context) {
@@ -177,9 +173,14 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
   context->set_property("neural_candidate_fresh", "0");
 
   try {
-    if (context->get_property(kNeuralForceRefreshProperty) == "1") {
-      context->set_property(kNeuralForceRefreshProperty, "0");
-      force_new_revision_ = true;
+    bool presentation_refresh = false;
+    if (context->get_property(kNeuralPresentationRefreshProperty) == "1") {
+      context->set_property(kNeuralPresentationRefreshProperty, "0");
+      presentation_refresh = true;
+      context->set_property("neural_requested_page", "0");
+      TraceAiTranslator(
+          L"event=presentation-refresh revision=%llu",
+          static_cast<unsigned long long>(composition_revision_));
     }
     const std::string language_mode = CurrentLanguageMode(context);
     const AcceptedEditorContext latest_context =
@@ -194,6 +195,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
     if (new_revision) {
       ++composition_revision_;
       force_new_revision_ = false;
+      presentation_refresh = false;
       composition_input_ = input;
       composition_mode_ = language_mode;
       if (latest_context.valid()) {
@@ -212,6 +214,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
       context->set_property("neural_requested_page", "0");
       context->set_property("neural_page_index", "0");
       context->set_property("neural_has_more", "0");
+      context->set_property(kNeuralCandidatePendingProperty, "0");
       TraceAiTranslator(
           L"event=revision created revision=%llu context-epoch=%llu mode=%d",
           static_cast<unsigned long long>(composition_revision_),
@@ -219,7 +222,8 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
           language_mode == "latin_first" ? 1 : 0);
     }
 
-    std::uint32_t requested_page = RequestedPage(context);
+    std::uint32_t requested_page =
+        presentation_refresh ? 0U : RequestedPage(context);
     if (requested_page > current_page_index_ + 1U) {
       requested_page = current_page_index_;
       context->set_property("neural_requested_page",
@@ -228,7 +232,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
 
     std::string page_payload;
     const auto cached = frozen_pages_.find(requested_page);
-    if (cached != frozen_pages_.end()) {
+    if (!presentation_refresh && cached != frozen_pages_.end()) {
       page_payload = cached->second;
     } else {
       if (requested_page > 0 &&
@@ -253,6 +257,9 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
             {"raw_keys", input},
             {"page_index", requested_page},
         };
+        if (presentation_refresh) {
+          request["presentation_refresh"] = true;
+        }
         if (context_epoch_ > 0) {
           request["context_session"] = context_session_;
           request["source_revision"] = source_revision_;
@@ -265,6 +272,11 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
                                                  : next_page_timeout_;
         auto result = pipe_.TryQuery(request.dump(), timeout);
         if (!result) {
+          // Keep the bounded owner-thread pull alive after a transient first
+          // response timeout, even when no frozen page exists yet.
+          if (requested_page == 0) {
+            context->set_property(kNeuralCandidatePendingProperty, "1");
+          }
           TraceAiTranslator(
               L"event=page result=pipe-failure page=%lu status=%d error=%lu",
               static_cast<unsigned long>(requested_page),
@@ -298,6 +310,8 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
                   composition_revision_ ||
               response.value("context_epoch", std::uint64_t{0}) !=
                   context_epoch_ ||
+              response.value("presentation_refresh", false) !=
+                  presentation_refresh ||
               !source_identity_matches ||
               response.value("language_mode", std::string{}) !=
                   language_mode ||
@@ -317,6 +331,9 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
             page_payload = current->second;
           } else {
             if (requested_page == 0) {
+              if (presentation_refresh) {
+                frozen_pages_.clear();
+              }
               candidate_set_id_ = response_set;
             }
             current_page_index_ = requested_page;
@@ -324,10 +341,11 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
             page_payload = response.dump();
             frozen_pages_[requested_page] = page_payload;
             TraceAiTranslator(
-                L"event=page frozen page=%lu count=%llu has-more=%d",
+                L"event=page frozen page=%lu count=%llu has-more=%d pending=%d",
                 static_cast<unsigned long>(requested_page),
                 static_cast<unsigned long long>(response["candidates"].size()),
-                current_has_more_ ? 1 : 0);
+                current_has_more_ ? 1 : 0,
+                response.value("background_pending", false) ? 1 : 0);
           }
         }
       }
@@ -349,6 +367,8 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
     context->set_property("neural_requested_page",
                           std::to_string(current_page_index_));
     context->set_property("neural_has_more", current_has_more_ ? "1" : "0");
+    context->set_property(kNeuralCandidatePendingProperty,
+                          page.value("background_pending", false) ? "1" : "0");
 
     auto translation = ::rime::New<::rime::FifoTranslation>();
     const std::size_t page_limit = language_mode == "latin_first"
@@ -398,6 +418,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
                       static_cast<unsigned long long>(accepted));
     return translation;
   } catch (...) {
+    context->set_property(kNeuralCandidatePendingProperty, "0");
     TraceAiTranslator(L"event=query result=exception");
     return nullptr;
   }

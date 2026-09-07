@@ -373,9 +373,12 @@ constexpr wchar_t kNeuralRefreshWindowClass[] =
     L"NeuralWeasel.Experimental.RefreshWindow";
 constexpr UINT_PTR kNeuralRefreshTimerId = 1;
 constexpr UINT kNeuralRefreshDelayMs = 850;
-// One in-place pull only: a second unconditional refresh can visibly reorder
-// the candidate window even when the first refresh already succeeded.
-constexpr unsigned int kNeuralRefreshMaxAttempts = 1;
+constexpr UINT kNeuralRefreshRetryDelayMs = 250;
+// The first pull is delayed to keep page zero responsive. Further pulls are
+// issued only when the Rime processor reports that the exact presentation is
+// still being prepared; they are bounded so the editor-hosted DLL never polls
+// indefinitely.
+constexpr unsigned int kNeuralRefreshMaxAttempts = 16;
 }  // namespace
 
 LRESULT CALLBACK WeaselTSF::_NeuralRefreshWndProc(
@@ -458,7 +461,10 @@ void WeaselTSF::_ScheduleNeuralRefresh(com_ptr<ITfContext> pContext) {
 
 void WeaselTSF::_ConsiderNeuralRefresh(
     com_ptr<ITfContext> pContext, WPARAM wParam, BOOL eaten) {
-  if (!eaten || wParam < 'A' || wParam > 'Z' ||
+  const bool edits_composition =
+      (wParam >= 'A' && wParam <= 'Z') || wParam == VK_BACK ||
+      wParam == VK_OEM_7;
+  if (!eaten || !edits_composition ||
       (GetKeyState(VK_SHIFT) & 0x8000) != 0 ||
       (GetKeyState(VK_CONTROL) & 0x8000) != 0 ||
       (GetKeyState(VK_MENU) & 0x8000) != 0) {
@@ -485,19 +491,17 @@ void WeaselTSF::_RunNeuralRefresh() {
   ++_neuralRefreshAttempts;
   const weasel::KeyEvent refresh(
       neural_weasel::rime_plugin::kNeuralRefreshKeycode, 0);
-  if (!m_client.ProcessKeyEvent(refresh)) {
-    _CancelNeuralRefresh();
-    return;
-  }
+  const bool presentation_ready = m_client.ProcessKeyEvent(refresh);
   _UpdateComposition(context);
 
-  if (_neuralRefreshAttempts >= kNeuralRefreshMaxAttempts) {
+  if (presentation_ready ||
+      _neuralRefreshAttempts >= kNeuralRefreshMaxAttempts) {
     _CancelNeuralRefresh();
     return;
   }
   _neuralRefreshTimer = SetTimer(
-      _neuralRefreshWindow, kNeuralRefreshTimerId, kNeuralRefreshDelayMs,
-      nullptr);
+      _neuralRefreshWindow, kNeuralRefreshTimerId,
+      kNeuralRefreshRetryDelayMs, nullptr);
   if (_neuralRefreshTimer == 0) {
     _CancelNeuralRefresh();
   }

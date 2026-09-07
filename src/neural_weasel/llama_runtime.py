@@ -396,6 +396,7 @@ class LlamaCppBackend:
             outputs: list[np.ndarray] = []
             paths: list[tuple[int, ...]] = []
             allowed_sets: list[np.ndarray] = []
+            converted_sets: dict[int, np.ndarray] = {}
             vocabulary_size = len(self.tokenizer)
             for raw_path, raw_allowed in zip(token_paths, allowed_token_sets, strict=True):
                 path = tuple(int(token_id) for token_id in raw_path)
@@ -405,7 +406,12 @@ class LlamaCppBackend:
                     raise ValueError("continuation token path exceeds n_ctx")
                 if min(path) < 0 or max(path) >= vocabulary_size:
                     raise IndexError("continuation token path is outside the model vocabulary")
-                allowed = np.asarray(tuple(raw_allowed), dtype=np.int64)
+                allowed = converted_sets.get(id(raw_allowed))
+                if allowed is None:
+                    # Background beams share the same full-vocabulary tuple.
+                    # Materialize it once, avoiding repeated GIL-bound copies.
+                    allowed = np.asarray(tuple(raw_allowed), dtype=np.int64)
+                    converted_sets[id(raw_allowed)] = allowed
                 if allowed.ndim != 1:
                     raise ValueError("allowed continuation token ids must be one-dimensional")
                 if allowed.size and (

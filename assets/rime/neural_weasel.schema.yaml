@@ -16,7 +16,6 @@ switches:
 engine:
   processors:
     - bilingual_key_processor
-    - ascii_composer
     - recognizer
     - key_binder
     - selector
@@ -25,7 +24,6 @@ engine:
     - navigator
     - express_editor
   segmentors:
-    - ascii_segmentor
     - matcher
     - abc_segmentor
     - punct_segmentor
