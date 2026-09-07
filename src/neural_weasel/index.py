@@ -16,7 +16,7 @@ from .paths import indexes_root
 from .pinyin import ParsedPinyinInput, concatenate_path, is_all_han, pronunciation_paths
 from .simplified_chinese import is_simplified_han
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)

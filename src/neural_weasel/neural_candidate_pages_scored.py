@@ -542,7 +542,6 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         dirty = tuple(sorted(self._dirty_single_letter_prewarms))
         self._dirty_single_letter_prewarms.clear()
         for raw in dirty:
-            self._baseline_latin_roots.pop(raw, None)
             for mode in NeuralLanguageMode:
                 candidates, _, _ = self._root_candidates(
                     raw_keys=raw,
@@ -564,11 +563,13 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             self._baseline_latin_cache[key] = replace(candidate, context_epoch=0)
             self._baseline_latin_cache.move_to_end(key)
             if normalized:
+                self._baseline_latin_roots.pop(normalized[0], None)
                 self._mark_single_letter_prewarm_dirty(normalized[0])
         while len(self._baseline_latin_cache) > _MAX_BASELINE_LATIN_CACHE:
             _, evicted = self._baseline_latin_cache.popitem(last=False)
             evicted_text = unicodedata.normalize("NFKC", evicted.text).casefold()
             if evicted_text:
+                self._baseline_latin_roots.pop(evicted_text[0], None)
                 self._mark_single_letter_prewarm_dirty(evicted_text[0])
 
     @staticmethod
