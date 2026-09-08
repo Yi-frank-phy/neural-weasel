@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
+import neural_weasel.neural_candidate_pages as candidate_pages
 import neural_weasel.neural_candidate_pages_v3 as candidate_pages_v3
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
@@ -694,6 +695,26 @@ def test_deferred_root_materialization_does_not_hold_state_lock(
     _wait_for_page_preparation(engine, first.candidate_set_id)
 
 
+def test_next_key_cancels_later_page_work_during_grace(make_index, monkeypatch) -> None:
+    monkeypatch.setattr(candidate_pages, "_PAGE_PREPARATION_GRACE_SECONDS", 0.5)
+    engine, _ = _engine(make_index)
+    pages = engine.candidate_pages
+    materialized_raw_keys: list[str] = []
+    original = pages._prepare_page_search
+
+    def observed_prepare(session, cancel):
+        materialized_raw_keys.append(session.identity.raw_keys)
+        return original(session, cancel)
+
+    monkeypatch.setattr(pages, "_prepare_page_search", observed_prepare)
+    first = _page(engine, "n")
+    second = _page(engine, "ni")
+
+    _wait_for_page_preparation(engine, first.candidate_set_id)
+    assert "n" not in materialized_raw_keys
+    assert second.candidate_set_id != first.candidate_set_id
+
+
 @pytest.mark.parametrize(
     ("raw", "expected", "predicted"),
     [
@@ -1055,6 +1076,7 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
     assert (20,) in runtime.continuation_batches[2]
     refreshed = _page(engine, "mxbd", composition_revision=2)
     assert refreshed.candidate_set_id != first.candidate_set_id
+    _wait_for_page_preparation(engine, refreshed.candidate_set_id)
     pages = [refreshed]
     for page_index in (1, 2):
         pages.append(

@@ -19,6 +19,7 @@ from .response_workers import start_worker
 
 _BACKGROUND_PAGE_DEADLINE_MS = 2500.0
 _MAX_BACKGROUND_PAGE_RETRY_WAKES = 8
+_PAGE_PREPARATION_GRACE_SECONDS = 0.05
 
 
 class NeuralCandidatePageManager(_ScoredPageManager):
@@ -377,6 +378,10 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         candidate_set_id = session.candidate_set_id
         retry_wakes = 0
         try:
+            # Rapid typing should cancel the old snapshot before its later-page
+            # work can compete with the next foreground request.
+            if cancel.wait(_PAGE_PREPARATION_GRACE_SECONDS):
+                return
             prepare = getattr(self, "_prepare_page_search", None)
             if callable(prepare) and not prepare(session, cancel):
                 return
