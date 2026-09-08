@@ -296,6 +296,132 @@ def _wait_for_page_preparation(
     assert event.wait(timeout)
 
 
+def test_page_zero_preserves_handler_deadline_and_skips_root_when_already_expired(
+    make_index,
+    monkeypatch,
+) -> None:
+    engine, _ = _engine(make_index)
+    pages = engine.candidate_pages
+    now = [10.036]
+    pages.clock = lambda: now[0]
+    root_calls = 0
+    original_root = pages._root_candidates
+
+    def counted_root(**kwargs):
+        nonlocal root_calls
+        root_calls += 1
+        return original_root(**kwargs)
+
+    monkeypatch.setattr(pages, "_root_candidates", counted_root)
+
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, "ni", deadline_ms=35.0, deadline_started=10.0)
+
+    assert root_calls == 0
+    assert not pages._sessions
+    assert not pages._background_searches
+
+
+def test_page_zero_stops_between_root_stages_without_publishing_partial_session(
+    make_index,
+    monkeypatch,
+) -> None:
+    engine, _ = _engine(make_index)
+    pages = engine.candidate_pages
+    old_page = _page(engine, "n")
+    old_cancel = threading.Event()
+    pages._background_cancel_events[old_page.candidate_set_id] = old_cancel
+    now = [20.0]
+    pages.clock = lambda: now[0]
+    original_han = pages._root_han_candidates
+    latin_calls = 0
+
+    def expiring_han(raw_keys, state, response_epoch):
+        result = original_han(raw_keys, state, response_epoch)
+        now[0] = 20.036
+        return result
+
+    def counted_latin(raw_keys, state, response_epoch):
+        nonlocal latin_calls
+        latin_calls += 1
+        return [], []
+
+    monkeypatch.setattr(pages, "_root_han_candidates", expiring_han)
+    monkeypatch.setattr(pages, "_root_latin_candidates_and_frontier", counted_latin)
+
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, "ni", deadline_ms=35.0, deadline_started=20.0)
+
+    assert latin_calls == 0
+    assert old_cancel.is_set()
+    assert not pages._sessions
+    assert not pages._background_searches
+
+
+def test_page_zero_lock_wait_expires_before_root_or_session_publication(
+    make_index,
+    monkeypatch,
+) -> None:
+    engine, _ = _engine(make_index)
+    pages = engine.candidate_pages
+    now = [30.0]
+    pages.clock = lambda: now[0]
+    lock_entered = threading.Event()
+    allow_lock = threading.Event()
+    original_lock = pages._state_lock
+    original_root = pages._root_candidates
+    root_calls = 0
+    errors: list[BaseException] = []
+
+    class ControlledLock:
+        def __enter__(self):
+            lock_entered.set()
+            assert allow_lock.wait(1.0)
+            return original_lock.__enter__()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return original_lock.__exit__(exc_type, exc_value, traceback)
+
+    def counted_root(**kwargs):
+        nonlocal root_calls
+        root_calls += 1
+        return original_root(**kwargs)
+
+    monkeypatch.setattr(pages, "_state_lock", ControlledLock())
+    monkeypatch.setattr(pages, "_root_candidates", counted_root)
+    worker = threading.Thread(
+        target=lambda: _capture_page_error(
+            errors,
+            engine,
+            deadline_ms=35.0,
+            deadline_started=30.0,
+        )
+    )
+    worker.start()
+    assert lock_entered.wait(1.0)
+    now[0] = 30.036
+    allow_lock.set()
+    worker.join(1.0)
+
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], CandidatePageTimeout)
+    assert root_calls == 0
+    assert not pages._sessions
+    assert not pages._background_searches
+
+
+def _capture_page_error(
+    errors: list[BaseException],
+    engine: BilingualImeEngine,
+    **kwargs,
+) -> None:
+    try:
+        _page(engine, "ni", **kwargs)
+    except BaseException as error:
+        errors.append(error)
+
+
 def test_empty_context_baseline_is_ready_before_editor_context(make_index) -> None:
     engine, runtime = _engine(make_index)
 

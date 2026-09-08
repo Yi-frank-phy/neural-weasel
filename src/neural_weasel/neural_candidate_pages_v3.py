@@ -74,14 +74,18 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         state: BackendState | None,
         response_epoch: int,
     ) -> list[Candidate]:
+        self._raise_if_query_expired()
         plan = self._root_han_plan(raw_keys)
+        self._raise_if_query_expired()
         if not plan:
             return []
-        return self._materialize_root_han_candidates(
+        result = self._materialize_root_han_candidates(
             plan,
             state=state,
             response_epoch=response_epoch,
         )
+        self._raise_if_query_expired()
+        return result
 
     def _root_han_plan(self, raw_keys: str) -> tuple[_RootHanPlanEntry, ...]:
         cached = self._root_han_plans.pop(raw_keys, None)
@@ -109,6 +113,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             and not match.entry.coverage
             and len(match.entry.text) <= MAX_HAN_CHARACTERS
         ]
+        self._raise_if_query_expired()
         plan = tuple(
             _RootHanPlanEntry(
                 text=match.entry.text,
@@ -173,7 +178,9 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
     ) -> list[_HanSearchPath]:
         """Retain bounded search seeds independently of the visible root cap."""
 
+        self._raise_if_query_expired()
         plan = self._root_han_plan(raw_keys)
+        self._raise_if_query_expired()
         if not plan:
             return []
         try:
@@ -181,8 +188,11 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         except ValueError:
             return []
         scores = self._score_root(state, [entry.token_id for entry in plan])
+        self._raise_if_query_expired()
         ranked: list[tuple[tuple[object, ...], _HanSearchPath]] = []
-        for entry, score in zip(plan, scores, strict=True):
+        for index, (entry, score) in enumerate(zip(plan, scores, strict=True)):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             value = float(score)
             if not math.isfinite(value):
                 continue
@@ -212,10 +222,13 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             )
 
         ranked.sort(key=lambda item: item[0])
+        self._raise_if_query_expired()
         retained: list[_HanSearchPath] = []
         seen: set[tuple[object, ...]] = set()
         bucket_counts: dict[tuple[int, int], int] = {}
-        for _, path in ranked:
+        for index, (_, path) in enumerate(ranked):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             key = self._path_key(path)
             if key in seen:
                 continue
@@ -237,6 +250,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         response_epoch: int,
         allow_prewarm_cache: bool = True,
     ) -> tuple[list[Candidate], list[Any], str]:
+        self._raise_if_query_expired()
         cached = (
             self._baseline_single_letter.get((raw_keys, mode))
             if state is None and allow_prewarm_cache
@@ -244,12 +258,14 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         )
         if cached is not None:
             candidates = [replace(candidate, context_epoch=response_epoch) for candidate in cached]
+            self._raise_if_query_expired()
             han = [candidate for candidate in candidates if candidate.script == "han"]
             _, latin_frontier = self._root_latin_candidates_and_frontier(
                 raw_keys,
                 state,
                 response_epoch,
             )
+            self._raise_if_query_expired()
             return (
                 candidates,
                 [*self._root_han_search_frontier(raw_keys, state), *latin_frontier],
@@ -257,11 +273,13 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             )
 
         han = self._root_han_candidates(raw_keys, state, response_epoch)
+        self._raise_if_query_expired()
         latin, latin_frontier = self._root_latin_candidates_and_frontier(
             raw_keys,
             state,
             response_epoch,
         )
+        self._raise_if_query_expired()
         score_source = "context" if state is not None else "baseline"
 
         if mode is NeuralLanguageMode.LATIN_FIRST:
@@ -274,6 +292,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         ordered_latin = sorted(latin, key=_latin_key)
         ordered = self._merge_chinese_first(ordered_han, ordered_latin)
         frontier = [*self._root_han_search_frontier(raw_keys, state), *latin_frontier]
+        self._raise_if_query_expired()
         if not ordered and not frontier and self._baseline_scores is not None:
             ordered = [_literal_candidate(raw_keys, response_epoch)]
         return ordered, frontier, score_source

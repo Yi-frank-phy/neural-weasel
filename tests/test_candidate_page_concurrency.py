@@ -183,7 +183,7 @@ def test_foreground_han_edge_traversal_does_not_block_invalidation(make_index, m
     assert entered.wait(1)
     clear_thread, clear_done, clear_result = _run_in_thread(manager.clear_sessions)
     try:
-        assert clear_done.wait(.5), "foreground matcher holds the state lock"
+        assert clear_done.wait(0.5), "foreground matcher holds the state lock"
         assert "error" not in clear_result
     finally:
         release.set()

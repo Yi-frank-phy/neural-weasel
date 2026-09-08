@@ -182,6 +182,7 @@ class BilingualImeEngine:
         page_index: int,
         candidate_set_id: str | None = None,
         deadline_ms: float | None = None,
+        deadline_started: float | None = None,
         presentation_refresh: bool = False,
     ) -> CandidatePage:
         """Return one immutable input-scoped candidate presentation snapshot.
@@ -207,6 +208,7 @@ class BilingualImeEngine:
             candidate_set_id=candidate_set_id,
             state=state,
             deadline_ms=deadline_ms,
+            deadline_started=deadline_started,
             presentation_refresh=presentation_refresh,
         )
 

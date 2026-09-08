@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from neural_weasel import production_pipe
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
 from neural_weasel.production_pipe import ProductionNamedPipeServer
@@ -115,6 +116,19 @@ def test_page_zero_protocol_returns_stable_set_and_neural_ids(make_index) -> Non
     assert response["candidates"][0]["script"] == "han"
     assert any(item["script"] == "latin" for item in response["candidates"])
     assert all(item["candidate_id"] for item in response["candidates"])
+    assert runtime.calls == 1
+
+
+def test_page_zero_protocol_preserves_handler_deadline(make_index, monkeypatch) -> None:
+    engine, runtime, server = _make(make_index)
+    engine.candidate_pages.clock = lambda: 10.036
+    monkeypatch.setattr(production_pipe.time, "monotonic", lambda: 10.0)
+
+    response = server.handle_message(_request())
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "candidate_page_timeout"
+    assert response["error"]["retryable"] is True
     assert runtime.calls == 1
 
 
