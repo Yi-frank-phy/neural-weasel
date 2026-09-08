@@ -4,7 +4,7 @@ schema_list:
   - schema: neural_weasel
 
 menu:
-  page_size: 9
+  page_size: 7
 
 switcher:
   caption: 神经小狼毫（实验）

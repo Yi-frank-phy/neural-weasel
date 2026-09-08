@@ -21,7 +21,7 @@ from .pinyin import parse_raw_pinyin
 from .pinyin_partial import PartialPinyinMatcher
 from .unified import LatinPrefixConstraint, detect_script
 
-CHINESE_PAGE_SIZE = 9
+CHINESE_PAGE_SIZE = 7
 LATIN_PAGE_SIZE = 5
 MAX_ACTIVE_SEARCH_SESSIONS = 4
 SEARCH_SESSION_IDLE_SECONDS = 15.0

@@ -504,12 +504,12 @@ def test_empty_context_baseline_is_ready_before_editor_context(make_index) -> No
     assert all(candidate.constraint_kind != "literal" for candidate in page.candidates)
 
 
-def test_chinese_page_zero_reserves_eight_han_slots_and_one_latin_slot(make_index) -> None:
+def test_chinese_page_zero_reserves_six_han_slots_and_one_latin_slot(make_index) -> None:
     engine, _ = _engine(make_index)
 
     page = _page(engine, "n")
 
-    assert [candidate.script for candidate in page.candidates] == ["han"] * 8 + ["latin"]
+    assert [candidate.script for candidate in page.candidates] == ["han"] * 6 + ["latin"]
 
 
 def test_ready_chinese_context_reorders_page_zero_ahead_of_baseline_prewarm(make_index) -> None:
@@ -533,7 +533,7 @@ def test_ready_chinese_context_reorders_page_zero_ahead_of_baseline_prewarm(make
 
     assert contextual.score_source == "context"
     assert contextual.candidates[0].text == "逆"
-    assert [candidate.script for candidate in contextual.candidates] == ["han"] * 8 + ["latin"]
+    assert [candidate.script for candidate in contextual.candidates] == ["han"] * 6 + ["latin"]
 
 
 def test_predicted_syllables_is_hard_primary_han_bucket(make_index) -> None:
@@ -626,7 +626,7 @@ def test_wide_root_scores_once_and_allocates_only_top_k_frontier(
 
     candidates, frontier = pages._root_han_candidates_and_frontier("z", None, 0)
 
-    assert len(candidates) == 9
+    assert len(candidates) == 7
     assert score_calls == 1
     assert len(frontier) == 1
     assert path_allocations == 0
@@ -637,7 +637,7 @@ def test_wide_root_scores_once_and_allocates_only_top_k_frontier(
         response_epoch=0,
         scores=seed.scores,
     )
-    assert candidates == expected[:9]
+    assert candidates == expected[:7]
 
     session = _SearchSession(
         candidate_set_id="deferred-top-k",
@@ -851,8 +851,8 @@ def test_returned_pages_are_frozen_and_candidate_ids_stable(make_index) -> None:
         candidate_set_id=first.candidate_set_id,
     )
 
-    assert len(first.candidates) == 9
-    assert len(second.candidates) == 9
+    assert len(first.candidates) == 7
+    assert len(second.candidates) == 7
     assert repeated.candidates == second.candidates
     assert repeated.candidate_ids == second.candidate_ids
     assert set(first.candidate_ids).isdisjoint(second.candidate_ids)
@@ -862,7 +862,10 @@ def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> N
     simplified = (
         "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能看"
     )
-    rows = [(token_id, text, "ni", "ni", 1, 0) for token_id, text in enumerate(simplified, start=1)]
+    rows = [
+        (token_id, text, "ni", "ni", 1, 0)
+        for token_id, text in enumerate(simplified[:35], start=1)
+    ]
     index = make_index(rows)
     logits = np.arange(64, dtype=np.float32)
     engine = BilingualImeEngine(
@@ -884,10 +887,10 @@ def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> N
             )
         )
 
-    assert [len(page.candidates) for page in pages] == [9, 9, 9, 9, 9]
+    assert [len(page.candidates) for page in pages] == [7, 7, 7, 7, 7]
     assert pages[-1].has_more is False
     ids = [candidate_id for page in pages for candidate_id in page.candidate_ids]
-    assert len(ids) == len(set(ids)) == 45
+    assert len(ids) == len(set(ids)) == 35
 
     replay = _page(
         engine,
