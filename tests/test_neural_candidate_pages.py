@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
+import neural_weasel.neural_candidate_pages_v3 as candidate_pages_v3
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
 from neural_weasel.modern_han import MODERN_READINGS
@@ -14,6 +15,8 @@ from neural_weasel.neural_candidates import (
     CandidatePageError,
     CandidatePageTimeout,
     NeuralLanguageMode,
+    _SearchIdentity,
+    _SearchSession,
 )
 from neural_weasel.simplified_chinese import is_simplified_han
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
@@ -294,20 +297,14 @@ def test_multiletter_baseline_root_cache_replays_cpu_work_but_context_stays_live
 ) -> None:
     engine, _ = _engine(make_index)
     pages = engine.candidate_pages
-    calls = {"candidates": 0, "frontier": 0}
-    original_candidates = pages._root_han_candidates
-    original_frontier = pages._root_han_search_frontier
+    calls = {"bundle": 0}
+    original_bundle = pages._root_han_candidates_and_frontier
 
-    def counted_candidates(raw_keys, state, response_epoch):
-        calls["candidates"] += 1
-        return original_candidates(raw_keys, state, response_epoch)
+    def counted_bundle(raw_keys, state, response_epoch):
+        calls["bundle"] += 1
+        return original_bundle(raw_keys, state, response_epoch)
 
-    def counted_frontier(raw_keys, state):
-        calls["frontier"] += 1
-        return original_frontier(raw_keys, state)
-
-    monkeypatch.setattr(pages, "_root_han_candidates", counted_candidates)
-    monkeypatch.setattr(pages, "_root_han_search_frontier", counted_frontier)
+    monkeypatch.setattr(pages, "_root_han_candidates_and_frontier", counted_bundle)
     baseline_args = {
         "raw_keys": "ni",
         "mode": NeuralLanguageMode.CHINESE_FIRST,
@@ -318,36 +315,31 @@ def test_multiletter_baseline_root_cache_replays_cpu_work_but_context_stays_live
     first = pages._root_candidates(**baseline_args)
     second = pages._root_candidates(**baseline_args)
 
-    assert calls == {"candidates": 1, "frontier": 1}
+    assert calls == {"bundle": 1}
     assert second == first
 
     contextual = engine.coordinator.backend.update_context("context", "")
     pages._root_candidates(**{**baseline_args, "state": contextual, "response_epoch": 1})
     pages._root_candidates(**{**baseline_args, "state": contextual, "response_epoch": 1})
 
-    assert calls == {"candidates": 3, "frontier": 3}
+    assert calls == {"bundle": 3}
 
 
-def test_common_multiletter_roots_are_prearmed_before_the_first_query(
+def test_multiletter_roots_are_not_special_cased_at_startup(
     make_index,
     monkeypatch,
 ) -> None:
     engine, _ = _engine(make_index)
     pages = engine.candidate_pages
-    calls = {"candidates": 0, "frontier": 0}
-    original_candidates = pages._root_han_candidates
-    original_frontier = pages._root_han_search_frontier
+    calls = 0
+    original_bundle = pages._root_han_candidates_and_frontier
 
-    def counted_candidates(raw_keys, state, response_epoch):
-        calls["candidates"] += 1
-        return original_candidates(raw_keys, state, response_epoch)
+    def counted_bundle(raw_keys, state, response_epoch):
+        nonlocal calls
+        calls += 1
+        return original_bundle(raw_keys, state, response_epoch)
 
-    def counted_frontier(raw_keys, state):
-        calls["frontier"] += 1
-        return original_frontier(raw_keys, state)
-
-    monkeypatch.setattr(pages, "_root_han_candidates", counted_candidates)
-    monkeypatch.setattr(pages, "_root_han_search_frontier", counted_frontier)
+    monkeypatch.setattr(pages, "_root_han_candidates_and_frontier", counted_bundle)
 
     for raw_keys in ("ma", "de"):
         pages._root_candidates(
@@ -357,7 +349,7 @@ def test_common_multiletter_roots_are_prearmed_before_the_first_query(
             response_epoch=1,
         )
 
-    assert calls == {"candidates": 0, "frontier": 0}
+    assert calls == 2
 
 
 def _wait_for_page_preparation(
@@ -409,7 +401,7 @@ def test_page_zero_stops_between_root_stages_without_publishing_partial_session(
     pages._background_cancel_events[old_page.candidate_set_id] = old_cancel
     now = [20.0]
     pages.clock = lambda: now[0]
-    original_han = pages._root_han_candidates
+    original_han = pages._root_han_candidates_and_frontier
     latin_calls = 0
 
     def expiring_han(raw_keys, state, response_epoch):
@@ -422,7 +414,7 @@ def test_page_zero_stops_between_root_stages_without_publishing_partial_session(
         latin_calls += 1
         return [], []
 
-    monkeypatch.setattr(pages, "_root_han_candidates", expiring_han)
+    monkeypatch.setattr(pages, "_root_han_candidates_and_frontier", expiring_han)
     monkeypatch.setattr(pages, "_root_latin_candidates_and_frontier", counted_latin)
 
     with pytest.raises(CandidatePageTimeout):
@@ -547,6 +539,7 @@ def test_predicted_syllables_is_hard_primary_han_bucket(make_index) -> None:
     engine, _ = _engine(make_index)
 
     first = _page(engine, "n")
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     second = _page(
         engine,
         "n",
@@ -593,6 +586,112 @@ def test_wide_han_root_materializes_only_protocol_reachable_candidates(make_inde
 
     assert len(candidates) == 180
     assert {candidate.token_id for candidate in candidates} == set(eligible_token_ids[:180])
+
+
+def test_wide_root_scores_once_and_allocates_only_top_k_frontier(
+    make_index,
+    monkeypatch,
+) -> None:
+    rows = [
+        (token_id, MODERN_TEST_CHARACTERS[token_id], "zi", "zi", 1, 0) for token_id in range(1, 251)
+    ]
+    index = make_index(rows)
+    logits = np.full(300, -100.0, dtype=np.float32)
+    logits[1:251] = np.arange(250, 0, -1, dtype=np.float32)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(FakeRuntime(logits)),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+    pages = engine.candidate_pages
+    score_calls = 0
+    path_allocations = 0
+    original_score = pages._score_root
+    original_path = candidate_pages_v3._HanSearchPath
+
+    def counted_score(state, token_ids):
+        nonlocal score_calls
+        score_calls += 1
+        return original_score(state, token_ids)
+
+    def counted_path(**kwargs):
+        nonlocal path_allocations
+        path_allocations += 1
+        return original_path(**kwargs)
+
+    monkeypatch.setattr(pages, "_score_root", counted_score)
+    monkeypatch.setattr(candidate_pages_v3, "_HanSearchPath", counted_path)
+
+    candidates, frontier = pages._root_han_candidates_and_frontier("z", None, 0)
+
+    assert len(candidates) == 9
+    assert score_calls == 1
+    assert len(frontier) == 1
+    assert path_allocations == 0
+    seed = frontier[0]
+    expected = pages._materialize_root_han_candidates(
+        seed.plan,
+        state=None,
+        response_epoch=0,
+        scores=seed.scores,
+    )
+    assert candidates == expected[:9]
+
+    session = _SearchSession(
+        candidate_set_id="deferred-top-k",
+        identity=_SearchIdentity(
+            client_session_id="ime-session",
+            composition_revision=1,
+            context_epoch=0,
+            context_session=None,
+            source_revision=None,
+            mode=NeuralLanguageMode.CHINESE_FIRST,
+            raw_keys="z",
+        ),
+        score_source="baseline",
+        continuation_root=None,
+        pending=[],
+        frontier=frontier,
+        frozen_pages={},
+        seen_candidates=set(),
+        expanded_paths=set(),
+        last_used=0.0,
+    )
+    pages._prune_frontier(session)
+
+    assert len(session.frontier) == path_allocations == 32
+
+
+def test_deferred_root_materialization_does_not_hold_state_lock(
+    make_index,
+    monkeypatch,
+) -> None:
+    engine, _ = _engine(make_index)
+    pages = engine.candidate_pages
+    entered = threading.Event()
+    release = threading.Event()
+    original = pages._materialize_root_han_candidates
+
+    def blocked_materialization(*args, **kwargs):
+        entered.set()
+        assert release.wait(2.0)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pages, "_materialize_root_han_candidates", blocked_materialization)
+    first = _page(engine, "ni")
+    assert entered.wait(1.0)
+
+    acquired = False
+    try:
+        acquired = pages._state_lock.acquire(timeout=0.2)
+        assert acquired
+    finally:
+        if acquired:
+            pages._state_lock.release()
+        release.set()
+
+    _wait_for_page_preparation(engine, first.candidate_set_id)
 
 
 @pytest.mark.parametrize(
@@ -717,6 +816,7 @@ def test_returned_pages_are_frozen_and_candidate_ids_stable(make_index) -> None:
     engine.initialize_neural_baseline()
 
     first = _page(engine, "n")
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     second = _page(
         engine,
         "n",
@@ -752,6 +852,7 @@ def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> N
     engine.initialize_neural_baseline()
 
     pages = [_page(engine, "ni")]
+    _wait_for_page_preparation(engine, pages[0].candidate_set_id)
     for page_index in range(1, 5):
         pages.append(
             _page(
@@ -808,11 +909,12 @@ def test_search_frontier_retains_partial_root_beyond_visible_180(make_index) -> 
     )
     engine.initialize_neural_baseline()
 
+    retained = engine.candidate_pages._root_han_search_frontier("mingxian", None)
+    assert any(path.token_path == (parent_token,) for path in retained)
+
     first = _page(engine, "mingxian")
-    session = engine.candidate_pages._sessions[first.candidate_set_id]
 
     assert all(candidate.text != "明" for candidate in first.candidates)
-    assert any(path.token_path == (parent_token,) for path in session.frontier)
 
 
 def test_page_zero_background_continuation_publishes_only_to_next_revision(make_index) -> None:
@@ -1043,7 +1145,21 @@ def test_context_session_never_hybridizes_with_baseline_continuation(make_index)
     )
     assert first.score_source == "context"
 
-    _wait_for_page_preparation(engine, first.candidate_set_id)
+    timeout_at = time.monotonic() + 1.0
+    while time.monotonic() < timeout_at:
+        with engine.candidate_pages._state_lock:
+            if engine.candidate_pages._async_han_cache:
+                break
+        time.sleep(0.005)
+    refreshed = _page(
+        engine,
+        "n",
+        context_epoch=context_state.epoch,
+        context_session="source-a",
+        source_revision=1,
+        presentation_refresh=True,
+    )
+    _wait_for_page_preparation(engine, refreshed.candidate_set_id)
     second = _page(
         engine,
         "n",
@@ -1051,7 +1167,7 @@ def test_context_session_never_hybridizes_with_baseline_continuation(make_index)
         context_session="source-a",
         source_revision=1,
         page_index=1,
-        candidate_set_id=first.candidate_set_id,
+        candidate_set_id=refreshed.candidate_set_id,
     )
     assert second.score_source == "context"
     assert runtime.continuation_calls > 0
