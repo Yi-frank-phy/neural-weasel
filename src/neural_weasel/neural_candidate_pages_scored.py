@@ -744,7 +744,16 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 int(getattr(parent, "predicted_syllables", 0)),
             )
             if edge_key not in edge_cache:
-                edge_cache[edge_key] = self._han_edges_for(session, parent)
+                # Trie traversal reads only the immutable index and identity.
+                # A focus change must not wait for this CPU work.
+                self._state_lock.release()
+                try:
+                    edges = self._han_edges_for(session, parent)
+                finally:
+                    self._state_lock.acquire()
+                if self._sessions.get(session.candidate_set_id) is not session:
+                    raise CandidatePageError("candidate set was invalidated during search")
+                edge_cache[edge_key] = edges
             han_edges = edge_cache[edge_key]
             legal_token_ids = tuple(sorted(han_edges))
             if not legal_token_ids:
@@ -824,26 +833,35 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 self._background_retry_generations[candidate_set_id] = retry_generation
             return 0
 
+        # Build a batch in private scratch state. Publish only after rechecking
+        # the live session; never mutate shared lists while the lock is released.
+        scratch = replace(
+            session, pending=[], frontier=[], seen_candidates=set(session.seen_candidates)
+        )
         progressed = 0
-        for (parent, _, legal_token_ids, han_edges), values in zip(
-            selected, normalized, strict=True
-        ):
-            before_pending = len(session.pending)
-            progressed += self._expand_han_constrained(
-                session,
-                parent,
-                legal_token_ids,
-                values,
-                han_edges,
-                absolute_deadline,
-            )
+        self._state_lock.release()
+        try:
+            for (parent, _, legal_token_ids, han_edges), values in zip(
+                selected, normalized, strict=True
+            ):
+                progressed += self._expand_han_constrained(
+                    scratch, parent, legal_token_ids, values, han_edges, absolute_deadline
+                )
+                scratch.search_depth = max(scratch.search_depth, len(parent.token_path) + 1)
+        finally:
+            self._state_lock.acquire()
+        if self._sessions.get(candidate_set_id) is not session:
+            raise CandidatePageError("candidate set was invalidated during search")
+        for candidate in scratch.pending:
+            key = (unicodedata.normalize("NFKC", candidate.text), candidate.consumed_keys)
+            if key in session.seen_candidates:
+                continue
+            session.seen_candidates.add(key)
+            session.pending.append(candidate)
             if session.score_source == "baseline":
-                for candidate in session.pending[before_pending:]:
-                    self._remember_baseline_han_candidate(
-                        session.identity.raw_keys,
-                        candidate,
-                    )
-            session.search_depth = max(session.search_depth, len(parent.token_path) + 1)
+                self._remember_baseline_han_candidate(session.identity.raw_keys, candidate)
+        session.frontier.extend(scratch.frontier)
+        session.search_depth = max(session.search_depth, scratch.search_depth)
 
         self._refresh_dirty_single_letter_prewarms()
         self._prune_frontier(session)
