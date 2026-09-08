@@ -97,9 +97,16 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         candidate_set_id: str | None,
         state: BackendState | None,
         deadline_ms: float | None = None,
+        deadline_started: float | None = None,
         presentation_refresh: bool = False,
     ) -> CandidatePage:
         normalized_mode = NeuralLanguageMode(mode)
+        absolute_deadline = self._candidate_deadline_at(
+            page_index=page_index,
+            deadline_ms=deadline_ms,
+            deadline_started=deadline_started,
+        )
+        self._raise_if_query_expired(absolute_deadline)
         identity = _SearchIdentity(
             client_session_id=client_session_id,
             composition_revision=composition_revision,
@@ -119,6 +126,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             if candidate_set_id is None:
                 raise CandidatePageError("candidate_set_id is required after page 0")
             with self._state_lock:
+                self._raise_if_query_expired(absolute_deadline)
                 self._expire_sessions()
                 session = self._sessions.get(candidate_set_id)
                 if session is None:
@@ -147,6 +155,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         cached_page: CandidatePage | None = None
         cached_session: _SearchSession | None = None
         with self._state_lock:
+            self._raise_if_query_expired(absolute_deadline)
             self._expire_sessions()
             # Multiple immutable presentation snapshots may share one input
             # identity. A normal retry always replays the newest published
@@ -187,6 +196,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             candidate_set_id=None,
             state=state,
             deadline_ms=deadline_ms,
+            deadline_started=deadline_started,
         )
         with self._state_lock:
             session = self._sessions.get(page.candidate_set_id)

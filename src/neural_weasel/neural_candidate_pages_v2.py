@@ -97,6 +97,7 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         state: BackendState | None,
         response_epoch: int,
     ) -> tuple[list[Candidate], list[_SearchPath]]:
+        self._raise_if_query_expired()
         if _LATIN_PATH.fullmatch(raw_keys) is None:
             return [], []
 
@@ -114,11 +115,14 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         ]
         token_ids = [int(completion.token_path[0]) for completion in compatible]
         scores = self._score_root(state, token_ids)
+        self._raise_if_query_expired()
 
         candidates: list[Candidate] = []
         frontier: list[_SearchPath] = []
         seen_frontier: set[tuple[int, ...]] = set()
-        for completion, score in zip(compatible, scores, strict=True):
+        for index, (completion, score) in enumerate(zip(compatible, scores, strict=True)):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             value = float(score)
             if not math.isfinite(value):
                 continue
@@ -161,7 +165,9 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         # revisions. Contextual paths remain revision-local because their score
         # origin is the accepted editor snapshot.
         if state is None:
-            for cached in self._baseline_latin_cache.values():
+            for index, cached in enumerate(self._baseline_latin_cache.values()):
+                if index % 64 == 0:
+                    self._raise_if_query_expired()
                 if not cached.text.casefold().startswith(raw_keys.casefold()):
                     continue
                 candidate = replace(cached, context_epoch=response_epoch)
@@ -185,7 +191,9 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
                     )
 
         best: dict[str, Candidate] = {}
-        for candidate in candidates:
+        for index, candidate in enumerate(candidates):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             key = unicodedata.normalize("NFKC", candidate.text).casefold()
             previous = best.get(key)
             if previous is None or _latin_key(candidate) < _latin_key(previous):
@@ -201,6 +209,7 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         response_epoch: int,
         allow_prewarm_cache: bool = True,
     ) -> tuple[list[Candidate], list[_SearchPath], str]:
+        self._raise_if_query_expired()
         cached = (
             self._baseline_single_letter.get((raw_keys, mode))
             if state is None and allow_prewarm_cache
@@ -208,12 +217,14 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         )
         if cached is not None:
             candidates = [replace(candidate, context_epoch=response_epoch) for candidate in cached]
+            self._raise_if_query_expired()
             han = [candidate for candidate in candidates if candidate.script == "han"]
             _, latin_frontier = self._root_latin_candidates_and_frontier(
                 raw_keys,
                 state,
                 response_epoch,
             )
+            self._raise_if_query_expired()
             return (
                 candidates,
                 [*self._frontier_from_candidates(han), *latin_frontier],
@@ -221,11 +232,13 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
             )
 
         han = self._root_han_candidates(raw_keys, state, response_epoch)
+        self._raise_if_query_expired()
         latin, latin_frontier = self._root_latin_candidates_and_frontier(
             raw_keys,
             state,
             response_epoch,
         )
+        self._raise_if_query_expired()
         score_source = "context" if state is not None else "baseline"
 
         if mode is NeuralLanguageMode.LATIN_FIRST:
@@ -250,13 +263,16 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
             ):
                 del self._sessions[candidate_set_id]
 
+        self._raise_if_query_expired()
         score_state, continuation_root, score_source = self._select_score_origin(state)
+        self._raise_if_query_expired()
         root_candidates, frontier, _ = self._root_candidates(
             raw_keys=identity.raw_keys,
             mode=identity.mode,
             state=score_state,
             response_epoch=identity.context_epoch,
         )
+        self._raise_if_query_expired()
         if identity.mode is NeuralLanguageMode.LATIN_FIRST:
             root_candidates = root_candidates[:5]
         candidate_set_id = uuid.uuid4().hex

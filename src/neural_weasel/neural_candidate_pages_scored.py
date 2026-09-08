@@ -20,6 +20,7 @@ from .neural_candidate_pages_v3 import (
 from .neural_candidates import (
     MAX_FROZEN_CANDIDATES,
     NEXT_PAGE_DEADLINE_MS,
+    PAGE0_DEADLINE_MS,
     CandidatePage,
     CandidatePageError,
     CandidatePageTimeout,
@@ -179,6 +180,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         candidate_set_id: str | None,
         state: BackendState | None,
         deadline_ms: float | None = None,
+        deadline_started: float | None = None,
     ) -> CandidatePage:
         """Serve frozen state quickly while later-page CUDA work runs unlocked."""
 
@@ -195,7 +197,14 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         wait_event: threading.Event | None = None
         wait_budget_ms = NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
         wait_started = time.monotonic()
+        absolute_deadline = self._candidate_deadline_at(
+            page_index=page_index,
+            deadline_ms=deadline_ms,
+            deadline_started=deadline_started,
+        )
+        self._raise_if_query_expired(absolute_deadline)
         with self._state_lock:
+            self._raise_if_query_expired(absolute_deadline)
             if page_index == 0:
                 self._expire_sessions()
                 for existing_set_id, session in tuple(self._sessions.items()):
@@ -251,6 +260,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     candidate_set_id=candidate_set_id,
                     state=state,
                     deadline_ms=deadline_ms,
+                    deadline_started=deadline_started,
                 )
                 if page_index == 0:
                     session = self._sessions.get(page.candidate_set_id)
@@ -281,7 +291,26 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             candidate_set_id=candidate_set_id,
             state=state,
             deadline_ms=remaining_ms,
+            deadline_started=time.monotonic(),
         )
+
+    def _candidate_deadline_at(
+        self,
+        *,
+        page_index: int,
+        deadline_ms: float | None,
+        deadline_started: float | None,
+    ) -> float:
+        started = self.clock() if deadline_started is None else float(deadline_started)
+        if page_index == 0:
+            budget_ms = (
+                PAGE0_DEADLINE_MS
+                if deadline_ms is None
+                else min(PAGE0_DEADLINE_MS, float(deadline_ms))
+            )
+        else:
+            budget_ms = NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
+        return started + budget_ms / 1000.0
 
     @staticmethod
     def _async_identity_key(
@@ -318,6 +347,12 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 if active is not None and active.identity == identity:
                     self._sessions.move_to_end(active_id)
             session = super()._new_session(identity, state)
+        except Exception:
+            for candidate_set_id in invalidated_ids:
+                event = self._background_cancel_events.get(candidate_set_id)
+                if event is not None:
+                    event.set()
+            raise
         finally:
             self._building_identity = None
         for candidate_set_id in invalidated_ids:
@@ -489,6 +524,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         state: BackendState | None,
         response_epoch: int,
     ) -> tuple[list[Candidate], list[Any]]:
+        self._raise_if_query_expired()
         # Only the 26 permanent empty-context roots may be retained. Editor
         # snapshots always take the uncached path, including PRIVATE states.
         cacheable = state is None and len(raw_keys) == 1 and "a" <= raw_keys <= "z"
@@ -509,6 +545,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             state,
             0 if cacheable else response_epoch,
         )
+        self._raise_if_query_expired()
         raw_folded = raw_keys.casefold()
         consumed = len(raw_keys)
         result = (
@@ -624,6 +661,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         response_epoch: int,
         allow_prewarm_cache: bool = True,
     ) -> tuple[list[Candidate], list[Any], str]:
+        self._raise_if_query_expired()
         candidates, frontier, score_source = super()._root_candidates(
             raw_keys=raw_keys,
             mode=mode,
@@ -631,6 +669,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             response_epoch=response_epoch,
             allow_prewarm_cache=allow_prewarm_cache,
         )
+        self._raise_if_query_expired()
         async_han: list[Candidate] = []
         if self._building_identity is not None:
             cached = self._async_han_cache.get(self._async_identity_key(self._building_identity))
@@ -655,7 +694,9 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             if candidate.script not in {"han", "latin"} and candidate.constraint_kind != "literal"
         ]
         best: dict[tuple[str, int], Candidate] = {}
-        for candidate in (*han, *cached_han):
+        for index, candidate in enumerate((*han, *cached_han)):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             key = (
                 unicodedata.normalize("NFKC", candidate.text),
                 candidate.consumed_keys,
@@ -664,13 +705,16 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             if previous is None or _candidate_key(candidate) < _candidate_key(previous):
                 best[key] = candidate
         ordered_han = sorted(best.values(), key=_candidate_key)
+        self._raise_if_query_expired()
         ordered = [
             *self._merge_chinese_first(ordered_han, sorted(latin, key=_latin_key)),
             *other,
         ]
 
         seen_paths = {self._path_key(path) for path in frontier}
-        for path in self._han_frontier_from_candidates(raw_keys, cached_han):
+        for index, path in enumerate(self._han_frontier_from_candidates(raw_keys, cached_han)):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             key = self._path_key(path)
             if key not in seen_paths:
                 frontier.append(path)

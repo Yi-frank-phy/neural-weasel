@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import math
+import threading
 import time
 import unicodedata
 import uuid
@@ -195,6 +196,7 @@ class NeuralCandidatePageManager:
         self.matcher = PartialPinyinMatcher(pinyin_index) if pinyin_index is not None else None
         self.latin_constraint = latin_constraint
         self.clock = clock
+        self._query_deadline = threading.local()
         self._baseline_scores: np.ndarray | None = None
         self._baseline_continuation_root: Any | None = None
         self._baseline_single_letter: dict[
@@ -278,17 +280,21 @@ class NeuralCandidatePageManager:
         candidate_set_id: str | None,
         state: BackendState | None,
         deadline_ms: float | None = None,
+        deadline_started: float | None = None,
     ) -> CandidatePage:
-        started = self.clock()
+        started = self.clock() if deadline_started is None else float(deadline_started)
         mode = NeuralLanguageMode(mode)
         page_size = (
             CHINESE_PAGE_SIZE if mode is NeuralLanguageMode.CHINESE_FIRST else LATIN_PAGE_SIZE
         )
-        deadline_ms = (
-            PAGE0_DEADLINE_MS
-            if page_index == 0
-            else (NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms))
-        )
+        if page_index == 0:
+            deadline_ms = (
+                PAGE0_DEADLINE_MS
+                if deadline_ms is None
+                else min(PAGE0_DEADLINE_MS, float(deadline_ms))
+            )
+        else:
+            deadline_ms = NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
         if deadline_ms <= 0:
             raise CandidatePageTimeout("candidate page deadline expired")
         if not raw_keys:
@@ -298,6 +304,8 @@ class NeuralCandidatePageManager:
         if composition_revision < 0:
             raise CandidatePageError("composition_revision must be non-negative")
 
+        absolute_deadline = started + deadline_ms / 1000.0
+        self._raise_if_query_expired(absolute_deadline)
         self._expire_sessions()
         identity = _SearchIdentity(
             client_session_id=client_session_id,
@@ -309,7 +317,16 @@ class NeuralCandidatePageManager:
             raw_keys=raw_keys,
         )
         if page_index == 0:
-            session = self._new_session(identity, state)
+            previous_deadline = getattr(self._query_deadline, "absolute", None)
+            self._query_deadline.absolute = absolute_deadline
+            try:
+                session = self._new_session(identity, state)
+                self._raise_if_query_expired(absolute_deadline)
+            finally:
+                if previous_deadline is None:
+                    del self._query_deadline.absolute
+                else:
+                    self._query_deadline.absolute = previous_deadline
         else:
             if candidate_set_id is None:
                 raise CandidatePageError("candidate_set_id is required after page 0")
@@ -329,7 +346,7 @@ class NeuralCandidatePageManager:
                     "new candidate pages must be requested in increasing order"
                 )
 
-        absolute_deadline = started + deadline_ms / 1000.0
+        self._raise_if_query_expired(absolute_deadline)
         page = self._freeze_next_page(session, page_index, page_size, absolute_deadline)
         elapsed_ms = max(0.0, (self.clock() - started) * 1000.0)
         if page.elapsed_ms != elapsed_ms:
@@ -339,6 +356,15 @@ class NeuralCandidatePageManager:
         self._sessions.move_to_end(session.candidate_set_id)
         self._record_metrics(page)
         return page
+
+    def _raise_if_query_expired(self, absolute_deadline: float | None = None) -> None:
+        deadline = (
+            getattr(getattr(self, "_query_deadline", None), "absolute", None)
+            if absolute_deadline is None
+            else absolute_deadline
+        )
+        if deadline is not None and self.clock() >= deadline:
+            raise CandidatePageTimeout("candidate page deadline expired")
 
     def _select_score_origin(
         self,
@@ -364,13 +390,16 @@ class NeuralCandidatePageManager:
             ):
                 del self._sessions[candidate_set_id]
 
+        self._raise_if_query_expired()
         score_state, continuation_root, score_source = self._select_score_origin(state)
+        self._raise_if_query_expired()
         root_candidates, frontier, _ = self._root_candidates(
             raw_keys=identity.raw_keys,
             mode=identity.mode,
             state=score_state,
             response_epoch=identity.context_epoch,
         )
+        self._raise_if_query_expired()
         if identity.mode is NeuralLanguageMode.LATIN_FIRST:
             root_candidates = root_candidates[:LATIN_PAGE_SIZE]
             frontier = []
@@ -413,6 +442,7 @@ class NeuralCandidatePageManager:
         response_epoch: int,
         allow_prewarm_cache: bool = True,
     ) -> tuple[list[Candidate], list[_SearchPath], str]:
+        self._raise_if_query_expired()
         cached = (
             self._baseline_single_letter.get((raw_keys, mode))
             if state is None and allow_prewarm_cache
@@ -420,11 +450,14 @@ class NeuralCandidatePageManager:
         )
         if cached is not None:
             candidates = [replace(candidate, context_epoch=response_epoch) for candidate in cached]
+            self._raise_if_query_expired()
             han = [candidate for candidate in candidates if candidate.script == "han"]
             return candidates, self._frontier_from_candidates(han), "baseline"
 
         han = self._root_han_candidates(raw_keys, state, response_epoch)
+        self._raise_if_query_expired()
         latin = self._root_latin_candidates(raw_keys, state, response_epoch)
+        self._raise_if_query_expired()
         score_source = "context" if state is not None else "baseline"
 
         if mode is NeuralLanguageMode.LATIN_FIRST:
@@ -445,14 +478,18 @@ class NeuralCandidatePageManager:
         state: BackendState | None,
         response_epoch: int,
     ) -> list[Candidate]:
+        self._raise_if_query_expired()
         plan = self._root_han_plan(raw_keys)
+        self._raise_if_query_expired()
         if not plan:
             return []
-        return self._materialize_root_han_candidates(
+        result = self._materialize_root_han_candidates(
             plan,
             state=state,
             response_epoch=response_epoch,
         )
+        self._raise_if_query_expired()
+        return result
 
     def _root_han_plan(self, raw_keys: str) -> tuple[_RootHanPlanEntry, ...]:
         cached = self._root_han_plans.pop(raw_keys, None)
@@ -476,6 +513,7 @@ class NeuralCandidatePageManager:
             and not match.entry.coverage
             and len(match.entry.text) <= MAX_HAN_CHARACTERS
         ]
+        self._raise_if_query_expired()
         plan = tuple(
             _RootHanPlanEntry(
                 text=match.entry.text,
@@ -505,11 +543,14 @@ class NeuralCandidatePageManager:
     ) -> list[Candidate]:
         token_ids = [entry.token_id for entry in plan]
         scores = self._score_root(state, token_ids)
+        self._raise_if_query_expired()
         best: dict[
             tuple[str, int],
             tuple[tuple[object, ...], _RootHanPlanEntry, float],
         ] = {}
-        for entry, score in zip(plan, scores, strict=True):
+        for index, (entry, score) in enumerate(zip(plan, scores, strict=True)):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             if not math.isfinite(float(score)):
                 continue
             value = float(score)
@@ -536,6 +577,7 @@ class NeuralCandidatePageManager:
             best.values(),
             key=lambda value: value[0],
         )
+        self._raise_if_query_expired()
         return [
             Candidate(
                 text=entry.text,
@@ -563,6 +605,7 @@ class NeuralCandidatePageManager:
         state: BackendState | None,
         response_epoch: int,
     ) -> list[Candidate]:
+        self._raise_if_query_expired()
         compatible = [
             completion
             for completion in self.latin_constraint.completions
@@ -574,8 +617,11 @@ class NeuralCandidatePageManager:
             return []
         token_ids = [int(completion.token_path[0]) for completion in compatible]
         scores = self._score_root(state, token_ids)
+        self._raise_if_query_expired()
         candidates: list[Candidate] = []
-        for completion, score in zip(compatible, scores, strict=True):
+        for index, (completion, score) in enumerate(zip(compatible, scores, strict=True)):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
             if not math.isfinite(float(score)):
                 continue
             value = float(score)

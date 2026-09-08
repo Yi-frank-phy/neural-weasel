@@ -1,4 +1,6 @@
 #include "rime/ai_translator.h"
+
+#include "rime/candidate_page_retry.h"
 #include "rime/neural_refresh_key.h"
 
 #include <algorithm>
@@ -291,6 +293,14 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
           page_payload = current->second;
         } else {
           const Json response = Json::parse(result.payload);
+          const Json response_error =
+              response.value("error", Json::object());
+          if (ShouldKeepCandidatePagePending(
+                  requested_page,
+                  response_error.value("code", std::string{}),
+                  response_error.value("retryable", false))) {
+            context->set_property(kNeuralCandidatePendingProperty, "1");
+          }
           const std::string response_set =
               response.value("candidate_set_id", std::string{});
           const bool set_matches =

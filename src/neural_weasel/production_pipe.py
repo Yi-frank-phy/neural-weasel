@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .neural_candidates import (
+    NEXT_PAGE_DEADLINE_MS,
+    PAGE0_DEADLINE_MS,
     CandidatePageError,
     CandidatePageTimeout,
     NeuralLanguageMode,
@@ -109,6 +112,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
         return response
 
     def _handle_candidate_page_request(self, message: dict[str, Any]) -> dict[str, Any]:
+        deadline_started = time.monotonic()
         request_id = None
         try:
             request_id = _optional_identifier(message, "request_id")
@@ -179,6 +183,8 @@ class ProductionNamedPipeServer(NamedPipeServer):
                 "raw_keys": raw_keys,
                 "page_index": page_index,
                 "candidate_set_id": candidate_set_id,
+                "deadline_ms": (PAGE0_DEADLINE_MS if page_index == 0 else NEXT_PAGE_DEADLINE_MS),
+                "deadline_started": deadline_started,
             }
             # Keep simple protocol test doubles compatible with the baseline
             # engine signature unless this new capability was explicitly asked.
