@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import unicodedata
+from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -25,6 +27,9 @@ from .neural_candidates import (
     _SearchSession,
 )
 from .pinyin import parse_raw_pinyin
+
+_MAX_BASELINE_ROOT_PAGE_CACHE = 128
+_COMMON_BASELINE_ROOTS = ("ma", "de")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +63,31 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
     than one model token, for example ``nihao`` -> ``你`` + ``好`` when no
     one-token ``你好`` entry exists in the model vocabulary.
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._baseline_root_pages: OrderedDict[
+            tuple[str, NeuralLanguageMode], tuple[tuple[Candidate, ...], tuple[Any, ...]]
+        ] = OrderedDict()
+
+    def install_baseline_scores(
+        self,
+        scores: Sequence[float],
+        *,
+        continuation_root: Any | None = None,
+    ) -> None:
+        self._baseline_root_pages.clear()
+        super().install_baseline_scores(scores, continuation_root=continuation_root)
+
+    def prewarm_single_letter_pages(self) -> None:
+        super().prewarm_single_letter_pages()
+        for raw_keys in _COMMON_BASELINE_ROOTS:
+            self._root_candidates(
+                raw_keys=raw_keys,
+                mode=NeuralLanguageMode.CHINESE_FIRST,
+                state=None,
+                response_epoch=0,
+            )
 
     @staticmethod
     def _path_key(path: Any) -> tuple[object, ...]:
@@ -272,6 +302,23 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 "baseline",
             )
 
+        cacheable = state is None and allow_prewarm_cache
+        cache_key = (raw_keys, mode)
+        cached_root = self._baseline_root_pages.pop(cache_key, None) if cacheable else None
+        if cached_root is not None:
+            self._baseline_root_pages[cache_key] = cached_root
+            candidates, frontier = cached_root
+            return (
+                [
+                    candidate
+                    if response_epoch == 0
+                    else replace(candidate, context_epoch=response_epoch)
+                    for candidate in candidates
+                ],
+                list(frontier),
+                "baseline",
+            )
+
         han = self._root_han_candidates(raw_keys, state, response_epoch)
         self._raise_if_query_expired()
         latin, latin_frontier = self._root_latin_candidates_and_frontier(
@@ -286,7 +333,10 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             ordered_latin = sorted(latin, key=_latin_key)
             if not ordered_latin:
                 ordered_latin = [_literal_candidate(raw_keys, response_epoch)]
-            return ordered_latin, latin_frontier, score_source
+            result = (ordered_latin, latin_frontier, score_source)
+            if cacheable:
+                self._remember_baseline_root_page(cache_key, ordered_latin, latin_frontier)
+            return result
 
         ordered_han = sorted(han, key=_candidate_key)
         ordered_latin = sorted(latin, key=_latin_key)
@@ -295,7 +345,28 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         self._raise_if_query_expired()
         if not ordered and not frontier and self._baseline_scores is not None:
             ordered = [_literal_candidate(raw_keys, response_epoch)]
+        if cacheable:
+            self._remember_baseline_root_page(cache_key, ordered, frontier)
         return ordered, frontier, score_source
+
+    def _remember_baseline_root_page(
+        self,
+        key: tuple[str, NeuralLanguageMode],
+        candidates: list[Candidate],
+        frontier: list[Any],
+    ) -> None:
+        self._baseline_root_pages[key] = (
+            tuple(
+                candidate
+                if candidate.context_epoch == 0
+                else replace(candidate, context_epoch=0)
+                for candidate in candidates
+            ),
+            tuple(frontier),
+        )
+        self._baseline_root_pages.move_to_end(key)
+        while len(self._baseline_root_pages) > _MAX_BASELINE_ROOT_PAGE_CACHE:
+            self._baseline_root_pages.popitem(last=False)
 
     def _prune_frontier(self, session: _SearchSession) -> None:
         preferred_script = (

@@ -10,7 +10,11 @@ import pytest
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
 from neural_weasel.modern_han import MODERN_READINGS
-from neural_weasel.neural_candidates import CandidatePageError, CandidatePageTimeout
+from neural_weasel.neural_candidates import (
+    CandidatePageError,
+    CandidatePageTimeout,
+    NeuralLanguageMode,
+)
 from neural_weasel.simplified_chinese import is_simplified_han
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
@@ -282,6 +286,78 @@ def _page(engine, raw: str, mode: str = "chinese_first", **kwargs):
     }
     values.update(kwargs)
     return engine.query_candidate_page(**values)
+
+
+def test_multiletter_baseline_root_cache_replays_cpu_work_but_context_stays_live(
+    make_index,
+    monkeypatch,
+) -> None:
+    engine, _ = _engine(make_index)
+    pages = engine.candidate_pages
+    calls = {"candidates": 0, "frontier": 0}
+    original_candidates = pages._root_han_candidates
+    original_frontier = pages._root_han_search_frontier
+
+    def counted_candidates(raw_keys, state, response_epoch):
+        calls["candidates"] += 1
+        return original_candidates(raw_keys, state, response_epoch)
+
+    def counted_frontier(raw_keys, state):
+        calls["frontier"] += 1
+        return original_frontier(raw_keys, state)
+
+    monkeypatch.setattr(pages, "_root_han_candidates", counted_candidates)
+    monkeypatch.setattr(pages, "_root_han_search_frontier", counted_frontier)
+    baseline_args = {
+        "raw_keys": "ni",
+        "mode": NeuralLanguageMode.CHINESE_FIRST,
+        "state": None,
+        "response_epoch": 0,
+    }
+
+    first = pages._root_candidates(**baseline_args)
+    second = pages._root_candidates(**baseline_args)
+
+    assert calls == {"candidates": 1, "frontier": 1}
+    assert second == first
+
+    contextual = engine.coordinator.backend.update_context("context", "")
+    pages._root_candidates(**{**baseline_args, "state": contextual, "response_epoch": 1})
+    pages._root_candidates(**{**baseline_args, "state": contextual, "response_epoch": 1})
+
+    assert calls == {"candidates": 3, "frontier": 3}
+
+
+def test_common_multiletter_roots_are_prearmed_before_the_first_query(
+    make_index,
+    monkeypatch,
+) -> None:
+    engine, _ = _engine(make_index)
+    pages = engine.candidate_pages
+    calls = {"candidates": 0, "frontier": 0}
+    original_candidates = pages._root_han_candidates
+    original_frontier = pages._root_han_search_frontier
+
+    def counted_candidates(raw_keys, state, response_epoch):
+        calls["candidates"] += 1
+        return original_candidates(raw_keys, state, response_epoch)
+
+    def counted_frontier(raw_keys, state):
+        calls["frontier"] += 1
+        return original_frontier(raw_keys, state)
+
+    monkeypatch.setattr(pages, "_root_han_candidates", counted_candidates)
+    monkeypatch.setattr(pages, "_root_han_search_frontier", counted_frontier)
+
+    for raw_keys in ("ma", "de"):
+        pages._root_candidates(
+            raw_keys=raw_keys,
+            mode=NeuralLanguageMode.CHINESE_FIRST,
+            state=None,
+            response_epoch=1,
+        )
+
+    assert calls == {"candidates": 0, "frontier": 0}
 
 
 def _wait_for_page_preparation(
