@@ -95,8 +95,11 @@ The sparse backend avoids the full-vocabulary projection and CPU logits copy:
 .\scripts\start-model-service.ps1 -Backend sparse
 ```
 
-These commands start the separate Named Pipe model service. Installation is
-performed only from a verified CI bundle with `install-dev-profile.ps1`.
+These commands start the separate Named Pipe model service. The verified CI
+bundle's one-click launcher registers exactly one per-user logon task for the
+selected quantization, so Windows owns the service lifecycle and makes it
+available with the IME after sign-in. Installation is performed only from a
+verified CI bundle with `install-dev-profile.ps1`.
 
 ## Measure on the target GPU
 

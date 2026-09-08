@@ -33,6 +33,7 @@ $InstallRoot = Join-Path $env:LOCALAPPDATA (
 $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
 $StatePath = Join-Path $RuntimeRoot 'model-service.json'
 $LogRoot = Join-Path $RuntimeRoot 'logs'
+$ModelTaskPrefix = 'NeuralWeasel Experimental Model Service'
 
 function Assert-LastExitCode {
     param([Parameter(Mandatory)][string]$Operation)
@@ -157,6 +158,84 @@ function Quote-ProcessArgument {
     return '"' + $Value.Replace('"', '\"') + '"'
 }
 
+function Ensure-ModelServiceStartupTask {
+    param([Parameter(Mandatory)][string]$ServiceScript)
+
+    $TaskSuffix = if ($Quantization -eq 'Q4_K_M') { 'Q4' } else { 'Q8' }
+    $OtherTaskSuffix = if ($TaskSuffix -eq 'Q4') { 'Q8' } else { 'Q4' }
+    $TaskName = "$ModelTaskPrefix $TaskSuffix"
+    $OtherTaskName = "$ModelTaskPrefix $OtherTaskSuffix"
+    $PowerShellExe = Join-Path $env:SystemRoot (
+        'System32\WindowsPowerShell\v1.0\powershell.exe'
+    )
+    $CmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $Arguments = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Quote-ProcessArgument $ServiceScript)
+    )
+    $Arguments += @('-Quantization', $Quantization)
+    if ($GgufPath) {
+        $Arguments += @('-GgufPath', (Quote-ProcessArgument $GgufPath))
+    }
+    $StdOut = Join-Path $LogRoot 'model-service.scheduled.stdout.log'
+    $StdErr = Join-Path $LogRoot 'model-service.scheduled.stderr.log'
+    $Command = @((Quote-ProcessArgument $PowerShellExe)) + $Arguments
+    $Command = ($Command -join ' ') +
+        " >>$(Quote-ProcessArgument $StdOut)" +
+        " 2>>$(Quote-ProcessArgument $StdErr)"
+    $Action = New-ScheduledTaskAction `
+        -Execute $CmdExe `
+        -Argument ('/d /s /c "' + $Command + '"') `
+        -WorkingDirectory $InstallRoot
+    $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
+    $Principal = New-ScheduledTaskPrincipal `
+        -UserId $UserId `
+        -LogonType Interactive `
+        -RunLevel Limited
+    $Settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew `
+        -RestartCount 10 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -StartWhenAvailable
+
+    $Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($Existing) {
+        Set-ScheduledTask `
+            -TaskName $TaskName `
+            -Action $Action `
+            -Trigger $Trigger `
+            -Principal $Principal `
+            -Settings $Settings | Out-Null
+    } else {
+        Register-ScheduledTask `
+            -TaskName $TaskName `
+            -Description 'Starts the per-user Neural Weasel model service at logon.' `
+            -Action $Action `
+            -Trigger $Trigger `
+            -Principal $Principal `
+            -Settings $Settings | Out-Null
+    }
+
+    $OtherTask = Get-ScheduledTask `
+        -TaskName $OtherTaskName `
+        -ErrorAction SilentlyContinue
+    if ($OtherTask) {
+        if ($OtherTask.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $OtherTaskName
+        }
+        Unregister-ScheduledTask -TaskName $OtherTaskName -Confirm:$false
+    }
+    return $TaskName
+}
+
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw '神经小狼毫 currently supports only 64-bit Windows.'
 }
@@ -209,44 +288,36 @@ foreach ($Path in @($ServiceScript, $Server, $RimeRuntime, $Activator)) {
 New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 $PipePath = Get-ModelPipePath
 $ServiceProcess = Get-LiveModelServiceProcess
+$ModelTaskName = Ensure-ModelServiceStartupTask -ServiceScript $ServiceScript
 
 if (-not (Test-ModelPipe -PipePath $PipePath)) {
     if (-not $ServiceProcess) {
-        $PowerShellExe = (Get-Process -Id $PID).Path
-        $StdOut = Join-Path $LogRoot 'model-service.stdout.log'
-        $StdErr = Join-Path $LogRoot 'model-service.stderr.log'
-        $Arguments = @(
-            '-NoLogo',
-            '-NoProfile',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-File',
-            (Quote-ProcessArgument $ServiceScript)
-        )
-        $Arguments += @('-Quantization', $Quantization)
-        if ($GgufPath) {
-            $Arguments += @('-GgufPath', (Quote-ProcessArgument $GgufPath))
+        $Task = Get-ScheduledTask -TaskName $ModelTaskName
+        if ($Task.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $ModelTaskName
+            $StopTimer = [Diagnostics.Stopwatch]::StartNew()
+            do {
+                Start-Sleep -Milliseconds 100
+                $Task = Get-ScheduledTask -TaskName $ModelTaskName
+            } while (
+                $Task.State -eq 'Running' -and
+                $StopTimer.Elapsed.TotalSeconds -lt 10
+            )
+            if ($Task.State -eq 'Running') {
+                throw 'The stale model-service task did not stop within 10 seconds.'
+            }
         }
-        $Arguments = $Arguments -join ' '
         Write-Host (
-            "Starting $Model $Quantization $ModelFormat through $Runtime $ComputeBackend. " +
+            "Starting $Model $Quantization $ModelFormat through its logon task. " +
             'The first launch may download about 4.5 GB and build the pinyin index.'
         )
-        $ServiceProcess = Start-Process `
-            -FilePath $PowerShellExe `
-            -ArgumentList $Arguments `
-            -WorkingDirectory $InstallRoot `
-            -WindowStyle Minimized `
-            -RedirectStandardOutput $StdOut `
-            -RedirectStandardError $StdErr `
-            -PassThru
+        Start-ScheduledTask -TaskName $ModelTaskName
     } else {
         Write-Host 'A model-service process already exists; waiting for it to become ready.'
     }
     Wait-ModelPipe `
         -PipePath $PipePath `
-        -TimeoutSeconds $ReadyTimeoutSeconds `
-        -ExpectedProcess $ServiceProcess
+        -TimeoutSeconds $ReadyTimeoutSeconds
 }
 
 if (-not (Get-Process -Name 'NeuralWeaselServer' -ErrorAction SilentlyContinue)) {

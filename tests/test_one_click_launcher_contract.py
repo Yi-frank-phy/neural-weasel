@@ -34,6 +34,7 @@ def test_launcher_installs_idempotently_starts_services_and_activates_session() 
     assert "NeuralWeaselSessionActivator.exe" in launcher
     assert "Wait-ModelPipe" in launcher
     assert "Start-Process" in launcher
+    assert "Start-ScheduledTask -TaskName $ModelTaskName" in launcher
     assert " activate " in launcher
     assert "--clsid $ExperimentalClsid" in launcher
     assert "--profile-guid $ExperimentalProfileGuid" in launcher
@@ -42,6 +43,35 @@ def test_launcher_installs_idempotently_starts_services_and_activates_session() 
     assert "SetDefault" not in launcher
     assert "SetDefaultInputMethod" not in launcher
     assert "regsvr32" not in launcher.lower()
+
+
+def test_model_service_runs_from_single_logon_task_with_restart_policy() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    start = launcher.index("function Ensure-ModelServiceStartupTask")
+    end = launcher.index("\nif (-not [Environment]::Is64BitOperatingSystem)", start)
+    task_registration = launcher[start:end]
+
+    assert "New-ScheduledTaskTrigger -AtLogOn" in task_registration
+    assert "-LogonType Interactive" in task_registration
+    assert "-RunLevel Limited" in task_registration
+    assert "-MultipleInstances IgnoreNew" in task_registration
+    assert "-RestartCount 10" in task_registration
+    assert "-RestartInterval (New-TimeSpan -Minutes 1)" in task_registration
+    assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in task_registration
+    assert "model-service.scheduled.stdout.log" in task_registration
+    assert "model-service.scheduled.stderr.log" in task_registration
+    assert '2>>$(Quote-ProcessArgument $StdErr)' in task_registration
+    assert "Unregister-ScheduledTask" in task_registration
+    assert "Start-Process" not in task_registration
+
+
+def test_uninstall_removes_both_quantization_logon_tasks() -> None:
+    uninstall = _read("scripts/uninstall-dev-profile.ps1")
+
+    assert "NeuralWeasel Experimental Model Service Q4" in uninstall
+    assert "NeuralWeasel Experimental Model Service Q8" in uninstall
+    assert "Stop-ScheduledTask" in uninstall
+    assert "Unregister-ScheduledTask" in uninstall
 
 
 def test_launcher_rejects_live_legacy_service_state_without_waiting() -> None:

@@ -18,6 +18,10 @@ $ExperimentalRuntimeRoot = [IO.Path]::GetFullPath(
     (Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental')
 )
 $ExpectedInstallRoot = Join-Path $ExperimentalRuntimeRoot 'experimental-profile'
+$ModelTaskNames = @(
+    'NeuralWeasel Experimental Model Service Q4',
+    'NeuralWeasel Experimental Model Service Q8'
+)
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 if ($InstallRoot -ne $ExpectedInstallRoot) {
     throw 'Refusing to remove a directory outside the reserved experimental-profile boundary.'
@@ -42,6 +46,16 @@ if ($DryRun) {
 
 Get-Process -Name 'NeuralWeaselServer' -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction Stop
+
+foreach ($TaskName in $ModelTaskNames) {
+    $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($Task) {
+        if ($Task.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $TaskName
+        }
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+}
 
 if (Test-Path -LiteralPath $InstalledTool -PathType Leaf) {
     & $InstalledTool unregister `
