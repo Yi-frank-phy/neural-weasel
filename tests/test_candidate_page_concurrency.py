@@ -161,6 +161,43 @@ def test_background_cpu_work_does_not_block_invalidation(make_index, monkeypatch
     assert not manager._baseline_han_cache
 
 
+def test_foreground_han_edge_traversal_does_not_block_invalidation(make_index, monkeypatch):
+    engine, runtime = _engine(make_index)
+    runtime.release.set()
+    manager = engine.candidate_pages
+    monkeypatch.setattr(manager, "_maybe_start_page_preparation", lambda session: None)
+    _page(engine, client="foreground", revision=1, raw="nh")
+    session = next(iter(manager._sessions.values()))
+    entered, release = threading.Event(), threading.Event()
+    original = manager._han_edges_for
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_han_edges_for", blocked)
+    query_thread, query_done, query_result = _run_in_thread(
+        lambda: _expand_under_lock(manager, session)
+    )
+    assert entered.wait(1)
+    clear_thread, clear_done, clear_result = _run_in_thread(manager.clear_sessions)
+    try:
+        assert clear_done.wait(.5), "foreground matcher holds the state lock"
+        assert "error" not in clear_result
+    finally:
+        release.set()
+        clear_thread.join(3)
+        query_thread.join(3)
+    assert query_done.is_set()
+    assert "error" in query_result
+
+
+def _expand_under_lock(manager, session):
+    with manager._state_lock:
+        return manager._expand_one_frontier(session, manager.clock() + 1.0)
+
+
 def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_index) -> None:
     engine, runtime = _engine(make_index)
     first = _page(engine, client="active", revision=1, raw="ni")
