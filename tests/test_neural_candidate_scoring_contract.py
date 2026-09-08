@@ -139,9 +139,15 @@ def test_dirty_latin_prewarm_invalidates_root_before_rebuilding(monkeypatch) -> 
 
     manager = object.__new__(NeuralCandidatePageManager)
     manager._baseline_scores = np.zeros(4)
-    manager._dirty_single_letter_prewarms = {"m"}
+    manager._dirty_single_letter_prewarms = set()
     manager._baseline_latin_roots = {"m": ((), ())}
     manager._baseline_single_letter = {}
+    from collections import OrderedDict
+
+    from neural_weasel.neural_candidates import _literal_candidate
+
+    manager._baseline_latin_cache = OrderedDict()
+    manager._remember_baseline_latin_candidate(_literal_candidate("more", 0))
 
     def rebuild(**kwargs):
         assert kwargs["raw_keys"] not in manager._baseline_latin_roots

@@ -9,8 +9,12 @@ import pytest
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
+from neural_weasel.modern_han import MODERN_READINGS
 from neural_weasel.neural_candidates import CandidatePageError, CandidatePageTimeout
+from neural_weasel.simplified_chinese import is_simplified_han
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
+
+MODERN_TEST_CHARACTERS = sorted(char for char in MODERN_READINGS if is_simplified_han(char))
 
 
 @dataclass
@@ -364,7 +368,9 @@ def test_predicted_syllables_is_hard_primary_han_bucket(make_index) -> None:
 
 
 def test_wide_han_root_materializes_only_protocol_reachable_candidates(make_index) -> None:
-    rows = [(token_id, chr(0x4E00 + token_id), "zi", "zi", 1, 0) for token_id in range(1, 251)]
+    rows = [
+        (token_id, MODERN_TEST_CHARACTERS[token_id], "zi", "zi", 1, 0) for token_id in range(1, 251)
+    ]
     index = make_index(rows)
     logits = np.full(300, -100.0, dtype=np.float32)
     logits[1:251] = np.arange(250, 0, -1, dtype=np.float32)
@@ -489,7 +495,14 @@ def test_context_refresh_in_flight_falls_back_to_baseline_without_waiting(make_i
 
 def test_returned_pages_are_frozen_and_candidate_ids_stable(make_index) -> None:
     rows = [
-        (token_id, chr(0x4E00 + token_id), f"n{'a' * token_id}", f"n{'a' * token_id}", 1, 0)
+        (
+            token_id,
+            MODERN_TEST_CHARACTERS[token_id],
+            f"n{'a' * token_id}",
+            f"n{'a' * token_id}",
+            1,
+            0,
+        )
         for token_id in range(1, 25)
     ]
     index = make_index(rows)

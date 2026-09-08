@@ -7,7 +7,9 @@ import pytest
 
 import neural_weasel.index as index_module
 from neural_weasel.index import PinyinIndexBuilder, default_index_path, tokenizer_fingerprint
+from neural_weasel.modern_han import MODERN_READINGS
 from neural_weasel.ranker import rank_candidates
+from neural_weasel.simplified_chinese import is_simplified_han
 
 
 class FakeTokenizer:
@@ -55,7 +57,7 @@ def test_default_index_path_changes_with_revision_and_pypinyin_version(
     assert base != new_pinyin
     assert "commit-a" in base.name
     assert "pypinyin-0.55" in base.name
-    assert base.name.endswith("-v3.sqlite3")
+    assert base.name.endswith("-v4.sqlite3")
 
 
 def test_builder_persists_tokens_polyphones_coverage_and_metadata(
@@ -323,7 +325,8 @@ def test_consumed_keys_counts_raw_apostrophe_keys(make_index) -> None:
 
 
 def test_wide_prefix_does_not_drop_highest_logit_after_arbitrary_cap(make_index) -> None:
-    rows = [(token_id, chr(0x4E00 + token_id), "a", "a", 1, 0) for token_id in range(1, 5002)]
+    chars = sorted(char for char in MODERN_READINGS if is_simplified_han(char))
+    rows = [(token_id, chars[token_id], "a", "a", 1, 0) for token_id in range(1, 5002)]
     index = make_index(rows)
     logits = [0.0] * 5002
     logits[5001] = 100.0
