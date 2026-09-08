@@ -47,6 +47,7 @@ def test_launcher_installs_idempotently_starts_services_and_activates_session() 
 
 def test_model_service_runs_from_single_logon_task_with_restart_policy() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
+    hidden_runner = _read("scripts/start-model-service-hidden.ps1")
     start = launcher.index("function Ensure-ModelServiceStartupTask")
     end = launcher.index("\nif (-not [Environment]::Is64BitOperatingSystem)", start)
     task_registration = launcher[start:end]
@@ -60,9 +61,30 @@ def test_model_service_runs_from_single_logon_task_with_restart_policy() -> None
     assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in task_registration
     assert "model-service.scheduled.stdout.log" in task_registration
     assert "model-service.scheduled.stderr.log" in task_registration
-    assert "2>>$(Quote-ProcessArgument $StdErr)" in task_registration
+    assert ".CreateNoWindow = $true" in hidden_runner
+    assert ".RedirectStandardOutput = $true" in hidden_runner
+    assert ".RedirectStandardError = $true" in hidden_runner
     assert "Unregister-ScheduledTask" in task_registration
     assert "Start-Process" not in task_registration
+
+
+def test_model_service_logon_task_uses_a_windowless_host() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    hidden_host = _read("scripts/start-model-service-hidden.vbs")
+    hidden_runner = _read("scripts/start-model-service-hidden.ps1")
+    start = launcher.index("function Ensure-ModelServiceStartupTask")
+    end = launcher.index("\nif (-not [Environment]::Is64BitOperatingSystem)", start)
+    task_registration = launcher[start:end]
+
+    assert "wscript.exe" in task_registration
+    assert "//B" in task_registration
+    assert "//Nologo" in task_registration
+    assert "cmd.exe" not in task_registration
+    assert "%ComSpec%" not in hidden_host
+    assert "shell.Run(command, 0, True)" in hidden_host
+    assert "-StdOutPath" in hidden_host
+    assert "-StdErrPath" in hidden_host
+    assert "[Diagnostics.Process]::new()" in hidden_runner
 
 
 def test_uninstall_removes_both_quantization_logon_tasks() -> None:
@@ -161,6 +183,7 @@ def _script_function(script: str, name: str) -> str:
 def test_scripts_expose_supported_quant_selector_passthrough() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
     service = _read("scripts/start-model-service.ps1")
+    hidden_host = _read("scripts/start-model-service-hidden.vbs")
 
     for script in (launcher, service):
         assert "[ValidateSet('Q4_K_M', 'Q8_0')]" in script
@@ -168,8 +191,8 @@ def test_scripts_expose_supported_quant_selector_passthrough() -> None:
     assert "@('--quantization', $Quantization)" in service
     assert "@('--gguf-path', $GgufPath)" in service
     assert "provided GGUF artifact does not exist" in service
-    assert "'-Quantization', $Quantization" in launcher
-    assert "'-GgufPath'" in launcher
+    assert '" -Quantization " & Quote(WScript.Arguments(1))' in hidden_host
+    assert '" -GgufPath " & Quote(WScript.Arguments(2))' in hidden_host
 
 
 def test_safety_profile_tracks_selected_quantization() -> None:

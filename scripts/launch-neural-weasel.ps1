@@ -159,37 +159,33 @@ function Quote-ProcessArgument {
 }
 
 function Ensure-ModelServiceStartupTask {
-    param([Parameter(Mandatory)][string]$ServiceScript)
+    param(
+        [Parameter(Mandatory)][string]$ServiceScript,
+        [Parameter(Mandatory)][string]$HiddenHostScript
+    )
 
     $TaskSuffix = if ($Quantization -eq 'Q4_K_M') { 'Q4' } else { 'Q8' }
     $OtherTaskSuffix = if ($TaskSuffix -eq 'Q4') { 'Q8' } else { 'Q4' }
     $TaskName = "$ModelTaskPrefix $TaskSuffix"
     $OtherTaskName = "$ModelTaskPrefix $OtherTaskSuffix"
-    $PowerShellExe = Join-Path $env:SystemRoot (
-        'System32\WindowsPowerShell\v1.0\powershell.exe'
-    )
-    $CmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $WScriptExe = Join-Path $env:SystemRoot 'System32\wscript.exe'
     $Arguments = @(
-        '-NoLogo',
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
+        '//B',
+        '//Nologo',
+        (Quote-ProcessArgument $HiddenHostScript),
         (Quote-ProcessArgument $ServiceScript)
     )
-    $Arguments += @('-Quantization', $Quantization)
-    if ($GgufPath) {
-        $Arguments += @('-GgufPath', (Quote-ProcessArgument $GgufPath))
-    }
+    $Arguments += @((Quote-ProcessArgument $Quantization))
+    $Arguments += @((Quote-ProcessArgument $GgufPath))
     $StdOut = Join-Path $LogRoot 'model-service.scheduled.stdout.log'
     $StdErr = Join-Path $LogRoot 'model-service.scheduled.stderr.log'
-    $Command = @((Quote-ProcessArgument $PowerShellExe)) + $Arguments
-    $Command = ($Command -join ' ') +
-        " >>$(Quote-ProcessArgument $StdOut)" +
-        " 2>>$(Quote-ProcessArgument $StdErr)"
+    $Arguments += @(
+        (Quote-ProcessArgument $StdOut),
+        (Quote-ProcessArgument $StdErr)
+    )
     $Action = New-ScheduledTaskAction `
-        -Execute $CmdExe `
-        -Argument ('/d /s /c "' + $Command + '"') `
+        -Execute $WScriptExe `
+        -Argument ($Arguments -join ' ') `
         -WorkingDirectory $InstallRoot
     $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
@@ -246,6 +242,8 @@ if (-not $env:LOCALAPPDATA) {
 $RequiredSourceFiles = @(
     'install-dev-profile.ps1',
     'start-model-service.ps1',
+    'start-model-service-hidden.ps1',
+    'start-model-service-hidden.vbs',
     'NeuralWeaselServer.exe',
     'rime.dll',
     'NeuralWeaselSessionActivator.exe',
@@ -276,6 +274,7 @@ if ($DryRun) {
 Assert-LastExitCode -Operation 'One-click installation'
 
 $ServiceScript = Join-Path $InstallRoot 'start-model-service.ps1'
+$HiddenHostScript = Join-Path $InstallRoot 'start-model-service-hidden.vbs'
 $Server = Join-Path $InstallRoot 'NeuralWeaselServer.exe'
 $RimeRuntime = Join-Path $InstallRoot 'rime.dll'
 $Activator = Join-Path $InstallRoot 'NeuralWeaselSessionActivator.exe'
@@ -288,7 +287,9 @@ foreach ($Path in @($ServiceScript, $Server, $RimeRuntime, $Activator)) {
 New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 $PipePath = Get-ModelPipePath
 $ServiceProcess = Get-LiveModelServiceProcess
-$ModelTaskName = Ensure-ModelServiceStartupTask -ServiceScript $ServiceScript
+$ModelTaskName = Ensure-ModelServiceStartupTask `
+    -ServiceScript $ServiceScript `
+    -HiddenHostScript $HiddenHostScript
 
 if (-not (Test-ModelPipe -PipePath $PipePath)) {
     if (-not $ServiceProcess) {

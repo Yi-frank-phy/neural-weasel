@@ -215,6 +215,8 @@ foreach ($Script in @(
     'uninstall-dev-profile.ps1',
     'diagnose.ps1',
     'start-model-service.ps1',
+    'start-model-service-hidden.ps1',
+    'start-model-service-hidden.vbs',
     'install-wisdom-integration.ps1',
     'start-neural-weasel-integration.ps1',
     'start-wisdom-service.vbs',
