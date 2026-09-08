@@ -60,7 +60,7 @@ def test_model_service_runs_from_single_logon_task_with_restart_policy() -> None
     assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in task_registration
     assert "model-service.scheduled.stdout.log" in task_registration
     assert "model-service.scheduled.stderr.log" in task_registration
-    assert '2>>$(Quote-ProcessArgument $StdErr)' in task_registration
+    assert "2>>$(Quote-ProcessArgument $StdErr)" in task_registration
     assert "Unregister-ScheduledTask" in task_registration
     assert "Start-Process" not in task_registration
 
