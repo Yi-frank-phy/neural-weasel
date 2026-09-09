@@ -50,6 +50,8 @@ KeyIntent ParseIntent(const std::string& value) {
     return KeyIntent::kPageNext;
   if (value == "page_previous")
     return KeyIntent::kPagePrevious;
+  if (value == "punctuation")
+    return KeyIntent::kPunctuation;
   return KeyIntent::kOther;
 }
 
@@ -74,6 +76,8 @@ std::string ObservableOutcome(NeuralLanguageMode mode,
       return "page_next";
     case KeyOutcome::kRequestPreviousPage:
       return "page_previous";
+    case KeyOutcome::kCommitBoundary:
+      return "commit_boundary";
     case KeyOutcome::kUseRimeDefault:
       if (mode == NeuralLanguageMode::kChineseFirst &&
           intent == KeyIntent::kSpace)
@@ -113,6 +117,18 @@ int main() {
       LatinLiteralCharacter(NeuralLanguageMode::kChineseFirst, '-') != '\0' ||
       LatinLiteralCharacter(NeuralLanguageMode::kChineseFirst, '=') != '\0') {
     std::cerr << "Latin literal punctuation changed Chinese paging semantics\n";
+    return 1;
+  }
+  if (neural_weasel::rime_plugin::BoundaryPunctuationCharacter(',') != ',' ||
+      neural_weasel::rime_plugin::BoundaryPunctuationCharacter('.') != '.' ||
+      neural_weasel::rime_plugin::BoundaryPunctuationCharacter('a') != '\0' ||
+      neural_weasel::rime_plugin::ResolveKeyOutcome(
+          NeuralLanguageMode::kChineseFirst, KeyIntent::kPunctuation, true) !=
+          KeyOutcome::kCommitBoundary ||
+      neural_weasel::rime_plugin::ResolveKeyOutcome(
+          NeuralLanguageMode::kLatinFirst, KeyIntent::kPunctuation, true) !=
+          KeyOutcome::kCommitBoundary) {
+    std::cerr << "punctuation boundary classification changed\n";
     return 1;
   }
 

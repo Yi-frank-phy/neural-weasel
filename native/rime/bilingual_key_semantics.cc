@@ -18,6 +18,12 @@ char LatinLiteralCharacter(NeuralLanguageMode mode, int keycode) noexcept {
   return '\0';
 }
 
+char BoundaryPunctuationCharacter(int keycode) noexcept {
+  if (keycode == ',' || keycode == '.')
+    return static_cast<char>(keycode);
+  return '\0';
+}
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,
@@ -36,6 +42,9 @@ KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
   }
   if (intent == KeyIntent::kEnter) {
     return KeyOutcome::kCommitLiteral;
+  }
+  if (intent == KeyIntent::kPunctuation) {
+    return KeyOutcome::kCommitBoundary;
   }
 
   if (mode == NeuralLanguageMode::kLatinFirst) {
@@ -56,6 +65,7 @@ KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
       case KeyIntent::kEnter:
       case KeyIntent::kPageNext:
       case KeyIntent::kPagePrevious:
+      case KeyIntent::kPunctuation:
         break;
     }
   }

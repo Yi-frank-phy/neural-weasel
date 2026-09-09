@@ -165,6 +165,17 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
     assert replay.candidate_ids == revision_two.candidate_ids
 
     refreshed = _page(engine, revision=2, presentation_refresh=True)
-    assert refreshed.candidate_set_id != revision_two.candidate_set_id
-    assert "你好" in {candidate.text for candidate in refreshed.candidates}
-    assert all(candidate.context_epoch == 0 for candidate in refreshed.candidates)
+    assert refreshed.candidate_set_id == revision_two.candidate_set_id
+    assert refreshed.candidates == revision_two.candidates
+    preparation = engine.candidate_pages._page_preparation_events[revision_two.candidate_set_id]
+    assert preparation.wait(1.0)
+    with engine.candidate_pages._state_lock:
+        later = {
+            candidate.text
+            for page_index, page in engine.candidate_pages._sessions[
+                revision_two.candidate_set_id
+            ].frozen_pages.items()
+            if page_index > 0
+            for candidate in page.candidates
+        }
+    assert "你好" in later

@@ -13,4 +13,22 @@ inline constexpr char kNeuralPresentationRefreshProperty[] =
 inline constexpr char kNeuralCandidatePendingProperty[] =
     "neural_candidate_pending";
 
+// The initial key event has already spent at most 50 ms in the pipe. A
+// retryable empty first page therefore gets a prompt, bounded pull sequence;
+// published pages never enter this policy.
+inline constexpr std::uint32_t kNeuralFirstPageRetryDelayMs = 25;
+inline constexpr std::uint32_t kNeuralFirstPageRetryIntervalMs = 50;
+inline constexpr unsigned int kNeuralFirstPageRetryMaxAttempts = 4;
+
+inline constexpr bool ShouldRetryFirstPage(bool presentation_ready,
+                                           unsigned int attempts) noexcept {
+  return !presentation_ready && attempts < kNeuralFirstPageRetryMaxAttempts;
+}
+
+inline constexpr std::uint32_t FirstPageRetryDelayMs(
+    unsigned int attempts) noexcept {
+  return attempts == 0 ? kNeuralFirstPageRetryDelayMs
+                       : kNeuralFirstPageRetryIntervalMs;
+}
+
 }  // namespace neural_weasel::rime_plugin

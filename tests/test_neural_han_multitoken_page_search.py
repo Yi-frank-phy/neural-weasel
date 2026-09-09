@@ -113,6 +113,21 @@ def _wait_for_async_han(engine: BilingualImeEngine, candidate_set_id: str) -> No
         assert identity_key in manager._async_han_cache
 
 
+def _later_candidates(engine: BilingualImeEngine, candidate_set_id: str):
+    manager = engine.candidate_pages
+    preparation = manager._page_preparation_events.get(candidate_set_id)
+    assert preparation is not None
+    assert preparation.wait(1.0)
+    with manager._state_lock:
+        session = manager._sessions[candidate_set_id]
+        return tuple(
+            candidate
+            for page_index, page in session.frozen_pages.items()
+            if page_index > 0
+            for candidate in page.candidates
+        )
+
+
 @pytest.mark.parametrize(
     ("raw", "expected_text", "expected_path"),
     [
@@ -135,16 +150,18 @@ def test_exact_han_cover_can_span_multiple_base_tokens(
 
     _wait_for_async_han(engine, first.candidate_set_id)
     refreshed = _page(engine, raw, presentation_refresh=True)
-    assert refreshed.candidate_set_id != first.candidate_set_id
+    assert refreshed.candidate_set_id == first.candidate_set_id
+    assert refreshed.candidates == first.candidates
 
-    exact = next(candidate for candidate in refreshed.candidates if candidate.text == expected_text)
+    later = _later_candidates(engine, first.candidate_set_id)
+    exact = next(candidate for candidate in later if candidate.text == expected_text)
     assert exact.token_path == expected_path
     assert exact.completes_input is True
     assert exact.consumed_keys == len(raw)
     assert exact.predicted_syllables == 0
     assert runtime.continuation_calls[0][0] == (1,)
     assert runtime.continuation_calls[0][1] == tuple(range(runtime.logits.size))
-    assert all(7 not in candidate.token_path for candidate in refreshed.candidates)
+    assert all(7 not in candidate.token_path for candidate in (*refreshed.candidates, *later))
 
 
 def test_han_continuation_scores_full_vocab_but_generates_only_legal_edges(
@@ -155,6 +172,7 @@ def test_han_continuation_scores_full_vocab_but_generates_only_legal_edges(
     first = _page(engine, "nihaoma")
     _wait_for_async_han(engine, first.candidate_set_id)
     refreshed = _page(engine, "nihaoma", presentation_refresh=True)
+    later = _later_candidates(engine, first.candidate_set_id)
 
     assert runtime.continuation_calls[0][0] == (1,)
     assert runtime.continuation_calls[1][0] == (1, 2)
@@ -162,12 +180,12 @@ def test_han_continuation_scores_full_vocab_but_generates_only_legal_edges(
         allowed == tuple(range(runtime.logits.size))
         for _, allowed in runtime.continuation_calls[:2]
     )
-    assert all(7 not in candidate.token_path for candidate in refreshed.candidates)
-    exact = next(candidate for candidate in refreshed.candidates if candidate.text == "你好吗")
+    assert all(7 not in candidate.token_path for candidate in (*refreshed.candidates, *later))
+    exact = next(candidate for candidate in later if candidate.text == "你好吗")
     assert exact.token_path == (1, 2, 3)
 
 
-def test_late_multitoken_cache_publishes_new_snapshot_without_mutating_old_page_zero(
+def test_late_multitoken_cache_extends_same_set_without_mutating_page_zero(
     make_index,
 ) -> None:
     engine, _ = _engine(make_index)
@@ -179,8 +197,10 @@ def test_late_multitoken_cache_publishes_new_snapshot_without_mutating_old_page_
 
     _wait_for_async_han(engine, first.candidate_set_id)
     refreshed = _page(engine, "nihao", presentation_refresh=True)
-    assert refreshed.candidate_set_id != first.candidate_set_id
-    assert any(candidate.text == "你好" for candidate in refreshed.candidates)
+    assert refreshed.candidate_set_id == first.candidate_set_id
+    assert refreshed.candidates == first.candidates
+    later = _later_candidates(engine, first.candidate_set_id)
+    assert any(candidate.text == "你好" for candidate in later)
 
     # Publishing a new presentation does not mutate the already-returned page.
     assert first.candidates == first_candidates
@@ -188,11 +208,11 @@ def test_late_multitoken_cache_publishes_new_snapshot_without_mutating_old_page_
     assert "你好" not in {candidate.text for candidate in first.candidates}
 
     repeated_page_zero = _page(engine, "nihao")
-    assert repeated_page_zero.candidate_set_id == refreshed.candidate_set_id
-    assert repeated_page_zero.candidates == refreshed.candidates
-    assert repeated_page_zero.candidate_ids == refreshed.candidate_ids
+    assert repeated_page_zero.candidate_set_id == first.candidate_set_id
+    assert repeated_page_zero.candidates == first.candidates
+    assert repeated_page_zero.candidate_ids == first.candidate_ids
 
     # The newly learned baseline path is also available to a later input revision.
     next_revision = _page(engine, "nihao", composition_revision=2)
-    assert next_revision.candidate_set_id != refreshed.candidate_set_id
+    assert next_revision.candidate_set_id != first.candidate_set_id
     assert any(candidate.text == "你好" for candidate in next_revision.candidates)

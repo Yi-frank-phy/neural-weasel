@@ -24,6 +24,15 @@ constexpr std::size_t kLatinPageSize = 5;
 
 using Json = nlohmann::json;
 
+bool IsNeuralSpellingInput(const std::string& input) {
+  return std::all_of(input.begin(), input.end(), [](unsigned char character) {
+    return (character >= 'a' && character <= 'z') ||
+           (character >= 'A' && character <= 'Z') ||
+           (character >= '0' && character <= '9') || character == '\'' ||
+           character == '-';
+  });
+}
+
 // Metadata-only target-machine diagnostic. Never pass raw keys, candidate text,
 // surrounding text, window titles, context capabilities, or candidate ids here.
 void TraceAiTranslator(const wchar_t* format, ...) {
@@ -163,7 +172,8 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
       static_cast<unsigned long long>(segment.start),
       static_cast<unsigned long long>(segment.end),
       segment.HasTag("abc") ? 1 : 0);
-  if (!segment.HasTag("abc") || input.empty()) {
+  if (!segment.HasTag("abc") || input.empty() ||
+      !IsNeuralSpellingInput(input)) {
     TraceAiTranslator(L"event=query result=tag-or-empty");
     return nullptr;
   }
@@ -341,9 +351,6 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
             page_payload = current->second;
           } else {
             if (requested_page == 0) {
-              if (presentation_refresh) {
-                frozen_pages_.clear();
-              }
               candidate_set_id_ = response_set;
             }
             current_page_index_ = requested_page;

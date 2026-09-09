@@ -119,6 +119,17 @@ def test_page_zero_protocol_returns_stable_set_and_neural_ids(make_index) -> Non
     assert runtime.calls == 1
 
 
+def test_candidate_protocol_rejects_punctuation_before_engine_dispatch(make_index) -> None:
+    _, runtime, server = _make(make_index)
+
+    for raw_keys in (".", ",", "ni.", "ni,"):
+        response = server.handle_message(_request(raw_keys=raw_keys))
+        assert response["ok"] is False
+        assert response["error"]["code"] == "invalid_request"
+
+    assert runtime.calls == 1  # baseline initialization only
+
+
 def test_page_zero_protocol_preserves_handler_deadline(make_index, monkeypatch) -> None:
     engine, runtime, server = _make(make_index)
     engine.candidate_pages.clock = lambda: 10.036

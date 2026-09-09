@@ -146,9 +146,18 @@ class ProductionNamedPipeServer(NamedPipeServer):
             if not isinstance(presentation_refresh, bool):
                 raise ProtocolError("presentation_refresh must be a boolean")
             raw_keys = message.get("raw_keys")
-            if not isinstance(raw_keys, str) or not raw_keys or len(raw_keys) > MAX_PINYIN_KEYS:
+            if (
+                not isinstance(raw_keys, str)
+                or not raw_keys
+                or len(raw_keys) > MAX_PINYIN_KEYS
+                or any(
+                    not (character.isascii() and (character.isalnum() or character in "'-"))
+                    for character in raw_keys
+                )
+            ):
                 raise ProtocolError(
-                    f"raw_keys must be a non-empty string of at most {MAX_PINYIN_KEYS} characters"
+                    "raw_keys must contain only ASCII letters, digits, apostrophes, or hyphens "
+                    f"and be at most {MAX_PINYIN_KEYS} characters"
                 )
             try:
                 language_mode = NeuralLanguageMode(message.get("language_mode"))

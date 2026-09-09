@@ -185,6 +185,7 @@ def test_private_refresh_event_advances_presentation_without_editing_input() -> 
 def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() -> None:
     overlay = _overlay_text()
     adapter = (ROOT / "native/tsf/weasel_context_adapter.cc").read_text(encoding="utf-8")
+    refresh_policy = (ROOT / "native/rime/neural_refresh_key.h").read_text(encoding="utf-8")
 
     assert "HWND_MESSAGE" in overlay
     assert "SetTimer" in overlay
@@ -194,7 +195,9 @@ def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() 
     assert "_RunNeuralRefresh" in overlay
     assert "IsWeaselPredictionAllowed()" in overlay
     assert "kNeuralRefreshKeycode" in overlay
-    assert "constexpr unsigned int kNeuralRefreshMaxAttempts = 16;" in overlay
+    assert "kNeuralFirstPageRetryMaxAttempts = 4" in refresh_policy
+    assert "ShouldRetryFirstPage(" in overlay
+    assert "FirstPageRetryDelayMs(" in overlay
     assert "const bool presentation_ready = m_client.ProcessKeyEvent(refresh);" in overlay
     refresh_block = overlay[overlay.index("void WeaselTSF::_RunNeuralRefresh()") :]
     refresh_block = refresh_block.split("static void error_message", 1)[0]
