@@ -40,7 +40,7 @@ def test_schema_keeps_mouse_english_in_neural_candidate_pipeline() -> None:
         assert 'context->get_option("ascii_mode")' in source
     processor = (ROOT / "native/rime/bilingual_key_processor.cc").read_text(encoding="utf-8")
     assert 'context->set_option("ascii_mode", mode == NeuralLanguageMode::kLatinFirst)' in processor
-    assert "page_size: 9" in schema
+    assert "page_size: 7" in schema
 
 
 def test_native_build_includes_bilingual_processor_and_test() -> None:

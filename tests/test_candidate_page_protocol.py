@@ -111,7 +111,7 @@ def test_page_zero_protocol_returns_stable_set_and_neural_ids(make_index) -> Non
     assert response["ok"] is True
     assert response["type"] == "candidate_page"
     assert response["page_index"] == 0
-    assert response["page_size"] == 9
+    assert response["page_size"] == 7
     assert response["score_source"] == "baseline"
     assert response["candidates"][0]["script"] == "han"
     assert any(item["script"] == "latin" for item in response["candidates"])

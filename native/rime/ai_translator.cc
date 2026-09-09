@@ -19,7 +19,7 @@
 namespace neural_weasel::rime_plugin {
 namespace {
 
-constexpr std::size_t kChinesePageSize = 9;
+constexpr std::size_t kChinesePageSize = 7;
 constexpr std::size_t kLatinPageSize = 5;
 
 using Json = nlohmann::json;
