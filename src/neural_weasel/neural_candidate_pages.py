@@ -66,23 +66,10 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         return session
 
     def presentation_update_pending(self, candidate_set_id: str) -> bool:
-        """Report whether this immutable snapshot still has a newer presentation."""
+        """A published first page never has a replacement presentation."""
 
         with self._state_lock:
-            session = self._sessions.get(candidate_set_id)
-            if session is None:
-                return False
-            if any(
-                self._async_identity_key(self._sessions[active].identity)
-                == self._async_identity_key(session.identity)
-                for active in self._background_searches
-                if active in self._sessions
-            ):
-                return True
-            identity_key = self._async_identity_key(session.identity)
-            return identity_key in self._async_han_cache and not self._has_current_async_han(
-                session
-            )
+            return False
 
     def query_page(
         self,
@@ -158,22 +145,15 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         with self._state_lock:
             self._raise_if_query_expired(absolute_deadline)
             self._expire_sessions()
-            # Multiple immutable presentation snapshots may share one input
-            # identity. A normal retry always replays the newest published
-            # snapshot. An explicit presentation pull advances it only when the
-            # completed async cache is newer than that snapshot.
+            # One input identity owns one immutable candidate set. Presentation
+            # pulls replay its frozen first page; background work may only make
+            # unpublished later pages available on that same session.
             for existing_set_id, session in reversed(tuple(self._sessions.items())):
                 if session.identity != identity:
                     continue
                 frozen = session.frozen_pages.get(0)
                 if frozen is None:
                     continue
-                if presentation_refresh:
-                    identity_key = self._async_identity_key(identity)
-                    async_ready = identity_key in self._async_han_cache
-                    includes_async = self._has_current_async_han(session)
-                    if async_ready and not includes_async:
-                        break
                 session.last_used = self.clock()
                 self._sessions.move_to_end(existing_set_id)
                 self._record_metrics(frozen)
@@ -301,8 +281,6 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             for active in self._background_searches
             if active in self._sessions
         ):
-            return False
-        if identity_key in self._async_han_cache and not self._has_current_async_han(session):
             return False
         total_frozen = sum(len(page.candidates) for page in session.frozen_pages.values())
         return total_frozen < MAX_FROZEN_CANDIDATES

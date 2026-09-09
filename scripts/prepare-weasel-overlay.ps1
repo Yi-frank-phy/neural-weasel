@@ -372,13 +372,9 @@ namespace {
 constexpr wchar_t kNeuralRefreshWindowClass[] =
     L"NeuralWeasel.Experimental.RefreshWindow";
 constexpr UINT_PTR kNeuralRefreshTimerId = 1;
-constexpr UINT kNeuralRefreshDelayMs = 850;
-constexpr UINT kNeuralRefreshRetryDelayMs = 250;
-// The first pull is delayed to keep page zero responsive. Further pulls are
-// issued only when the Rime processor reports that the exact presentation is
-// still being prepared; they are bounded so the editor-hosted DLL never polls
-// indefinitely.
-constexpr unsigned int kNeuralRefreshMaxAttempts = 16;
+// The Rime processor accepts this private key without a query when page zero
+// already succeeded. A retryable page-zero failure keeps the exact input
+// identity pending and receives a small, bounded owner-thread retry window.
 }  // namespace
 
 LRESULT CALLBACK WeaselTSF::_NeuralRefreshWndProc(
@@ -452,7 +448,8 @@ void WeaselTSF::_ScheduleNeuralRefresh(com_ptr<ITfContext> pContext) {
   }
   _neuralRefreshContext = pContext;
   _neuralRefreshTimer = SetTimer(
-      _neuralRefreshWindow, kNeuralRefreshTimerId, kNeuralRefreshDelayMs,
+      _neuralRefreshWindow, kNeuralRefreshTimerId,
+      neural_weasel::rime_plugin::FirstPageRetryDelayMs(0),
       nullptr);
   if (_neuralRefreshTimer == 0) {
     _neuralRefreshContext.Release();
@@ -494,14 +491,15 @@ void WeaselTSF::_RunNeuralRefresh() {
   const bool presentation_ready = m_client.ProcessKeyEvent(refresh);
   _UpdateComposition(context);
 
-  if (presentation_ready ||
-      _neuralRefreshAttempts >= kNeuralRefreshMaxAttempts) {
+  if (!neural_weasel::rime_plugin::ShouldRetryFirstPage(
+          presentation_ready, _neuralRefreshAttempts)) {
     _CancelNeuralRefresh();
     return;
   }
   _neuralRefreshTimer = SetTimer(
       _neuralRefreshWindow, kNeuralRefreshTimerId,
-      kNeuralRefreshRetryDelayMs, nullptr);
+      neural_weasel::rime_plugin::FirstPageRetryDelayMs(
+          _neuralRefreshAttempts), nullptr);
   if (_neuralRefreshTimer == 0) {
     _CancelNeuralRefresh();
   }

@@ -15,6 +15,7 @@ enum class KeyIntent {
   kEnter,
   kBackspace,
   kNumberedSelection,
+  kPunctuation,
   kPageNext,
   kPagePrevious,
 };
@@ -29,6 +30,7 @@ enum class KeyOutcome {
   kKeepLiteral,
   kRequestNextPage,
   kRequestPreviousPage,
+  kCommitBoundary,
 };
 
 bool ShouldToggleLanguageMode(bool shift_pressed,
@@ -37,6 +39,8 @@ bool ShouldToggleLanguageMode(bool shift_pressed,
                               bool composing_on_release) noexcept;
 
 char LatinLiteralCharacter(NeuralLanguageMode mode, int keycode) noexcept;
+
+char BoundaryPunctuationCharacter(int keycode) noexcept;
 
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,

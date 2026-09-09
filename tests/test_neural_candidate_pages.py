@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -863,8 +864,7 @@ def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> N
         "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能看"
     )
     rows = [
-        (token_id, text, "ni", "ni", 1, 0)
-        for token_id, text in enumerate(simplified[:35], start=1)
+        (token_id, text, "ni", "ni", 1, 0) for token_id, text in enumerate(simplified[:35], start=1)
     ]
     index = make_index(rows)
     logits = np.arange(64, dtype=np.float32)
@@ -900,6 +900,23 @@ def test_root_only_search_freezes_five_pages_without_restarting(make_index) -> N
     )
     assert replay.candidates == pages[2].candidates
     assert replay.candidate_ids == pages[2].candidate_ids
+
+    # Long deterministic event histories exercise presentation pulls and page
+    # replay in many orders. Every published page remains immutable.
+    for seed in range(12):
+        events = random.Random(seed)
+        for _ in range(100):
+            page_index = events.randrange(len(pages))
+            observed = _page(
+                engine,
+                "ni",
+                page_index=page_index,
+                candidate_set_id=(None if page_index == 0 else pages[0].candidate_set_id),
+                presentation_refresh=page_index == 0 and bool(events.randrange(2)),
+            )
+            assert observed.candidate_set_id == pages[0].candidate_set_id
+            assert observed.candidates == pages[page_index].candidates
+            assert observed.candidate_ids == pages[page_index].candidate_ids
 
 
 def test_page_zero_never_waits_for_continuation_and_long_root_stays_unfrozen(make_index) -> None:
@@ -941,7 +958,9 @@ def test_search_frontier_retains_partial_root_beyond_visible_180(make_index) -> 
     assert all(candidate.text != "明" for candidate in first.candidates)
 
 
-def test_page_zero_background_continuation_publishes_only_to_next_revision(make_index) -> None:
+def test_background_continuation_keeps_page_zero_stable_and_publishes_later_page(
+    make_index,
+) -> None:
     index = make_index(
         [
             (1, "明", "ming", "ming", 1, 0),
@@ -962,6 +981,7 @@ def test_page_zero_background_continuation_publishes_only_to_next_revision(make_
 
     first = _page(engine, "mingxian")
     assert [candidate.text for candidate in first.candidates] == ["明"]
+    assert first.has_more is True
     assert runtime.started.wait(0.5)
     replay = _page(engine, "mingxian")
     assert replay.candidate_set_id == first.candidate_set_id
@@ -976,9 +996,19 @@ def test_page_zero_background_continuation_publishes_only_to_next_revision(make_
     else:
         pytest.fail("background continuation did not publish its completed candidate")
 
-    refreshed = _page(engine, "mingxian", composition_revision=2)
-    assert refreshed.candidate_set_id != first.candidate_set_id
-    assert refreshed.candidates[0].text == "明显"
+    refreshed = _page(engine, "mingxian", presentation_refresh=True)
+    assert refreshed.candidate_set_id == first.candidate_set_id
+    assert refreshed.candidates == first.candidates
+    assert refreshed.has_more is True
+
+    _wait_for_page_preparation(engine, first.candidate_set_id)
+    later = _page(
+        engine,
+        "mingxian",
+        page_index=1,
+        candidate_set_id=first.candidate_set_id,
+    )
+    assert any(candidate.text == "明显" for candidate in later.candidates)
 
 
 def test_background_continuation_batches_production_shorthand_roots(

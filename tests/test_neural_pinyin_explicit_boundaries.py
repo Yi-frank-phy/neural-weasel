@@ -119,6 +119,20 @@ def _wait_for_async_han(engine: BilingualImeEngine, candidate_set_id: str) -> No
         assert identity_key in manager._async_han_cache
 
 
+def _later_candidates(engine: BilingualImeEngine, candidate_set_id: str):
+    manager = engine.candidate_pages
+    preparation = manager._page_preparation_events.get(candidate_set_id)
+    assert preparation is not None
+    assert preparation.wait(1.0)
+    with manager._state_lock:
+        return tuple(
+            candidate
+            for page_index, page in manager._sessions[candidate_set_id].frozen_pages.items()
+            if page_index > 0
+            for candidate in page.candidates
+        )
+
+
 def test_explicit_apostrophe_blocks_one_syllable_path_that_crosses_it(make_index) -> None:
     engine, _ = _engine(make_index, include_phrase_token=True)
 
@@ -145,9 +159,11 @@ def test_explicit_apostrophe_is_preserved_across_multitoken_exact_search(make_in
 
     _wait_for_async_han(engine, first.candidate_set_id)
     refreshed = _page(engine, presentation_refresh=True)
-    assert refreshed.candidate_set_id != first.candidate_set_id
+    assert refreshed.candidate_set_id == first.candidate_set_id
+    assert refreshed.candidates == first.candidates
 
-    phrase = next(candidate for candidate in refreshed.candidates if candidate.text == "西安")
+    later = _later_candidates(engine, first.candidate_set_id)
+    phrase = next(candidate for candidate in later if candidate.text == "西安")
     assert phrase.token_path == (2, 3)
     assert phrase.pinyin == "xi'an"
     assert phrase.completes_input is True
@@ -161,7 +177,7 @@ def test_explicit_apostrophe_is_preserved_across_multitoken_exact_search(make_in
     # zero-prediction exact-cover path for the typed raw keys.
     exact_cover = [
         candidate
-        for candidate in refreshed.candidates
+        for candidate in later
         if candidate.completes_input
         and candidate.consumed_keys == len("xi'an")
         and candidate.predicted_syllables == 0

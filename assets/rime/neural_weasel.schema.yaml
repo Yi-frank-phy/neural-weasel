@@ -33,7 +33,7 @@ engine:
     - punct_translator
 
 speller:
-  alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.'-"
+  alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'-"
   delimiter: " '"
 
 menu:

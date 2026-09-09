@@ -6,7 +6,7 @@ from test_candidate_page_concurrency import _engine, _page
 
 
 @pytest.mark.parametrize("batch_count", [2, 6])
-def test_completed_batches_publish_before_search_finishes(make_index, monkeypatch, batch_count):
+def test_completed_batches_do_not_replace_published_page(make_index, monkeypatch, batch_count):
     engine, _ = _engine(make_index)
     manager = engine.candidate_pages
     gates = [threading.Event() for _ in range(batch_count)]
@@ -25,6 +25,7 @@ def test_completed_batches_publish_before_search_finishes(make_index, monkeypatc
             finally:
                 manager._state_lock.acquire()
         if calls == batch_count + 1:
+            session.exhausted = True
             return 0
         template = session.frozen_pages[0].candidates[0]
         session.pending.append(
@@ -40,8 +41,9 @@ def test_completed_batches_publish_before_search_finishes(make_index, monkeypatc
         return 1
 
     monkeypatch.setattr(manager, "_expand_background_frontier_batch", batch)
-    monkeypatch.setattr(manager, "_maybe_start_page_preparation", lambda session: None)
     first = _page(engine, client="progressive", revision=1, raw="nihao")
+    assert first.has_more is True
+    completion = manager._background_search_events[first.candidate_set_id]
     kwargs = dict(
         client_session_id="progressive",
         composition_revision=1,
@@ -56,20 +58,34 @@ def test_completed_batches_publish_before_search_finishes(make_index, monkeypatc
         presentation_refresh=True,
     )
     try:
-        previous = first
         for slot in range(batch_count):
             assert started[slot].wait(1)
             current = manager.query_page(**kwargs)
-            assert current.candidate_set_id != previous.candidate_set_id
+            assert current.candidate_set_id == first.candidate_set_id
+            assert current.candidates == first.candidates
+            assert current.candidate_ids == first.candidate_ids
+            assert current.has_more is True
             text = "你好" + "啊" * (slot + 1)
-            assert text in [c.text for c in current.candidates]
-            assert text not in [c.text for c in previous.candidates]
-            assert first.candidate_set_id in manager._sessions
-            assert manager.presentation_update_pending(current.candidate_set_id)
-            assert len(manager._sessions) <= 4
+            with manager._state_lock:
+                session = manager._sessions[first.candidate_set_id]
+                assert text in [candidate.text for candidate in session.pending]
+            assert not manager.presentation_update_pending(current.candidate_set_id)
+            assert len(manager._sessions) == 1
             assert calls == slot + 2
-            previous = current
             gates[slot].set()
+        assert completion.wait(1.0)
+        preparation = manager._page_preparation_events[first.candidate_set_id]
+        assert preparation.wait(1.0)
+        with manager._state_lock:
+            later_text = {
+                candidate.text
+                for page_index, page in manager._sessions[
+                    first.candidate_set_id
+                ].frozen_pages.items()
+                if page_index > 0
+                for candidate in page.candidates
+            }
+        assert {"你好" + "啊" * index for index in range(1, batch_count + 1)}.issubset(later_text)
     finally:
         for gate in gates:
             gate.set()

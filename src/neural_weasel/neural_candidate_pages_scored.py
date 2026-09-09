@@ -213,11 +213,6 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     frozen = session.frozen_pages.get(0)
                     if frozen is None:
                         continue
-                    identity_key = self._async_identity_key(identity)
-                    if identity_key in self._async_han_cache and not self._has_current_async_han(
-                        session
-                    ):
-                        continue
                     session.last_used = self.clock()
                     self._sessions.move_to_end(existing_set_id)
                     self._record_metrics(frozen)

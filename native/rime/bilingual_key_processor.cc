@@ -61,6 +61,9 @@ KeyIntent IntentFor(const ::rime::KeyEvent& event) {
       return KeyIntent::kEnter;
     case XK_BackSpace:
       return KeyIntent::kBackspace;
+    case XK_comma:
+    case XK_period:
+      return KeyIntent::kPunctuation;
     case XK_Page_Down:
     case XK_equal:
       return KeyIntent::kPageNext;
@@ -106,6 +109,11 @@ void RefreshPage(::rime::Context* context,
   if (key_event.keycode() == kNeuralRefreshKeycode &&
       key_event.modifier() == 0) {
     if (!context->IsComposing()) {
+      return ::rime::kAccepted;
+    }
+    // A successful first page is already immutable and needs no timed pull.
+    // The owner-thread timer retries only an identity-bound page-zero failure.
+    if (context->get_property(kNeuralCandidatePendingProperty) != "1") {
       return ::rime::kAccepted;
     }
     // Never replace a candidate list while the user has moved the selection.
@@ -171,6 +179,11 @@ void RefreshPage(::rime::Context* context,
     // Reject idle digits before the speller can start a numeric composition.
     // The host inserts them directly; active candidate selection stays below.
     if (key_event.keycode() >= XK_0 && key_event.keycode() <= XK_9) {
+      return ::rime::kRejected;
+    }
+    // Idle punctuation belongs to the host.  Do not let the speller create an
+    // abc segment (and therefore a neural request) for a boundary character.
+    if (BoundaryPunctuationCharacter(key_event.keycode()) != '\0') {
       return ::rime::kRejected;
     }
     return ::rime::kNoop;
@@ -240,6 +253,18 @@ void RefreshPage(::rime::Context* context,
         return ::rime::kAccepted;
       }
       RefreshPage(context, current - 1U, SelectedIndex(context));
+      return ::rime::kAccepted;
+    }
+    case KeyOutcome::kCommitBoundary: {
+      const char punctuation =
+          BoundaryPunctuationCharacter(key_event.keycode());
+      if (punctuation == '\0') {
+        return ::rime::kNoop;
+      }
+      const std::string committed =
+          selected && candidate_fresh ? selected->text() : context->input();
+      engine_->CommitText(committed + punctuation);
+      context->Clear();
       return ::rime::kAccepted;
     }
     case KeyOutcome::kUseRimeDefault:

@@ -117,6 +117,12 @@ def test_number_keys_reach_selector_before_speller() -> None:
     assert processors.index("selector") < processors.index("speller")
 
 
+def test_period_is_not_part_of_neural_spelling_input() -> None:
+    config = yaml.safe_load(SCHEMA.read_text(encoding="utf-8"))
+
+    assert "." not in config["speller"]["alphabet"]
+
+
 def test_english_number_keys_are_reinserted_as_literal_input() -> None:
     source = KEY_PROCESSOR.read_text(encoding="utf-8")
 
