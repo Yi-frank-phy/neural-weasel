@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -14,6 +15,7 @@ from .candidate import Candidate
 from .neural_candidate_pages_v2 import NeuralCandidatePageManager as _V2CandidatePageManager
 from .neural_candidates import (
     _MAX_ROOT_HAN_PLAN_CACHE,
+    CHINESE_PAGE_SIZE,
     MAX_ACTIVE_SEARCH_SESSIONS,
     MAX_FRONTIER_PER_BUCKET,
     MAX_HAN_CHARACTERS,
@@ -29,7 +31,6 @@ from .neural_candidates import (
 from .pinyin import parse_raw_pinyin
 
 _MAX_BASELINE_ROOT_PAGE_CACHE = 128
-_COMMON_BASELINE_ROOTS = ("ma", "de")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,29 @@ class _HanEdge:
     entry: Any
     matched_letters: int
     predicted_syllables: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredHanFrontier:
+    """Immutable root scores whose bounded search seeds are built off page 0."""
+
+    raw_keys: str
+    plan: tuple[_RootHanPlanEntry, ...]
+    scores: np.ndarray
+    script: str = "han"
+    matched_letters: int = 0
+    predicted_syllables: int = 0
+    token_path: tuple[int, ...] = ()
+    pinyin_path: tuple[str, ...] = ()
+    text: str = ""
+    score: float = -math.inf
+
+
+@dataclass(frozen=True, slots=True)
+class _RootHanSelectionOrder:
+    incomplete: np.ndarray
+    predicted_syllables: np.ndarray
+    static_tie_rank: np.ndarray
 
 
 class NeuralCandidatePageManager(_V2CandidatePageManager):
@@ -69,6 +93,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         self._baseline_root_pages: OrderedDict[
             tuple[str, NeuralLanguageMode], tuple[tuple[Candidate, ...], tuple[Any, ...]]
         ] = OrderedDict()
+        self._root_han_selection_orders: OrderedDict[str, _RootHanSelectionOrder] = OrderedDict()
 
     def install_baseline_scores(
         self,
@@ -81,13 +106,6 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
 
     def prewarm_single_letter_pages(self) -> None:
         super().prewarm_single_letter_pages()
-        for raw_keys in _COMMON_BASELINE_ROOTS:
-            self._root_candidates(
-                raw_keys=raw_keys,
-                mode=NeuralLanguageMode.CHINESE_FIRST,
-                state=None,
-                response_epoch=0,
-            )
 
     @staticmethod
     def _path_key(path: Any) -> tuple[object, ...]:
@@ -116,6 +134,158 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         )
         self._raise_if_query_expired()
         return result
+
+    def _root_han_candidates_and_frontier(
+        self,
+        raw_keys: str,
+        state: BackendState | None,
+        response_epoch: int,
+    ) -> tuple[list[Candidate], list[Any]]:
+        """Select visible roots now and defer all continuation bookkeeping."""
+
+        self._raise_if_query_expired()
+        plan = self._root_han_plan(raw_keys)
+        self._raise_if_query_expired()
+        if not plan:
+            return [], []
+        scores = self._score_root(state, [entry.token_id for entry in plan])
+        self._raise_if_query_expired()
+        candidates = self._root_han_candidates_top_k_from_scores(
+            raw_keys,
+            plan,
+            response_epoch=response_epoch,
+            scores=scores,
+            limit=CHINESE_PAGE_SIZE,
+        )
+        self._raise_if_query_expired()
+        frozen_scores = np.asarray(scores, dtype=np.float32).reshape(-1).copy()
+        frozen_scores.flags.writeable = False
+        return candidates, [self._deferred_han_frontier(raw_keys, plan, frozen_scores)]
+
+    @staticmethod
+    def _deferred_han_frontier(
+        raw_keys: str,
+        plan: Sequence[_RootHanPlanEntry],
+        scores: np.ndarray,
+    ) -> _DeferredHanFrontier:
+        parsed = parse_raw_pinyin(raw_keys)
+        viable = [
+            entry for entry, score in zip(plan, scores, strict=True) if math.isfinite(float(score))
+        ]
+        predicted_syllables = min(
+            (entry.predicted_syllables for entry in viable),
+            default=0,
+        )
+        matched_letters = min(
+            (
+                sum(
+                    character != "'"
+                    for character in parsed.raw[: min(max(entry.consumed_keys, 0), len(parsed.raw))]
+                )
+                for entry in viable
+            ),
+            default=0,
+        )
+        return _DeferredHanFrontier(
+            raw_keys=raw_keys,
+            plan=tuple(plan),
+            scores=scores,
+            matched_letters=matched_letters,
+            predicted_syllables=predicted_syllables,
+        )
+
+    def _root_han_candidates_top_k_from_scores(
+        self,
+        raw_keys: str,
+        plan: Sequence[_RootHanPlanEntry],
+        scores: Sequence[float],
+        *,
+        response_epoch: int,
+        limit: int,
+    ) -> list[Candidate]:
+        """Materialize only the exact visible prefix from one logits view."""
+
+        if limit <= 0 or not plan:
+            return []
+        values = np.asarray(scores, dtype=np.float32).reshape(-1)
+        if values.size != len(plan):
+            raise ValueError("root Han score count does not match the plan")
+        order = self._root_han_selection_orders.pop(raw_keys, None)
+        if order is None or order.incomplete.size != len(plan):
+            static_order = sorted(
+                range(len(plan)),
+                key=lambda index: (
+                    -plan[index].consumed_keys,
+                    plan[index].normalized_text,
+                    plan[index].token_id,
+                    plan[index].pinyin,
+                ),
+            )
+            static_tie_rank = np.empty(len(plan), dtype=np.int32)
+            static_tie_rank[np.asarray(static_order, dtype=np.intp)] = np.arange(
+                len(plan), dtype=np.int32
+            )
+            order = _RootHanSelectionOrder(
+                incomplete=np.fromiter(
+                    (not entry.completes_input for entry in plan),
+                    dtype=np.bool_,
+                    count=len(plan),
+                ),
+                predicted_syllables=np.fromiter(
+                    (entry.predicted_syllables for entry in plan),
+                    dtype=np.int32,
+                    count=len(plan),
+                ),
+                static_tie_rank=static_tie_rank,
+            )
+        self._root_han_selection_orders[raw_keys] = order
+        while len(self._root_han_selection_orders) > _MAX_ROOT_HAN_PLAN_CACHE:
+            self._root_han_selection_orders.popitem(last=False)
+
+        ranked_indices = np.lexsort(
+            (
+                order.static_tie_rank,
+                -values,
+                order.predicted_syllables,
+                order.incomplete,
+            )
+        )
+        selected: list[Candidate] = []
+        seen: set[tuple[str, int]] = set()
+        for position, raw_index in enumerate(ranked_indices):
+            if position % 64 == 0:
+                self._raise_if_query_expired()
+            index = int(raw_index)
+            score = float(values[index])
+            if not math.isfinite(score):
+                continue
+            entry = plan[index]
+            key = (entry.normalized_text, entry.consumed_keys)
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(
+                Candidate(
+                    text=entry.text,
+                    pinyin=entry.pinyin,
+                    consumed_keys=entry.consumed_keys,
+                    score=score,
+                    context_epoch=response_epoch,
+                    coverage=False,
+                    completes_input=entry.completes_input,
+                    syllables=entry.syllables,
+                    token_id=entry.token_id,
+                    constraint_kind="pinyin",
+                    script="han",
+                    model_score=score,
+                    total_score=score,
+                    token_path=(entry.token_id,),
+                    predicted_syllables=entry.predicted_syllables,
+                )
+            )
+            if len(selected) >= limit:
+                break
+        return selected
 
     def _root_han_plan(self, raw_keys: str) -> tuple[_RootHanPlanEntry, ...]:
         cached = self._root_han_plans.pop(raw_keys, None)
@@ -213,13 +383,32 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         self._raise_if_query_expired()
         if not plan:
             return []
+        scores = self._score_root(state, [entry.token_id for entry in plan])
+        self._raise_if_query_expired()
+        return self._root_han_search_frontier_from_scores(raw_keys, plan, scores)
+
+    def _root_han_search_frontier_from_scores(
+        self,
+        raw_keys: str,
+        plan: Sequence[_RootHanPlanEntry],
+        scores: Sequence[float],
+    ) -> list[_HanSearchPath]:
+        """Keep only top-k seeds per search bucket before allocating path objects."""
+
+        self._raise_if_query_expired()
+        if not plan:
+            return []
         try:
             parsed = parse_raw_pinyin(raw_keys)
         except ValueError:
             return []
-        scores = self._score_root(state, [entry.token_id for entry in plan])
-        self._raise_if_query_expired()
-        ranked: list[tuple[tuple[object, ...], _HanSearchPath]] = []
+        # De-duplicate before applying the per-bucket cap. The previous code
+        # allocated a _HanSearchPath for every plan entry and globally sorted
+        # thousands of objects even though only 32 paths per bucket survive.
+        best: dict[
+            tuple[object, ...],
+            tuple[tuple[object, ...], int, _RootHanPlanEntry, float, int, tuple[str, ...]],
+        ] = {}
         for index, (entry, score) in enumerate(zip(plan, scores, strict=True)):
             if index % 64 == 0:
                 self._raise_if_query_expired()
@@ -227,49 +416,62 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             if not math.isfinite(value):
                 continue
             consumed_raw = min(max(entry.consumed_keys, 0), len(parsed.raw))
-            matched_letters = sum(character != "'" for character in parsed.raw[:consumed_raw])
-            path = _HanSearchPath(
+            matched_letters = min(
+                sum(character != "'" for character in parsed.raw[:consumed_raw]),
+                len(parsed.compact),
+            )
+            pinyin_path = tuple(part for part in entry.pinyin.split("'") if part)
+            path_key = ("han", (entry.token_id,), matched_letters, pinyin_path)
+            rank_key = (
+                not entry.completes_input,
+                entry.predicted_syllables,
+                -value,
+                -entry.consumed_keys,
+                entry.normalized_text,
+                (entry.token_id,),
+                entry.pinyin,
+            )
+            record = (rank_key, index, entry, value, matched_letters, pinyin_path)
+            previous = best.get(path_key)
+            if previous is None or rank_key < previous[0]:
+                best[path_key] = record
+
+        buckets: dict[
+            tuple[int, int],
+            list[
+                tuple[
+                    tuple[object, ...],
+                    int,
+                    _RootHanPlanEntry,
+                    float,
+                    int,
+                    tuple[str, ...],
+                ]
+            ],
+        ] = {}
+        for record in best.values():
+            _, _, entry, _, matched_letters, _ = record
+            bucket = (matched_letters, entry.predicted_syllables)
+            buckets.setdefault(bucket, []).append(record)
+
+        for retained in buckets.values():
+            retained.sort()
+            del retained[MAX_FRONTIER_PER_BUCKET:]
+
+        selected = [record for retained in buckets.values() for record in retained]
+        selected.sort(key=lambda record: record[0])
+        self._raise_if_query_expired()
+        return [
+            _HanSearchPath(
                 text=entry.text,
-                pinyin_path=tuple(part for part in entry.pinyin.split("'") if part),
+                pinyin_path=pinyin_path,
                 token_path=(entry.token_id,),
                 score=value,
                 predicted_syllables=entry.predicted_syllables,
-                matched_letters=min(matched_letters, len(parsed.compact)),
+                matched_letters=matched_letters,
             )
-            ranked.append(
-                (
-                    (
-                        not entry.completes_input,
-                        entry.predicted_syllables,
-                        -value,
-                        -entry.consumed_keys,
-                        entry.normalized_text,
-                        (entry.token_id,),
-                        entry.pinyin,
-                    ),
-                    path,
-                )
-            )
-
-        ranked.sort(key=lambda item: item[0])
-        self._raise_if_query_expired()
-        retained: list[_HanSearchPath] = []
-        seen: set[tuple[object, ...]] = set()
-        bucket_counts: dict[tuple[int, int], int] = {}
-        for index, (_, path) in enumerate(ranked):
-            if index % 64 == 0:
-                self._raise_if_query_expired()
-            key = self._path_key(path)
-            if key in seen:
-                continue
-            bucket = (path.matched_letters, path.predicted_syllables)
-            count = bucket_counts.get(bucket, 0)
-            if count >= MAX_FRONTIER_PER_BUCKET:
-                continue
-            seen.add(key)
-            bucket_counts[bucket] = count + 1
-            retained.append(path)
-        return retained
+            for _, _, entry, value, matched_letters, pinyin_path in selected
+        ]
 
     def _root_candidates(
         self,
@@ -289,7 +491,15 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         if cached is not None:
             candidates = [replace(candidate, context_epoch=response_epoch) for candidate in cached]
             self._raise_if_query_expired()
-            han = [candidate for candidate in candidates if candidate.script == "han"]
+            plan = self._root_han_plan(raw_keys)
+            scores = self._score_root(state, [entry.token_id for entry in plan])
+            frozen_scores = np.asarray(scores, dtype=np.float32).reshape(-1).copy()
+            frozen_scores.flags.writeable = False
+            han_frontier: list[Any] = (
+                [self._deferred_han_frontier(raw_keys, plan, frozen_scores)]
+                if plan and mode is NeuralLanguageMode.CHINESE_FIRST
+                else []
+            )
             _, latin_frontier = self._root_latin_candidates_and_frontier(
                 raw_keys,
                 state,
@@ -298,7 +508,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             self._raise_if_query_expired()
             return (
                 candidates,
-                [*self._root_han_search_frontier(raw_keys, state), *latin_frontier],
+                [*han_frontier, *latin_frontier],
                 "baseline",
             )
 
@@ -319,7 +529,11 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 "baseline",
             )
 
-        han = self._root_han_candidates(raw_keys, state, response_epoch)
+        han, han_frontier = self._root_han_candidates_and_frontier(
+            raw_keys,
+            state,
+            response_epoch,
+        )
         self._raise_if_query_expired()
         latin, latin_frontier = self._root_latin_candidates_and_frontier(
             raw_keys,
@@ -341,7 +555,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         ordered_han = sorted(han, key=_candidate_key)
         ordered_latin = sorted(latin, key=_latin_key)
         ordered = self._merge_chinese_first(ordered_han, ordered_latin)
-        frontier = [*self._root_han_search_frontier(raw_keys, state), *latin_frontier]
+        frontier = [*han_frontier, *latin_frontier]
         self._raise_if_query_expired()
         if not ordered and not frontier and self._baseline_scores is not None:
             ordered = [_literal_candidate(raw_keys, response_epoch)]
@@ -357,9 +571,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
     ) -> None:
         self._baseline_root_pages[key] = (
             tuple(
-                candidate
-                if candidate.context_epoch == 0
-                else replace(candidate, context_epoch=0)
+                candidate if candidate.context_epoch == 0 else replace(candidate, context_epoch=0)
                 for candidate in candidates
             ),
             tuple(frontier),
@@ -369,6 +581,36 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             self._baseline_root_pages.popitem(last=False)
 
     def _prune_frontier(self, session: _SearchSession) -> None:
+        deferred = [path for path in session.frontier if isinstance(path, _DeferredHanFrontier)]
+        if deferred:
+            immediate = [
+                path for path in session.frontier if not isinstance(path, _DeferredHanFrontier)
+            ]
+            for seed in deferred:
+                roots = self._materialize_root_han_candidates(
+                    seed.plan,
+                    state=None,
+                    response_epoch=session.identity.context_epoch,
+                    scores=seed.scores,
+                )
+                for candidate in roots:
+                    key = (
+                        unicodedata.normalize("NFKC", candidate.text),
+                        candidate.consumed_keys,
+                    )
+                    if key in session.seen_candidates:
+                        continue
+                    session.seen_candidates.add(key)
+                    session.pending.append(candidate)
+                immediate.extend(
+                    self._root_han_search_frontier_from_scores(
+                        seed.raw_keys,
+                        seed.plan,
+                        seed.scores,
+                    )
+                )
+            session.frontier = immediate
+            self._sort_pending(session)
         preferred_script = (
             "latin" if session.identity.mode is NeuralLanguageMode.LATIN_FIRST else "han"
         )
@@ -398,6 +640,81 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             counts[bucket] = count + 1
             retained.append(path)
         session.frontier = retained
+
+    def _minimum_future_bucket(self, session: _SearchSession) -> int | None:
+        # A deferred seed contains roots that have already been scored and
+        # exactly ranked. With no continuation snapshot it cannot produce a
+        # new model path, so it must not hide ranked roots from page 0.
+        if session.continuation_root is None:
+            buckets = [
+                path.predicted_syllables + 1
+                for path in session.frontier
+                if path.script == "han"
+                and not isinstance(path, _DeferredHanFrontier)
+                and self._path_key(path) not in session.expanded_paths
+            ]
+            return min(buckets, default=None)
+        return super()._minimum_future_bucket(session)
+
+    def _prepare_page_search(
+        self,
+        session: _SearchSession,
+        cancel: threading.Event,
+    ) -> bool:
+        """Realize deferred roots off-lock before later pages are frozen."""
+
+        with self._state_lock:
+            if self._sessions.get(session.candidate_set_id) is not session or cancel.is_set():
+                return False
+            seeds = tuple(
+                path for path in session.frontier if isinstance(path, _DeferredHanFrontier)
+            )
+        if not seeds:
+            return True
+
+        prepared: list[tuple[list[Candidate], list[_HanSearchPath]]] = []
+        for seed in seeds:
+            roots = self._materialize_root_han_candidates(
+                seed.plan,
+                state=None,
+                response_epoch=session.identity.context_epoch,
+                scores=seed.scores,
+            )
+            frontier = self._root_han_search_frontier_from_scores(
+                seed.raw_keys,
+                seed.plan,
+                seed.scores,
+            )
+            if cancel.is_set():
+                return False
+            prepared.append((roots, frontier))
+
+        with self._state_lock:
+            if self._sessions.get(session.candidate_set_id) is not session or cancel.is_set():
+                return False
+            seed_ids = {id(seed) for seed in seeds}
+            session.frontier = [
+                path
+                for path in session.frontier
+                if not (isinstance(path, _DeferredHanFrontier) and id(path) in seed_ids)
+            ]
+            for roots, frontier in prepared:
+                for candidate in roots:
+                    key = (
+                        unicodedata.normalize("NFKC", candidate.text),
+                        candidate.consumed_keys,
+                    )
+                    if key in session.seen_candidates:
+                        continue
+                    session.seen_candidates.add(key)
+                    session.pending.append(candidate)
+                session.frontier.extend(frontier)
+            self._sort_pending(session)
+            self._prune_frontier(session)
+            continuation = getattr(self.backend, "continue_from_root", None)
+            if session.continuation_root is None or not callable(continuation):
+                session.exhausted = True
+            return True
 
     def _han_edges_for(
         self,
@@ -529,6 +846,10 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         session: _SearchSession,
         absolute_deadline: float,
     ) -> int:
+        # A deferred seed represents root work that is valid without a model
+        # continuation root. Realize it before deciding whether deep search is
+        # available so root-only backends can still prepare later pages.
+        self._prune_frontier(session)
         if not session.frontier:
             session.exhausted = True
             return 0
@@ -537,7 +858,6 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             session.exhausted = True
             return 0
 
-        self._prune_frontier(session)
         parent: Any | None = None
         token_ids: tuple[int, ...] = ()
         han_edges: dict[int, tuple[_HanEdge, ...]] = {}
@@ -617,6 +937,8 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         state: BackendState | None,
     ) -> _SearchSession:
         session = super()._new_session(identity, state)
+        if any(isinstance(path, _DeferredHanFrontier) for path in session.frontier):
+            session.exhausted = False
         while len(self._sessions) > MAX_ACTIVE_SEARCH_SESSIONS:
             self._sessions.popitem(last=False)
         return session

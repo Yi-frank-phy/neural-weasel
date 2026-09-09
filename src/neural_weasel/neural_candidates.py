@@ -540,9 +540,11 @@ class NeuralCandidatePageManager:
         *,
         state: BackendState | None,
         response_epoch: int,
+        scores: Sequence[float] | None = None,
     ) -> list[Candidate]:
-        token_ids = [entry.token_id for entry in plan]
-        scores = self._score_root(state, token_ids)
+        if scores is None:
+            token_ids = [entry.token_id for entry in plan]
+            scores = self._score_root(state, token_ids)
         self._raise_if_query_expired()
         best: dict[
             tuple[str, int],

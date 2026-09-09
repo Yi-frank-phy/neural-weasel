@@ -377,6 +377,9 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         candidate_set_id = session.candidate_set_id
         retry_wakes = 0
         try:
+            prepare = getattr(self, "_prepare_page_search", None)
+            if callable(prepare) and not prepare(session, cancel):
+                return
             while not cancel.is_set():
                 with self._state_lock:
                     if self._sessions.get(candidate_set_id) is not session:
