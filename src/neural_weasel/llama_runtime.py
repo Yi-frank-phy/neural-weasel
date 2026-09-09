@@ -231,29 +231,20 @@ class LlamaCppBackend:
         context = getattr(self.llama, "_ctx", None)
         if context is None:
             return None
+        raw_context = getattr(context, "ctx", None)
+        if raw_context is not None:
+            # Production continuation replays the short editor token prefix into
+            # parallel sequences and never restores a copied sequence state.
+            # Copying that state on every context refresh can take longer than
+            # the native page-0 deadline even when no token needs evaluation.
+            return LlamaContinuationRoot(b"", n_tokens, replay_token_ids)
         test_capture = getattr(context, "capture_sequence_state", None)
         if callable(test_capture):
             payload = bytes(test_capture(0))
             return LlamaContinuationRoot(payload, n_tokens, replay_token_ids)
 
-        raw_context = getattr(context, "ctx", None)
-        if raw_context is None:
-            # Lightweight unit-test fakes intentionally omit the C context.
-            return None
-        from llama_cpp import llama_cpp
-
-        size = int(llama_cpp.llama_state_seq_get_size(raw_context, 0))
-        if size <= 0:
-            raise RuntimeError("llama.cpp returned an empty candidate continuation state")
-        buffer = (ctypes.c_uint8 * size)()
-        copied = int(llama_cpp.llama_state_seq_get_data(raw_context, buffer, size, 0))
-        if copied <= 0 or copied > size:
-            raise RuntimeError("failed to capture llama.cpp candidate continuation state")
-        return LlamaContinuationRoot(
-            _copy_sequence_state_bytes(buffer, copied),
-            n_tokens,
-            replay_token_ids,
-        )
+        # Lightweight unit-test fakes intentionally omit the C context.
+        return None
 
     def _restore_continuation_root(self, root: LlamaContinuationRoot) -> None:
         context = getattr(self.llama, "_ctx", None)

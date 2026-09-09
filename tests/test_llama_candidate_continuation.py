@@ -115,6 +115,22 @@ def test_sequence_state_copy_uses_one_native_buffer_copy(monkeypatch) -> None:
     assert calls == [4]
 
 
+def test_production_snapshot_skips_unused_sequence_state_copy(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    backend.llama._ctx.ctx = object()
+
+    def fail_capture(sequence_id: int) -> bytes:
+        del sequence_id
+        raise AssertionError("production replay must not copy sequence state")
+
+    backend.llama._ctx.capture_sequence_state = fail_capture
+    snapshot = backend.create_snapshot("你")
+
+    assert snapshot.continuation_root is not None
+    assert snapshot.continuation_root.state_bytes == b""
+    assert snapshot.continuation_root.replay_token_ids == (1,)
+
+
 def test_context_free_continuation_replays_only_short_candidate_paths(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
     before = len(backend.llama.eval_calls)
