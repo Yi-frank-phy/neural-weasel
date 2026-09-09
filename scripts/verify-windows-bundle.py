@@ -30,6 +30,8 @@ REQUIRED = (
     "uninstall-dev-profile.ps1",
     "diagnose.ps1",
     "start-model-service.ps1",
+    "start-model-service-hidden.ps1",
+    "start-model-service-hidden.vbs",
     "launch-neural-weasel.ps1",
     "Start-Neural-Weasel.cmd",
     "启动神经小狼毫.cmd",
