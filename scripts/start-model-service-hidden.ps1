@@ -4,13 +4,17 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('Q4_K_M', 'Q8_0')]
     [string]$Quantization,
-    [Parameter(Mandatory)][string]$GgufPath,
+    [Parameter(Mandatory)]
+    [AllowEmptyString()]
+    [string]$GgufPath,
     [Parameter(Mandatory)][string]$StdOutPath,
     [Parameter(Mandatory)][string]$StdErrPath
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$AutomaticGgufPathToken = '__NEURAL_WEASEL_AUTOMATIC_GGUF__'
 
 function Quote-ProcessArgument {
     param([Parameter(Mandatory)][string]$Value)
@@ -29,10 +33,15 @@ $ChildArguments = @(
     '-File',
     (Quote-ProcessArgument $ServiceScript),
     '-Quantization',
-    (Quote-ProcessArgument $Quantization),
-    '-GgufPath',
-    (Quote-ProcessArgument $GgufPath)
-) -join ' '
+    (Quote-ProcessArgument $Quantization)
+)
+if ($GgufPath -ne $AutomaticGgufPathToken) {
+    $ChildArguments += @(
+        '-GgufPath',
+        (Quote-ProcessArgument $GgufPath)
+    )
+}
+$ChildArguments = $ChildArguments -join ' '
 
 $StartInfo = [Diagnostics.ProcessStartInfo]::new()
 $StartInfo.FileName = $PowerShellExe

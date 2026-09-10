@@ -34,6 +34,7 @@ $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
 $StatePath = Join-Path $RuntimeRoot 'model-service.json'
 $LogRoot = Join-Path $RuntimeRoot 'logs'
 $ModelTaskPrefix = 'NeuralWeasel Experimental Model Service'
+$AutomaticGgufPathToken = '__NEURAL_WEASEL_AUTOMATIC_GGUF__'
 
 function Assert-LastExitCode {
     param([Parameter(Mandatory)][string]$Operation)
@@ -103,7 +104,7 @@ function Get-LiveModelServiceProcess {
         )
     }
     try {
-        $UpdatedUtc = [DateTime]::Parse([string]$State.updated_utc).ToUniversalTime()
+        $UpdatedUtc = Convert-StateTimestampToUtc -Value $State.updated_utc
     } catch {
         return $null
     }
@@ -117,7 +118,8 @@ function Wait-ModelPipe {
     param(
         [Parameter(Mandatory)][string]$PipePath,
         [Parameter(Mandatory)][int]$TimeoutSeconds,
-        [Diagnostics.Process]$ExpectedProcess
+        [Diagnostics.Process]$ExpectedProcess,
+        [DateTime]$NotBeforeUtc = [DateTime]::MinValue
     )
     $Timer = [Diagnostics.Stopwatch]::StartNew()
     while ($Timer.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
@@ -133,7 +135,14 @@ function Wait-ModelPipe {
         if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
             try {
                 $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-                if ($State.state -eq 'failed') {
+                $StateUpdatedUtc = [DateTime]::MinValue
+                if ($State.PSObject.Properties['updated_utc']) {
+                    $StateUpdatedUtc = Convert-StateTimestampToUtc -Value $State.updated_utc
+                }
+                if (
+                    $State.state -eq 'failed' -and
+                    $StateUpdatedUtc -ge $NotBeforeUtc
+                ) {
                     throw (
                         "The model service reported state '$($State.state)'. " +
                         "See $LogRoot for details."
@@ -154,8 +163,25 @@ function Wait-ModelPipe {
 }
 
 function Quote-ProcessArgument {
-    param([Parameter(Mandatory)][string]$Value)
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
     return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Convert-StateTimestampToUtc {
+    param([Parameter(Mandatory)][object]$Value)
+
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime()
+    }
+    return [DateTimeOffset]::Parse(
+        [string]$Value,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+    ).UtcDateTime
 }
 
 function Ensure-ModelServiceStartupTask {
@@ -176,7 +202,12 @@ function Ensure-ModelServiceStartupTask {
         (Quote-ProcessArgument $ServiceScript)
     )
     $Arguments += @((Quote-ProcessArgument $Quantization))
-    $Arguments += @((Quote-ProcessArgument $GgufPath))
+    $TaskGgufPath = if ($GgufPath) {
+        $GgufPath
+    } else {
+        $AutomaticGgufPathToken
+    }
+    $Arguments += @((Quote-ProcessArgument $TaskGgufPath))
     $StdOut = Join-Path $LogRoot 'model-service.scheduled.stdout.log'
     $StdErr = Join-Path $LogRoot 'model-service.scheduled.stderr.log'
     $Arguments += @(
@@ -292,6 +323,7 @@ $ModelTaskName = Ensure-ModelServiceStartupTask `
     -HiddenHostScript $HiddenHostScript
 
 if (-not (Test-ModelPipe -PipePath $PipePath)) {
+    $LaunchStartedUtc = [DateTime]::MinValue
     if (-not $ServiceProcess) {
         $Task = Get-ScheduledTask -TaskName $ModelTaskName
         if ($Task.State -eq 'Running') {
@@ -312,13 +344,15 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
             "Starting $Model $Quantization $ModelFormat through its logon task. " +
             'The first launch may download about 4.5 GB and build the pinyin index.'
         )
+        $LaunchStartedUtc = [DateTime]::UtcNow
         Start-ScheduledTask -TaskName $ModelTaskName
     } else {
         Write-Host 'A model-service process already exists; waiting for it to become ready.'
     }
     Wait-ModelPipe `
         -PipePath $PipePath `
-        -TimeoutSeconds $ReadyTimeoutSeconds
+        -TimeoutSeconds $ReadyTimeoutSeconds `
+        -NotBeforeUtc $LaunchStartedUtc
 }
 
 if (-not (Get-Process -Name 'NeuralWeaselServer' -ErrorAction SilentlyContinue)) {

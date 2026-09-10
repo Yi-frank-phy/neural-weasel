@@ -183,6 +183,7 @@ def _script_function(script: str, name: str) -> str:
 def test_scripts_expose_supported_quant_selector_passthrough() -> None:
     launcher = _read("scripts/launch-neural-weasel.ps1")
     service = _read("scripts/start-model-service.ps1")
+    hidden_runner = _read("scripts/start-model-service-hidden.ps1")
     hidden_host = _read("scripts/start-model-service-hidden.vbs")
 
     for script in (launcher, service):
@@ -193,6 +194,34 @@ def test_scripts_expose_supported_quant_selector_passthrough() -> None:
     assert "provided GGUF artifact does not exist" in service
     assert '" -Quantization " & Quote(WScript.Arguments(1))' in hidden_host
     assert '" -GgufPath " & Quote(WScript.Arguments(2))' in hidden_host
+    assert "[AllowEmptyString()]" in _script_function(launcher, "Quote-ProcessArgument")
+    assert "[AllowEmptyString()]" in hidden_runner.split("$GgufPath", 1)[0]
+    assert "__NEURAL_WEASEL_AUTOMATIC_GGUF__" in launcher
+    assert "__NEURAL_WEASEL_AUTOMATIC_GGUF__" in hidden_runner
+    assert "$TaskGgufPath" in launcher
+    assert "if ($GgufPath -ne $AutomaticGgufPathToken)" in hidden_runner
+
+
+def test_launcher_ignores_model_failure_state_older_than_current_start() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    wait_body = _script_function(launcher, "Wait-ModelPipe")
+
+    assert "[DateTime]$NotBeforeUtc = [DateTime]::MinValue" in wait_body
+    assert "$StateUpdatedUtc -ge $NotBeforeUtc" in wait_body
+    assert "$LaunchStartedUtc = [DateTime]::UtcNow" in launcher
+    assert "-NotBeforeUtc $LaunchStartedUtc" in launcher
+
+
+def test_launcher_preserves_utc_kind_from_powershell_json_timestamps() -> None:
+    launcher = _read("scripts/launch-neural-weasel.ps1")
+    converter = _script_function(launcher, "Convert-StateTimestampToUtc")
+
+    assert "if ($Value -is [DateTime])" in converter
+    assert "([DateTime]$Value).ToUniversalTime()" in converter
+    assert "[DateTimeOffset]::Parse(" in converter
+    assert "[Globalization.DateTimeStyles]::RoundtripKind" in converter
+    assert launcher.count("Convert-StateTimestampToUtc -Value $State.updated_utc") == 2
+    assert "[string]$State.updated_utc" not in launcher
 
 
 def test_safety_profile_tracks_selected_quantization() -> None:
