@@ -11,6 +11,8 @@ from .neural_candidates import (
     CandidatePageError,
     CandidatePageTimeout,
     NeuralLanguageMode,
+    _candidate_key,
+    _latin_key,
     _page_candidate_id,
     _SearchIdentity,
     _SearchSession,
@@ -66,10 +68,90 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         return session
 
     def presentation_update_pending(self, candidate_set_id: str) -> bool:
-        """A published first page never has a replacement presentation."""
-
         with self._state_lock:
-            return False
+            session = self._sessions.get(candidate_set_id)
+            return session is not None and self._presentation_update_pending_locked(session)
+
+    @staticmethod
+    def _all_published_candidates(session: _SearchSession) -> list[Any]:
+        candidates: list[Any] = []
+        seen: set[Any] = set()
+        for page_index in sorted(session.frozen_pages):
+            for candidate in session.frozen_pages[page_index].candidates:
+                if candidate not in seen:
+                    seen.add(candidate)
+                    candidates.append(candidate)
+        for candidate in session.pending:
+            if candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
+        key = (
+            _latin_key
+            if session.identity.mode is NeuralLanguageMode.LATIN_FIRST
+            else _candidate_key
+        )
+        candidates.sort(key=key)
+        return candidates
+
+    def _desired_page0(self, session: _SearchSession) -> tuple[Any, ...]:
+        current = session.frozen_pages.get(0)
+        if current is None:
+            return ()
+        candidates = self._all_published_candidates(session)
+        if session.identity.mode is NeuralLanguageMode.LATIN_FIRST:
+            return tuple(candidates[: current.page_size])
+        han = [candidate for candidate in candidates if candidate.script == "han"]
+        latin = [candidate for candidate in candidates if candidate.script == "latin"]
+        literal = [candidate for candidate in candidates if candidate.constraint_kind == "literal"]
+        if not han:
+            return tuple((latin or literal)[: current.page_size])
+        han_limit = current.page_size - 1 if latin else current.page_size
+        return tuple(
+            [
+                *han[:han_limit],
+                *latin[: max(0, current.page_size - min(len(han), han_limit))],
+            ]
+        )
+
+    def _presentation_update_pending_locked(self, session: _SearchSession) -> bool:
+        if session.candidate_set_id in self._background_searches:
+            return True
+        current = session.frozen_pages.get(0)
+        return current is not None and self._desired_page0(session) != current.candidates
+
+    def _refresh_page0_locked(self, session: _SearchSession) -> CandidatePage:
+        current = session.frozen_pages[0]
+        selected = self._desired_page0(session)
+        if not selected or selected == current.candidates:
+            return current
+
+        pool = self._all_published_candidates(session)
+        selected_set = set(selected)
+        session.pending = [candidate for candidate in pool if candidate not in selected_set]
+        session.frozen_pages.clear()
+        has_more = bool(session.pending) or not session.exhausted
+        length_bucket = min(
+            (candidate.predicted_syllables for candidate in selected if candidate.script == "han"),
+            default=None,
+        )
+        page = CandidatePage(
+            candidate_set_id=session.candidate_set_id,
+            page_index=0,
+            page_size=current.page_size,
+            has_more=has_more,
+            candidates=selected,
+            candidate_ids=tuple(
+                _page_candidate_id(session.candidate_set_id, 0, offset, candidate)
+                for offset, candidate in enumerate(selected)
+            ),
+            score_source=session.score_source,
+            search_depth=session.search_depth,
+            length_bucket=length_bucket,
+            elapsed_ms=0.0,
+            timeout_count=session.timeout_count,
+        )
+        session.frozen_pages[0] = page
+        return page
 
     def query_page(
         self,
@@ -145,15 +227,21 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         with self._state_lock:
             self._raise_if_query_expired(absolute_deadline)
             self._expire_sessions()
-            # One input identity owns one immutable candidate set. Presentation
-            # pulls replay its frozen first page; background work may only make
-            # unpublished later pages available on that same session.
+            # One input identity owns one candidate set. Before native code
+            # locks its presentation, an explicit refresh may improve page 0
+            # using completed background results without changing that set.
             for existing_set_id, session in reversed(tuple(self._sessions.items())):
                 if session.identity != identity:
                     continue
+                if candidate_set_id is not None and candidate_set_id != existing_set_id:
+                    raise CandidatePageError(
+                        "candidate_set_id does not match the current composition"
+                    )
                 frozen = session.frozen_pages.get(0)
                 if frozen is None:
                     continue
+                if presentation_refresh:
+                    frozen = self._refresh_page0_locked(session)
                 session.last_used = self.clock()
                 self._sessions.move_to_end(existing_set_id)
                 self._record_metrics(frozen)
@@ -274,6 +362,8 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         if page0 is None or not page0.has_more:
             return False
         if candidate_set_id in self._page_preparations:
+            return False
+        if self._presentation_update_pending_locked(session):
             return False
         identity_key = self._async_identity_key(session.identity)
         if any(

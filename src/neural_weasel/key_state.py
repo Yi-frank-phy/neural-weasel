@@ -39,6 +39,7 @@ class CompositionState:
     candidates: tuple[str, ...] = ()
     selected_index: int = 0
     completion_visible: bool = False
+    completion_explicitly_selected: bool = False
 
     def __post_init__(self) -> None:
         if self.selected_index < 0:
@@ -104,6 +105,7 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
                 candidates=(),
                 selected_index=0,
                 completion_visible=False,
+                completion_explicitly_selected=False,
             )
         )
 
@@ -112,7 +114,10 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
 
     if action == KeyAction.SPACE:
         if state.mode == CompositionMode.LATIN_FIRST:
-            return _commit(state, (_selected_candidate(state) or state.literal) + " ")
+            completion = (
+                _selected_candidate(state) if state.completion_explicitly_selected else None
+            )
+            return _commit(state, (completion or state.literal) + " ")
         return _commit(state, _selected_candidate(state) or state.literal)
 
     if action == KeyAction.TAB:

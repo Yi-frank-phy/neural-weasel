@@ -166,7 +166,7 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
 
     refreshed = _page(engine, revision=2, presentation_refresh=True)
     assert refreshed.candidate_set_id == revision_two.candidate_set_id
-    assert refreshed.candidates == revision_two.candidates
+    assert "你好" in {candidate.text for candidate in refreshed.candidates}
     preparation = engine.candidate_pages._page_preparation_events[revision_two.candidate_set_id]
     assert preparation.wait(1.0)
     with engine.candidate_pages._state_lock:
@@ -178,4 +178,4 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
             if page_index > 0
             for candidate in page.candidates
         }
-    assert "你好" in later
+    assert "你好" not in later

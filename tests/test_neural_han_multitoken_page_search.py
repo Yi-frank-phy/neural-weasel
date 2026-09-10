@@ -151,10 +151,10 @@ def test_exact_han_cover_can_span_multiple_base_tokens(
     _wait_for_async_han(engine, first.candidate_set_id)
     refreshed = _page(engine, raw, presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
-    assert refreshed.candidates == first.candidates
+    assert expected_text in {candidate.text for candidate in refreshed.candidates}
 
     later = _later_candidates(engine, first.candidate_set_id)
-    exact = next(candidate for candidate in later if candidate.text == expected_text)
+    exact = next(candidate for candidate in refreshed.candidates if candidate.text == expected_text)
     assert exact.token_path == expected_path
     assert exact.completes_input is True
     assert exact.consumed_keys == len(raw)
@@ -181,11 +181,11 @@ def test_han_continuation_scores_full_vocab_but_generates_only_legal_edges(
         for _, allowed in runtime.continuation_calls[:2]
     )
     assert all(7 not in candidate.token_path for candidate in (*refreshed.candidates, *later))
-    exact = next(candidate for candidate in later if candidate.text == "你好吗")
+    exact = next(candidate for candidate in refreshed.candidates if candidate.text == "你好吗")
     assert exact.token_path == (1, 2, 3)
 
 
-def test_late_multitoken_cache_extends_same_set_without_mutating_page_zero(
+def test_late_multitoken_cache_improves_same_set_without_mutating_returned_snapshot(
     make_index,
 ) -> None:
     engine, _ = _engine(make_index)
@@ -198,9 +198,9 @@ def test_late_multitoken_cache_extends_same_set_without_mutating_page_zero(
     _wait_for_async_han(engine, first.candidate_set_id)
     refreshed = _page(engine, "nihao", presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
-    assert refreshed.candidates == first.candidates
-    later = _later_candidates(engine, first.candidate_set_id)
-    assert any(candidate.text == "你好" for candidate in later)
+    assert refreshed.candidates != first.candidates
+    assert any(candidate.text == "你好" for candidate in refreshed.candidates)
+    _later_candidates(engine, first.candidate_set_id)
 
     # Publishing a new presentation does not mutate the already-returned page.
     assert first.candidates == first_candidates
@@ -209,8 +209,8 @@ def test_late_multitoken_cache_extends_same_set_without_mutating_page_zero(
 
     repeated_page_zero = _page(engine, "nihao")
     assert repeated_page_zero.candidate_set_id == first.candidate_set_id
-    assert repeated_page_zero.candidates == first.candidates
-    assert repeated_page_zero.candidate_ids == first.candidate_ids
+    assert repeated_page_zero.candidates == refreshed.candidates
+    assert repeated_page_zero.candidate_ids == refreshed.candidate_ids
 
     # The newly learned baseline path is also available to a later input revision.
     next_revision = _page(engine, "nihao", composition_revision=2)

@@ -181,26 +181,19 @@ def test_baseline_multitoken_han_path_becomes_page_zero_supplement(make_index) -
     _wait_for_async_han(engine, first.candidate_set_id)
     second = _page(engine, 1, presentation_refresh=True)
     assert second.candidate_set_id == first.candidate_set_id
-    assert second.candidates == first.candidates
+    assert any(candidate.text == "你好" for candidate in second.candidates)
     preparation = engine.candidate_pages._page_preparation_events.get(first.candidate_set_id)
     assert preparation is not None
     assert preparation.wait(1.0)
-    with engine.candidate_pages._state_lock:
-        learned = [
-            candidate
-            for page_index, page in engine.candidate_pages._sessions[
-                first.candidate_set_id
-            ].frozen_pages.items()
-            if page_index > 0
-            for candidate in page.candidates
-            if candidate.text == "你好"
-        ]
-    assert learned
-    assert learned[0].token_path == (1, 2)
-    assert learned[0].completes_input
-    assert learned[0].predicted_syllables == 0
-    assert learned[0].model_score is not None
-    assert learned[0].model_score <= 0.0
+    root = next(candidate for candidate in second.candidates if candidate.text == "你")
+    assert root.token_path == (1,)
+    assert not root.completes_input
+    assert root.predicted_syllables == 0
+    phrase = next(candidate for candidate in second.candidates if candidate.text == "你好")
+    assert phrase.token_path == (1, 2)
+    assert phrase.completes_input
+    assert phrase.model_score is not None
+    assert phrase.model_score <= 0.0
 
     replacement = _page(engine, 2)
     cached = [candidate for candidate in replacement.candidates if candidate.text == "你好"]

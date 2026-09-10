@@ -173,7 +173,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
             if binding_error is not None:
                 return binding_error
 
-            if page_index == 0 and candidate_set_id is not None:
+            if page_index == 0 and candidate_set_id is not None and not presentation_refresh:
                 raise ProtocolError("candidate_set_id must be omitted for page 0")
             if page_index > 0 and candidate_set_id is None:
                 raise ProtocolError("candidate_set_id is required after page 0")

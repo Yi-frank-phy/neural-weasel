@@ -35,13 +35,23 @@ def chinese_state() -> CompositionState:
     )
 
 
-def test_latin_space_accepts_completion_plus_space() -> None:
-    """AT-KS-01: Space accepts the selected completion and separates words."""
+def test_latin_space_commits_literal_until_completion_is_explicitly_selected() -> None:
+    """AT-KS-01: a visible suggestion alone does not authorize replacement."""
     transition = reduce_key(latin_state(), KeyAction.SPACE)
 
-    assert transition.committed_text == "asymmetric "
-    assert transition.committed_text != "asy "
+    assert transition.committed_text == "asy "
     assert transition.state.is_idle
+
+    selected = CompositionState(
+        mode=CompositionMode.LATIN_FIRST,
+        literal="asy",
+        candidates=("asymmetric", "asymmetry"),
+        selected_index=0,
+        completion_visible=True,
+        completion_explicitly_selected=True,
+    )
+    accepted = reduce_key(selected, KeyAction.SPACE)
+    assert accepted.committed_text == "asymmetric "
 
 
 def test_latin_tab_accepts_selected_completion() -> None:
@@ -138,6 +148,7 @@ def test_shared_python_cpp_key_state_vectors(vector: dict[str, str]) -> None:
         literal=literal,
         candidates=(candidate,) if has_usable_candidate else (),
         completion_visible=has_usable_candidate,
+        completion_explicitly_selected=vector["explicit_selection"] == "1",
     )
     action = {
         "space": KeyAction.SPACE,

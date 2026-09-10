@@ -7,17 +7,20 @@
 namespace neural_weasel::tsf {
 
 enum class InputScopeState {
+  kUnknown,
   kNormal,
   kPrivate,
   kPassword,
 };
 
 struct InputScopePolicyResult {
-  InputScopeState state = InputScopeState::kNormal;
-  bool allow_prediction = true;
-  bool allow_persistence = true;
-  bool allow_capture = true;
+  InputScopeState state = InputScopeState::kUnknown;
+  bool allow_prediction = false;
+  bool allow_persistence = false;
+  bool allow_capture = false;
 };
+
+InputScopePolicyResult UnknownInputScopePolicy() noexcept;
 
 InputScopePolicyResult ClassifyInputScopes(const InputScope* input_scopes,
                                            std::size_t input_scope_count);

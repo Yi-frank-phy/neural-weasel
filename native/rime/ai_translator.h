@@ -44,6 +44,7 @@ class AiTranslator final : public ::rime::Translator {
   std::chrono::milliseconds query_timeout_{50};
   std::chrono::milliseconds next_page_timeout_{120};
   ::rime::connection context_update_connection_;
+  ::rime::connection context_select_connection_;
   pipe::NamedPipeClient pipe_;
 };
 

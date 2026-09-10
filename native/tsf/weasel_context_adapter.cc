@@ -82,15 +82,15 @@ bool IsInputDesktop() {
 
 InputScopePolicyResult ReadInputScopePolicy(
     ITfContext* context, TfEditCookie edit_cookie) noexcept {
-  const InputScopePolicyResult normal = ClassifyInputScopes(nullptr, 0);
+  const InputScopePolicyResult unknown = UnknownInputScopePolicy();
   if (context == nullptr) {
-    return normal;
+    return unknown;
   }
 
   ITfReadOnlyProperty* property = nullptr;
   if (FAILED(context->GetAppProperty(kInputScopePropertyGuid, &property)) ||
       property == nullptr) {
-    return normal;
+    return unknown;
   }
 
   TF_SELECTION selection{};
@@ -100,7 +100,7 @@ InputScopePolicyResult ReadInputScopePolicy(
       fetched != 1 || selection.range == nullptr) {
     SafeRelease(selection.range);
     SafeRelease(property);
-    return normal;
+    return unknown;
   }
 
   VARIANT value;
@@ -110,7 +110,7 @@ InputScopePolicyResult ReadInputScopePolicy(
   SafeRelease(selection.range);
   SafeRelease(property);
 
-  InputScopePolicyResult policy = normal;
+  InputScopePolicyResult policy = unknown;
   if (SUCCEEDED(value_result) && value.vt == VT_UNKNOWN &&
       value.punkVal != nullptr) {
     ITfInputScope* input_scope = nullptr;
@@ -147,14 +147,16 @@ CaptureState& State() {
 
 context::ContextScopeLabel ScopeLabel(InputScopeState state) noexcept {
   switch (state) {
+    case InputScopeState::kUnknown:
+      return context::ContextScopeLabel::kPassword;
     case InputScopeState::kPrivate:
       return context::ContextScopeLabel::kPrivate;
     case InputScopeState::kPassword:
       return context::ContextScopeLabel::kPassword;
     case InputScopeState::kNormal:
-    default:
       return context::ContextScopeLabel::kNormal;
   }
+  return context::ContextScopeLabel::kPassword;
 }
 
 std::u16string ToUtf16(std::wstring_view text) {

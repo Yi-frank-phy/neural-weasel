@@ -16,6 +16,7 @@ using neural_weasel::rime_plugin::KeyIntent;
 using neural_weasel::rime_plugin::KeyOutcome;
 using neural_weasel::rime_plugin::LatinLiteralCharacter;
 using neural_weasel::rime_plugin::NeuralLanguageMode;
+using neural_weasel::rime_plugin::PresentationMayRefresh;
 using neural_weasel::rime_plugin::ShouldToggleLanguageMode;
 
 std::vector<std::string> Split(const std::string& line) {
@@ -94,6 +95,13 @@ std::string ObservableOutcome(NeuralLanguageMode mode,
 }  // namespace
 
 int main() {
+  if (!PresentationMayRefresh(true, false, 0) ||
+      PresentationMayRefresh(false, false, 0) ||
+      PresentationMayRefresh(true, true, 0) ||
+      PresentationMayRefresh(true, false, 1)) {
+    std::cerr << "Presentation refresh escaped its pending/unlocked/default-selection contract\n";
+    return 1;
+  }
   if (!ShouldToggleLanguageMode(true, false, true, false) ||
       ShouldToggleLanguageMode(true, false, false, false) ||
       ShouldToggleLanguageMode(true, false, true, true) ||
@@ -132,6 +140,20 @@ int main() {
     return 1;
   }
 
+  using neural_weasel::rime_plugin::BoundaryCommitText;
+  if (BoundaryCommitText("nihao", "\xE4\xBD\xA0", 0, 2, true, '.') !=
+          "\xE4\xBD\xA0hao." ||
+      BoundaryCommitText("nihao", "\xE4\xBD\xA0", 0, 2, true, ',') !=
+          "\xE4\xBD\xA0hao," ||
+      BoundaryCommitText("nihao", "\xE4\xBD\xA0\xE5\xA5\xBD", 0, 5, true,
+                         '.') != "\xE4\xBD\xA0\xE5\xA5\xBD." ||
+      BoundaryCommitText("nihao", "ignored", 0, 2, false, '.') !=
+          "nihao." ||
+      BoundaryCommitText("nihao", "bad", 4, 2, true, '.') != "nihao.") {
+    std::cerr << "punctuation boundary lost or reordered raw input\n";
+    return 1;
+  }
+
   std::ifstream fixture(NEURAL_WEASEL_KEY_FIXTURE_PATH);
   if (!fixture) {
     std::cerr << "shared key fixture is unavailable\n";
@@ -144,7 +166,7 @@ int main() {
     if (line.empty() || line.front() == '#')
       continue;
     const auto fields = Split(line);
-    if (fields.size() != 8) {
+    if (fields.size() != 9) {
       std::cerr << "malformed key fixture row: " << line << "\n";
       return 1;
     }
@@ -153,14 +175,16 @@ int main() {
     const bool has_completion = fields[3] == "1" && fields[4] == "1";
     const bool candidate_fresh = fields[5] == "1";
     const bool service_available = fields[6] == "1";
+    const bool explicit_selection = fields[7] == "1";
     const bool effective_completion =
         has_completion && candidate_fresh && service_available;
     const auto outcome = neural_weasel::rime_plugin::ResolveKeyOutcome(
-        mode, intent, has_completion, candidate_fresh, service_available);
+        mode, intent, has_completion, candidate_fresh, service_available,
+        explicit_selection);
     const auto observed =
         ObservableOutcome(mode, intent, effective_completion, outcome);
-    if (observed != fields[7]) {
-      std::cerr << fields[0] << ": expected " << fields[7] << ", got "
+    if (observed != fields[8]) {
+      std::cerr << fields[0] << ": expected " << fields[8] << ", got "
                 << observed << "\n";
       return 1;
     }

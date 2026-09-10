@@ -24,11 +24,37 @@ char BoundaryPunctuationCharacter(int keycode) noexcept {
   return '\0';
 }
 
+bool PresentationMayRefresh(bool pending,
+                            bool presentation_locked,
+                            std::size_t selected_index) noexcept {
+  return pending && !presentation_locked && selected_index == 0;
+}
+
+std::string BoundaryCommitText(const std::string& raw_input,
+                               const std::string& selected_text,
+                               std::size_t selected_start,
+                               std::size_t selected_end,
+                               bool candidate_fresh,
+                               char punctuation) {
+  if (!candidate_fresh || selected_start > selected_end ||
+      selected_end > raw_input.size()) {
+    return raw_input + punctuation;
+  }
+  std::string committed;
+  committed.reserve(raw_input.size() + selected_text.size() + 1);
+  committed.append(raw_input, 0, selected_start);
+  committed.append(selected_text);
+  committed.append(raw_input, selected_end, std::string::npos);
+  committed.push_back(punctuation);
+  return committed;
+}
+
 KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             KeyIntent intent,
                             bool has_completion,
                             bool candidate_fresh,
-                            bool service_available) noexcept {
+                            bool service_available,
+                            bool completion_explicitly_selected) noexcept {
   const bool effective_completion =
       has_completion && candidate_fresh && service_available;
   if (intent == KeyIntent::kPageNext) {
@@ -50,8 +76,9 @@ KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
   if (mode == NeuralLanguageMode::kLatinFirst) {
     switch (intent) {
       case KeyIntent::kSpace:
-        return effective_completion ? KeyOutcome::kAcceptCompletionSpace
-                                    : KeyOutcome::kCommitLiteralSpace;
+        return effective_completion && completion_explicitly_selected
+                   ? KeyOutcome::kAcceptCompletionSpace
+                   : KeyOutcome::kCommitLiteralSpace;
       case KeyIntent::kTab:
         return effective_completion ? KeyOutcome::kAcceptCompletion
                                     : KeyOutcome::kKeepLiteral;

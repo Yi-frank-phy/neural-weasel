@@ -12,6 +12,8 @@ inline constexpr char kNeuralPresentationRefreshProperty[] =
     "neural_presentation_refresh";
 inline constexpr char kNeuralCandidatePendingProperty[] =
     "neural_candidate_pending";
+inline constexpr char kNeuralPresentationLockedProperty[] =
+    "neural_presentation_locked";
 
 // The initial key event has already spent at most 50 ms in the pipe. A
 // retryable empty first page therefore gets a prompt, bounded pull sequence;

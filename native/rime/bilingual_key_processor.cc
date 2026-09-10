@@ -97,6 +97,10 @@ void RefreshPage(::rime::Context* context,
   }
 }
 
+void LockPresentation(::rime::Context* context) {
+  context->set_property(kNeuralPresentationLockedProperty, "1");
+}
+
 }  // namespace
 
 ::rime::ProcessResult BilingualKeyProcessor::ProcessKeyEvent(
@@ -111,13 +115,13 @@ void RefreshPage(::rime::Context* context,
     if (!context->IsComposing()) {
       return ::rime::kAccepted;
     }
-    // A successful first page is already immutable and needs no timed pull.
-    // The owner-thread timer retries only an identity-bound page-zero failure.
-    if (context->get_property(kNeuralCandidatePendingProperty) != "1") {
-      return ::rime::kAccepted;
-    }
-    // Never replace a candidate list while the user has moved the selection.
-    if (SelectedIndex(context) != 0) {
+    // While background work is pending, the owner-thread timer may request an
+    // identity-bound refresh.  Any explicit selection or paging locks the
+    // current presentation before this path can replace page zero.
+    if (!PresentationMayRefresh(
+            context->get_property(kNeuralCandidatePendingProperty) == "1",
+            context->get_property(kNeuralPresentationLockedProperty) == "1",
+            SelectedIndex(context))) {
       return ::rime::kAccepted;
     }
     context->set_property(kNeuralPresentationRefreshProperty, "1");
@@ -208,8 +212,11 @@ void RefreshPage(::rime::Context* context,
   auto selected = context->GetSelectedCandidate();
   const bool candidate_fresh =
       context->get_property("neural_candidate_fresh") == "1";
+  const bool completion_explicitly_selected =
+      context->get_property(kNeuralPresentationLockedProperty) == "1";
   const auto outcome = ResolveKeyOutcome(
-      mode, intent, IsCompletion(selected), candidate_fresh, candidate_fresh);
+      mode, intent, IsCompletion(selected), candidate_fresh, candidate_fresh,
+      completion_explicitly_selected);
   switch (outcome) {
     case KeyOutcome::kAcceptCompletionSpace:
       engine_->CommitText(selected->text() + " ");
@@ -243,11 +250,13 @@ void RefreshPage(::rime::Context* context,
       if (context->get_property("neural_has_more") != "1") {
         return ::rime::kAccepted;
       }
+      LockPresentation(context);
       const std::uint32_t current = CurrentPage(context);
       RefreshPage(context, current + 1U, SelectedIndex(context));
       return ::rime::kAccepted;
     }
     case KeyOutcome::kRequestPreviousPage: {
+      LockPresentation(context);
       const std::uint32_t current = CurrentPage(context);
       if (current == 0) {
         return ::rime::kAccepted;
@@ -261,9 +270,13 @@ void RefreshPage(::rime::Context* context,
       if (punctuation == '\0') {
         return ::rime::kNoop;
       }
-      const std::string committed =
-          selected && candidate_fresh ? selected->text() : context->input();
-      engine_->CommitText(committed + punctuation);
+      const std::string committed = selected
+                                        ? BoundaryCommitText(
+                                              context->input(), selected->text(),
+                                              selected->start(), selected->end(),
+                                              candidate_fresh, punctuation)
+                                        : context->input() + punctuation;
+      engine_->CommitText(committed);
       context->Clear();
       return ::rime::kAccepted;
     }

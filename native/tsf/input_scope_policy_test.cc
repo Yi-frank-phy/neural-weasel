@@ -57,10 +57,45 @@ int main() {
     return 1;
   }
 
+  const InputScope special_normal_scopes[] = {
+      IS_PHRASELIST,
+      IS_REGULAREXPRESSION,
+      IS_SRGS,
+      IS_XML,
+      IS_ENUMSTRING,
+  };
+  for (const InputScope special_normal_scope : special_normal_scopes) {
+    const auto special_normal = ClassifyInputScopes(&special_normal_scope, 1);
+    if (special_normal.state != InputScopeState::kNormal ||
+        !special_normal.allow_prediction || !special_normal.allow_persistence ||
+        !special_normal.allow_capture) {
+      std::cerr << "known special scope was not normal\n";
+      return 1;
+    }
+  }
+
   const InputScope unknown_scope = static_cast<InputScope>(0x7fffffff);
   const auto unknown = ClassifyInputScopes(&unknown_scope, 1);
-  if (unknown.state != InputScopeState::kNormal || !unknown.allow_capture) {
-    std::cerr << "unknown scope defaulted to deny\n";
+  if (unknown.state != InputScopeState::kUnknown || unknown.allow_prediction ||
+      unknown.allow_persistence || unknown.allow_capture) {
+    std::cerr << "unknown scope did not fail closed\n";
+    return 1;
+  }
+
+  const InputScope unknown_negative_scope = static_cast<InputScope>(-6);
+  const auto unknown_negative = ClassifyInputScopes(&unknown_negative_scope, 1);
+  if (unknown_negative.state != InputScopeState::kUnknown ||
+      unknown_negative.allow_prediction || unknown_negative.allow_persistence ||
+      unknown_negative.allow_capture) {
+    std::cerr << "unknown negative scope did not fail closed\n";
+    return 1;
+  }
+
+  const neural_weasel::tsf::InputScopePolicyResult default_policy;
+  if (default_policy.state != InputScopeState::kUnknown ||
+      default_policy.allow_prediction || default_policy.allow_persistence ||
+      default_policy.allow_capture) {
+    std::cerr << "unclassified input scope did not fail closed\n";
     return 1;
   }
 
@@ -78,6 +113,17 @@ int main() {
       });
   if (password_result || password_capture_called) {
     std::cerr << "password path called text capture\n";
+    return 1;
+  }
+
+  bool unknown_capture_called = false;
+  const auto unknown_result = CaptureWithPolicy(
+      unknown, identity, [&]() {
+        unknown_capture_called = true;
+        return SurroundingTextSnapshot{};
+      });
+  if (unknown_result || unknown_capture_called) {
+    std::cerr << "unknown path called text capture\n";
     return 1;
   }
 

@@ -958,7 +958,7 @@ def test_search_frontier_retains_partial_root_beyond_visible_180(make_index) -> 
     assert all(candidate.text != "明" for candidate in first.candidates)
 
 
-def test_background_continuation_keeps_page_zero_stable_and_publishes_later_page(
+def test_background_continuation_improves_unlocked_page_zero_in_same_set(
     make_index,
 ) -> None:
     index = make_index(
@@ -998,7 +998,7 @@ def test_background_continuation_keeps_page_zero_stable_and_publishes_later_page
 
     refreshed = _page(engine, "mingxian", presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
-    assert refreshed.candidates == first.candidates
+    assert any(candidate.text == "明显" for candidate in refreshed.candidates)
     assert refreshed.has_more is True
 
     _wait_for_page_preparation(engine, first.candidate_set_id)
@@ -1008,7 +1008,7 @@ def test_background_continuation_keeps_page_zero_stable_and_publishes_later_page
         page_index=1,
         candidate_set_id=first.candidate_set_id,
     )
-    assert any(candidate.text == "明显" for candidate in later.candidates)
+    assert all(candidate.text != "明显" for candidate in later.candidates)
 
 
 def test_background_continuation_batches_production_shorthand_roots(
@@ -1155,6 +1155,8 @@ def test_focus_invalidation_discards_background_continuation_result(make_index) 
 def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> None:
     engine, runtime = _continuation_engine(make_index)
     first = _page(engine, "n")
+    refreshed = _page(engine, "n", presentation_refresh=True)
+    assert refreshed.candidate_set_id == first.candidate_set_id
 
     # C2 prepares page 1 in the background. Let the blocked first attempt finish,
     # then verify that navigation itself does not retry the model.

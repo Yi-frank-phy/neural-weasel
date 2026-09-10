@@ -9,8 +9,14 @@ constexpr InputScopePolicyResult kPrivatePolicy{
     InputScopeState::kPrivate, true, false, true};
 constexpr InputScopePolicyResult kPasswordPolicy{
     InputScopeState::kPassword, false, false, false};
+constexpr InputScopePolicyResult kUnknownPolicy{
+    InputScopeState::kUnknown, false, false, false};
 
 }  // namespace
+
+InputScopePolicyResult UnknownInputScopePolicy() noexcept {
+  return kUnknownPolicy;
+}
 
 InputScopePolicyResult ClassifyInputScopes(const InputScope* input_scopes,
                                            std::size_t input_scope_count) {
@@ -20,6 +26,11 @@ InputScopePolicyResult ClassifyInputScopes(const InputScope* input_scopes,
 
   bool saw_private = false;
   for (std::size_t i = 0; i < input_scope_count; ++i) {
+    const int value = static_cast<int>(input_scopes[i]);
+    if (value < static_cast<int>(IS_ENUMSTRING) ||
+        value > static_cast<int>(IS_CHAT_WITHOUT_EMOJI)) {
+      return kUnknownPolicy;
+    }
     switch (input_scopes[i]) {
       case IS_PASSWORD:
       case IS_NUMERIC_PASSWORD:

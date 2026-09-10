@@ -32,7 +32,7 @@ def test_presentation_refresh_does_not_create_an_input_revision() -> None:
     assert "force_new_revision_ = true" not in refresh_block
     assert "++composition_revision_" not in refresh_block
     assert 'request["presentation_refresh"] = true;' in translator
-    assert "if (presentation_refresh) {\n                frozen_pages_.clear();" not in translator
+    assert "candidate_set_id_ = response_set;" in translator
 
 
 def test_first_page_timeout_uses_prompt_bounded_owner_thread_retries() -> None:
@@ -49,7 +49,7 @@ def test_first_page_timeout_uses_prompt_bounded_owner_thread_retries() -> None:
     assert "std::this_thread::sleep_for" not in overlay
 
 
-def test_successful_first_page_does_not_issue_a_timed_refresh_query() -> None:
+def test_timed_refresh_requires_pending_unlocked_default_selection() -> None:
     processor = _read(PROCESSOR)
 
     refresh_start = processor.index("kNeuralRefreshKeycode")
@@ -58,7 +58,9 @@ def test_successful_first_page_does_not_issue_a_timed_refresh_query() -> None:
     pending_gate = refresh_block.index("kNeuralCandidatePendingProperty")
     refresh_request = refresh_block.index("kNeuralPresentationRefreshProperty")
     assert pending_gate < refresh_request
-    assert '!= "1"' in refresh_block[:refresh_request]
+    assert "PresentationMayRefresh(" in refresh_block[:refresh_request]
+    assert "kNeuralPresentationLockedProperty" in refresh_block[:refresh_request]
+    assert "SelectedIndex(context)" in refresh_block[:refresh_request]
 
 
 def test_backspace_and_apostrophe_schedule_the_same_identity_bound_refresh() -> None:
@@ -80,7 +82,7 @@ def test_refresh_pending_signal_uses_a_non_printable_private_key() -> None:
     refresh_start = processor.index("kNeuralRefreshKeycode")
     refresh_end = processor.index("if (IsShiftKey", refresh_start)
     refresh_block = processor[refresh_start:refresh_end]
-    assert "if (SelectedIndex(context) != 0)" in refresh_block
+    assert "PresentationMayRefresh(" in refresh_block
     assert "kNeuralPresentationRefreshProperty" in refresh_block
     assert "kNeuralCandidatePendingProperty" in refresh_block
     assert "RefreshNonConfirmedComposition()" in refresh_block

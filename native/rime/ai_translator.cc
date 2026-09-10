@@ -36,6 +36,15 @@ bool IsNeuralSpellingInput(const std::string& input) {
 // Metadata-only target-machine diagnostic. Never pass raw keys, candidate text,
 // surrounding text, window titles, context capabilities, or candidate ids here.
 void TraceAiTranslator(const wchar_t* format, ...) {
+  static const bool enabled = [] {
+    wchar_t value[8] = {};
+    const DWORD value_length = GetEnvironmentVariableW(
+        L"NEURAL_WEASEL_DIAGNOSTIC_TRACE", value, _countof(value));
+    return value_length == 1 && value[0] == L'1';
+  }();
+  if (!enabled) {
+    return;
+  }
   wchar_t local_app_data[MAX_PATH] = {};
   const DWORD length = GetEnvironmentVariableW(
       L"LOCALAPPDATA", local_app_data, _countof(local_app_data));
@@ -132,11 +141,18 @@ AiTranslator::AiTranslator(const ::rime::Ticket& ticket)
     observed_composing_ = context->IsComposing();
     context_update_connection_ = context->update_notifier().connect(
         [this](::rime::Context* updated) { OnContextUpdate(updated); });
+    context_select_connection_ = context->select_notifier().connect(
+        [](rime::Context* selected) {
+          if (selected) {
+            selected->set_property(kNeuralPresentationLockedProperty, "1");
+          }
+        });
   }
 }
 
 AiTranslator::~AiTranslator() {
   context_update_connection_.disconnect();
+  context_select_connection_.disconnect();
 }
 
 void AiTranslator::ResetCompositionBoundary() {
@@ -153,6 +169,10 @@ void AiTranslator::ResetCompositionBoundary() {
 
 void AiTranslator::OnContextUpdate(::rime::Context* context) {
   const bool composing = context && context->IsComposing();
+  if (composing && !context->composition().empty() &&
+      context->composition().back().selected_index > 0) {
+    context->set_property(kNeuralPresentationLockedProperty, "1");
+  }
   const bool composition_ended =
       !composing && (observed_composing_ || !composition_input_.empty());
   observed_composing_ = composing;
@@ -227,6 +247,7 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
       context->set_property("neural_page_index", "0");
       context->set_property("neural_has_more", "0");
       context->set_property(kNeuralCandidatePendingProperty, "0");
+      context->set_property(kNeuralPresentationLockedProperty, "0");
       TraceAiTranslator(
           L"event=revision created revision=%llu context-epoch=%llu mode=%d",
           static_cast<unsigned long long>(composition_revision_),
@@ -271,6 +292,9 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
         };
         if (presentation_refresh) {
           request["presentation_refresh"] = true;
+          if (!candidate_set_id_.empty()) {
+            request["candidate_set_id"] = candidate_set_id_;
+          }
         }
         if (context_epoch_ > 0) {
           request["context_session"] = context_session_;
@@ -314,8 +338,11 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
           const std::string response_set =
               response.value("candidate_set_id", std::string{});
           const bool set_matches =
-              requested_page == 0 ? !response_set.empty()
-                                  : response_set == candidate_set_id_;
+              requested_page == 0
+                  ? (!response_set.empty() &&
+                     (!presentation_refresh || candidate_set_id_.empty() ||
+                      response_set == candidate_set_id_))
+                  : response_set == candidate_set_id_;
           const bool source_identity_matches =
               context_epoch_ == 0 ||
               (response.value("context_session", std::string{}) ==
@@ -352,6 +379,9 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
           } else {
             if (requested_page == 0) {
               candidate_set_id_ = response_set;
+              if (presentation_refresh) {
+                frozen_pages_.clear();
+              }
             }
             current_page_index_ = requested_page;
             current_has_more_ = response.value("has_more", false);

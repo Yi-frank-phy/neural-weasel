@@ -99,8 +99,8 @@ correction; they are outside this slice.
 With an English/Latin candidate visible:
 
 1. Type a literal prefix and confirm the literal remains visible.
-2. Press Space. It must commit the current valid candidate and one space;
-   without a valid candidate, commit the literal prefix and one space.
+2. Without moving or selecting the candidate, press Space. It must commit the
+   literal prefix and one space, without accepting the offered completion.
 3. Type another prefix and press Tab. Tab may explicitly accept the selected
    completion.
 4. Press Escape. The completion must close while the literal prefix remains.
@@ -108,7 +108,8 @@ With an English/Latin candidate visible:
    receive its normal Enter behavior.
 6. Use Backspace and confirm the literal updates.
 7. Press 1 through 5 to commit the corresponding valid English candidate.
-   Move the highlight with arrows and verify Space accepts that candidate.
+   Move the highlight with arrows or select a candidate with the mouse, then
+   verify Space accepts that explicitly selected candidate and one space.
    Stale candidates must not commit.
 
 This slice provides only the current single-token live baseline. It does not

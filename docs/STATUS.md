@@ -29,9 +29,9 @@ The experimental slice is not production ready.
 - A pinned TSF `TextEditSink` hook that schedules read-only surrounding-text
   capture. Password/PIN, unknown policy, blacklisted system processes, and
   non-input desktops are denied. Pipe work runs later on a latest-wins worker.
-- Shared Python/C++ key vectors for English Space/Tab/Escape/Enter, Chinese
-  Space/Escape, Backspace, numbered selection, no candidate, stale candidate,
-  and service failure.
+- Shared Python/C++ key vectors for default-literal and explicitly selected
+  English Space, Tab/Escape/Enter, Chinese Space/Escape, Backspace, numbered
+  selection, no candidate, stale candidate, and service failure.
 - A Windows CI job that builds pinned dependencies and all native artifacts,
   runs CTest and disposable dry-run safety tests, scans binary/resource
   identities, and uploads `neural-weasel-experimental-x64`.

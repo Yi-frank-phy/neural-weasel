@@ -7,7 +7,7 @@ from neural_weasel import pipe_server
 from neural_weasel.response_workers import after_response, start_worker
 
 
-def test_continuation_waits_for_response_without_marking_page_replaceable(make_index):
+def test_continuation_waits_for_response_before_marking_improvement_pending(make_index):
     engine, runtime = _engine(make_index)
     try:
         with after_response():
@@ -16,7 +16,7 @@ def test_continuation_waits_for_response_without_marking_page_replaceable(make_i
             assert replay.candidate_set_id == page.candidate_set_id
             assert replay.candidates == page.candidates
             assert replay.candidate_ids == page.candidate_ids
-            assert not engine.candidate_pages.presentation_update_pending(page.candidate_set_id)
+            assert engine.candidate_pages.presentation_update_pending(page.candidate_set_id)
             assert not runtime.started.is_set()
         assert runtime.started.wait(1)
     finally:

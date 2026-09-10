@@ -7,14 +7,16 @@ namespace {
 
 const char* ScopeLabel(tsf::InputScopeState state) noexcept {
   switch (state) {
+    case tsf::InputScopeState::kUnknown:
+      return "PASSWORD";
     case tsf::InputScopeState::kPrivate:
       return "PRIVATE";
     case tsf::InputScopeState::kPassword:
       return "PASSWORD";
     case tsf::InputScopeState::kNormal:
-    default:
       return "NORMAL";
   }
+  return "PASSWORD";
 }
 
 }  // namespace

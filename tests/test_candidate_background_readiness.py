@@ -91,7 +91,7 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
     first = server.handle_message(request)
     assert first["ok"] is True
     assert first["has_more"] is True
-    assert first["background_pending"] is False
+    assert first["background_pending"] is True
     assert first["presentation_refresh"] is False
     assert runtime.started.wait(0.5)
     completion = engine.candidate_pages._background_search_events.get(first["candidate_set_id"])
@@ -103,19 +103,28 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
     replay = server.handle_message(request)
     assert replay["ok"] is True
     assert replay["candidate_set_id"] == first["candidate_set_id"]
-    assert replay["background_pending"] is False
+    assert replay["background_pending"] is True
     assert tuple(item["candidate_id"] for item in replay["candidates"]) == tuple(
         item["candidate_id"] for item in first["candidates"]
     )
 
-    refreshed_request = dict(request, presentation_refresh=True)
+    refreshed_request = dict(
+        request,
+        presentation_refresh=True,
+        candidate_set_id=first["candidate_set_id"],
+    )
     refreshed = server.handle_message(refreshed_request)
     assert refreshed["ok"] is True
     assert refreshed["background_pending"] is False
     assert refreshed["presentation_refresh"] is True
     assert refreshed["candidate_set_id"] == first["candidate_set_id"]
-    assert refreshed["candidates"] == first["candidates"]
+    assert "你好" in {item["text"] for item in refreshed["candidates"]}
+    assert refreshed["candidates"] != first["candidates"]
     assert refreshed["has_more"] is True
+
+    settled = server.handle_message(request)
+    assert settled["candidates"] == refreshed["candidates"]
+    assert settled["background_pending"] is False
 
     manager = engine.candidate_pages
     preparation = manager._page_preparation_events.get(first["candidate_set_id"])
@@ -125,4 +134,4 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
         dict(request, page_index=1, candidate_set_id=first["candidate_set_id"])
     )
     assert later["ok"] is True
-    assert "你好" in {item["text"] for item in later["candidates"]}
+    assert "你好" not in {item["text"] for item in later["candidates"]}
