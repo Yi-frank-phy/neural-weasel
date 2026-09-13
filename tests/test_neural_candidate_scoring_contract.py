@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
 from neural_weasel.neural_candidate_pages_scored import _selected_log_probs
+from neural_weasel.neural_candidates import CandidatePageTimeout
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -159,7 +161,9 @@ def test_dirty_latin_prewarm_invalidates_root_before_rebuilding(monkeypatch) -> 
     assert len(manager._baseline_single_letter) == 2
 
 
-def test_baseline_multitoken_han_path_becomes_page_zero_supplement(make_index) -> None:
+def test_baseline_multitoken_han_path_waits_for_coherent_immutable_page_zero(
+    make_index,
+) -> None:
     index = make_index(
         [
             (1, "你", "ni", "ni", 1, 0),
@@ -174,26 +178,34 @@ def test_baseline_multitoken_han_path_becomes_page_zero_supplement(make_index) -
     )
     engine.initialize_neural_baseline()
 
-    first = _page(engine, 1)
+    with pytest.raises(CandidatePageTimeout, match="complete candidate page"):
+        _page(engine, 1)
     assert runtime.full_logits_calls == 1
-    assert not any(candidate.text == "你好" for candidate in first.candidates)
+    manager = engine.candidate_pages
+    with manager._state_lock:
+        assert len(manager._sessions) == 1
+        candidate_set_id, session = next(iter(manager._sessions.items()))
+        assert 0 not in session.frozen_pages
+        completion = manager._background_search_events[candidate_set_id]
+    assert completion.wait(1.0)
 
-    _wait_for_async_han(engine, first.candidate_set_id)
-    second = _page(engine, 1, presentation_refresh=True)
-    assert second.candidate_set_id == first.candidate_set_id
-    assert any(candidate.text == "你好" for candidate in second.candidates)
-    preparation = engine.candidate_pages._page_preparation_events.get(first.candidate_set_id)
-    assert preparation is not None
-    assert preparation.wait(1.0)
-    root = next(candidate for candidate in second.candidates if candidate.text == "你")
-    assert root.token_path == (1,)
-    assert not root.completes_input
-    assert root.predicted_syllables == 0
-    phrase = next(candidate for candidate in second.candidates if candidate.text == "你好")
+    first = _page(engine, 1, presentation_refresh=True)
+    phrase = next(candidate for candidate in first.candidates if candidate.text == "你好")
     assert phrase.token_path == (1, 2)
     assert phrase.completes_input
     assert phrase.model_score is not None
     assert phrase.model_score <= 0.0
+    assert all(
+        candidate.completes_input
+        for candidate in first.candidates
+        if candidate.script == "han"
+    )
+    assert not any(candidate.text == "你" for candidate in first.candidates)
+
+    replay = _page(engine, 1, presentation_refresh=True)
+    assert replay.candidate_set_id == first.candidate_set_id
+    assert replay.candidates == first.candidates
+    assert replay.candidate_ids == first.candidate_ids
 
     replacement = _page(engine, 2)
     cached = [candidate for candidate in replacement.candidates if candidate.text == "你好"]

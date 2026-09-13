@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import neural_weasel.neural_candidate_pages as candidate_pages
+import neural_weasel.neural_candidate_pages_scored as candidate_pages_scored
 import neural_weasel.neural_candidate_pages_v3 as candidate_pages_v3
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
@@ -364,6 +365,18 @@ def _wait_for_page_preparation(
         event = manager._page_preparation_events.get(candidate_set_id)
     assert event is not None
     assert event.wait(timeout)
+
+
+def _await_coherent_page(engine, raw: str, **kwargs):
+    try:
+        return _page(engine, raw, **kwargs)
+    except CandidatePageTimeout:
+        manager = engine.candidate_pages
+        with manager._state_lock:
+            candidate_set_id = next(iter(manager._sessions))
+            event = manager._background_search_events[candidate_set_id]
+        assert event.wait(1.0)
+        return _page(engine, raw, **kwargs)
 
 
 def test_page_zero_preserves_handler_deadline_and_skips_root_when_already_expired(
@@ -766,19 +779,17 @@ def test_initial_shorthand_survives_a_competing_exact_short_syllable(make_index)
     assert by_text["你好"].token_path == (2,)
 
 
-def test_full_input_can_offer_prefix_consumption_without_beating_full_cover(make_index) -> None:
+def test_full_input_never_publishes_prefix_only_han_candidates(make_index) -> None:
     engine, _ = _engine(make_index)
 
     page = _page(engine, "nihao")
     han = [candidate for candidate in page.candidates if candidate.script == "han"]
     full = next(candidate for candidate in han if candidate.text == "你好")
-    prefix = next(candidate for candidate in han if candidate.text == "你")
 
     assert full.completes_input
     assert full.consumed_keys == len("nihao")
-    assert not prefix.completes_input
-    assert prefix.consumed_keys == len("ni")
-    assert han.index(full) < han.index(prefix)
+    assert all(candidate.completes_input for candidate in han)
+    assert "你" not in {candidate.text for candidate in han}
 
 
 def test_latin_first_is_latin_only_single_page_and_bounded_to_five(make_index) -> None:
@@ -958,7 +969,7 @@ def test_search_frontier_retains_partial_root_beyond_visible_180(make_index) -> 
     assert all(candidate.text != "明" for candidate in first.candidates)
 
 
-def test_background_continuation_improves_unlocked_page_zero_in_same_set(
+def test_background_continuation_builds_coherent_immutable_page_zero(
     make_index,
 ) -> None:
     index = make_index(
@@ -979,13 +990,11 @@ def test_background_continuation_improves_unlocked_page_zero_in_same_set(
     )
     engine.initialize_neural_baseline()
 
-    first = _page(engine, "mingxian")
-    assert [candidate.text for candidate in first.candidates] == ["明"]
-    assert first.has_more is True
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, "mingxian")
     assert runtime.started.wait(0.5)
-    replay = _page(engine, "mingxian")
-    assert replay.candidate_set_id == first.candidate_set_id
-    assert replay.candidates == first.candidates
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, "mingxian")
 
     runtime.release.set()
     deadline = time.monotonic() + 1.0
@@ -996,19 +1005,16 @@ def test_background_continuation_improves_unlocked_page_zero_in_same_set(
     else:
         pytest.fail("background continuation did not publish its completed candidate")
 
+    first = _page(engine, "mingxian")
+    assert "明显" in {candidate.text for candidate in first.candidates}
+    assert all(
+        candidate.completes_input
+        for candidate in first.candidates
+        if candidate.script == "han"
+    )
     refreshed = _page(engine, "mingxian", presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
-    assert any(candidate.text == "明显" for candidate in refreshed.candidates)
-    assert refreshed.has_more is True
-
-    _wait_for_page_preparation(engine, first.candidate_set_id)
-    later = _page(
-        engine,
-        "mingxian",
-        page_index=1,
-        candidate_set_id=first.candidate_set_id,
-    )
-    assert all(candidate.text != "明显" for candidate in later.candidates)
+    assert refreshed.candidates == first.candidates
 
 
 def test_background_continuation_batches_production_shorthand_roots(
@@ -1047,7 +1053,7 @@ def test_background_continuation_batches_production_shorthand_roots(
 
     monkeypatch.setattr(matcher, "neural_matches", counted_neural_matches)
 
-    first = _page(engine, "mxbd")
+    first = _await_coherent_page(engine, "mxbd")
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
         if engine.candidate_pages._async_han_cache:
@@ -1058,11 +1064,12 @@ def test_background_continuation_batches_production_shorthand_roots(
 
     assert runtime.continuation_batches
     assert runtime.continuation_batches[0][0] != (3,)
-    assert (3,) in runtime.continuation_batches[0]
-    assert suffix_match_starts == [2]
+    assert len(runtime.continuation_batches) >= 2
+    assert (3,) in runtime.continuation_batches[1]
+    assert suffix_match_starts == [2, 2]
     replay = _page(engine, "mxbd")
     assert replay.candidate_set_id == first.candidate_set_id
-    assert all(candidate.text != "明显不对" for candidate in replay.candidates)
+    assert any(candidate.text == "明显不对" for candidate in replay.candidates)
 
     refreshed = _page(engine, "mxbd", composition_revision=2)
     assert refreshed.candidate_set_id != first.candidate_set_id
@@ -1071,7 +1078,7 @@ def test_background_continuation_batches_production_shorthand_roots(
 
 def test_background_continuation_progresses_beyond_first_root_batch(make_index) -> None:
     # Keep nineteen lower-scoring roots in the same shorthand bucket so the
-    # desired twentieth root can only be reached by multiple eight-root calls.
+    # desired twentieth root can only be reached by multiple bounded calls.
     dummy_text = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申"
     rows = [
         (token_id, text, "ming'xian", "ming'xian", 2, 0)
@@ -1096,23 +1103,32 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
     )
     engine.initialize_neural_baseline()
 
-    first = _page(engine, "mxbd")
+    first = _await_coherent_page(engine, "mxbd")
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
-        if engine.candidate_pages._async_han_cache:
+        cached = tuple(engine.candidate_pages._async_han_cache.values())
+        if any(
+            candidate.text == "明显不对"
+            for batch in cached
+            for candidate in batch
+        ):
             break
         time.sleep(0.01)
     else:
-        pytest.fail("progressive background continuation did not publish a candidate")
+        pytest.fail("progressive background continuation did not publish the target")
 
-    assert len(runtime.continuation_batches) >= 3
-    assert (20,) in runtime.continuation_batches[2]
+    assert len(runtime.continuation_batches) >= 10
+    assert (20,) in runtime.continuation_batches[9]
     refreshed = _page(engine, "mxbd", composition_revision=2)
     assert refreshed.candidate_set_id != first.candidate_set_id
     _wait_for_page_preparation(engine, refreshed.candidate_set_id)
-    pages = [refreshed]
-    for page_index in (1, 2):
-        pages.append(
+    with engine.candidate_pages._state_lock:
+        last_page_index = max(
+            engine.candidate_pages._sessions[refreshed.candidate_set_id].frozen_pages
+        )
+    published = [refreshed]
+    for page_index in range(1, last_page_index + 1):
+        published.append(
             _page(
                 engine,
                 "mxbd",
@@ -1121,7 +1137,43 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
                 candidate_set_id=refreshed.candidate_set_id,
             )
         )
-    assert any(candidate.text == "明显不对" for page in pages for candidate in page.candidates)
+    assert any(
+        candidate.text == "明显不对"
+        for page in published
+        for candidate in page.candidates
+    )
+    assert all(
+        candidate.completes_input
+        for page in published
+        for candidate in page.candidates
+        if candidate.script == "han"
+    )
+
+
+def test_async_han_cache_merge_retains_previously_published_candidate(make_index) -> None:
+    index = make_index(
+        [
+            (1, "最小化", "zui'xiaohua", "zui'xiao'hua", 3, 0),
+            (2, "最小环", "zui'xiaohuan", "zui'xiao'huan", 3, 0),
+        ]
+    )
+    logits = np.full(3, -20.0, dtype=np.float32)
+    logits[1] = 10.0
+    logits[2] = 9.0
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(FakeRuntime(logits)),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+    page = _page(engine, "zuixiaohua")
+    previous = (page.candidates[0],)
+    completed = (page.candidates[1],)
+
+    merged = candidate_pages_scored._merge_async_han_candidates(previous, completed)
+
+    assert {candidate.text for candidate in merged} == {"最小化", "最小环"}
+    assert candidate_pages_scored._merge_async_han_candidates(merged, ()) == merged
 
 
 def test_focus_invalidation_discards_background_continuation_result(make_index) -> None:
@@ -1143,7 +1195,8 @@ def test_focus_invalidation_discards_background_continuation_result(make_index) 
     )
     engine.initialize_neural_baseline()
 
-    _page(engine, "mingxian")
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, "mingxian")
     assert runtime.started.wait(0.5)
     engine.invalidate_candidate_sessions()
     runtime.release.set()

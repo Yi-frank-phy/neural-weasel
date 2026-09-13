@@ -34,19 +34,31 @@ from .response_workers import start_worker
 
 _MAX_BASELINE_HAN_CACHE = 512
 _MAX_ASYNC_HAN_CACHE = 128
-# A production Q4 continuation over 32 roots takes about 1.1--1.2 s on the
-# target 4060.  Keep the total work bounded, but split it into short calls so
-# a new composition never waits behind one monolithic CUDA replay.  Three
-# eight-root batches reach the observed rank-20 ``mxbd`` root while each model
-# lock hold remains in the measured ~0.3 s range.
-# A production Q4 continuation over 32 roots takes about 1.1--1.2 s on the
-# target 4060.  Allow two and a half seconds for progressive eight-root calls:
-# this covers the measured rank-20 ``mxbd`` root even when the first replay
-# pays the model's warm-up cost.  This is a daemon-only budget; the foreground
-# native query remains guarded by its independent 50 ms deadline.
+# With a single recurrent-model sequence, every branch restores the cached root
+# state before scoring its short suffix. Keep each call small so partial
+# results become publishable well inside the native page deadline; the outer
+# progressive loop still advances across as many batches as the deadline
+# permits, preserving deep-root coverage without one long eight-branch call.
+# This is a daemon-only budget; the foreground native query remains guarded by
+# its independent 50 ms deadline.
 _BACKGROUND_CONTINUATION_DEADLINE_MS = 2500.0
-_BACKGROUND_ROOT_BATCH_SIZE = 8
+_BACKGROUND_ROOT_BATCH_SIZE = 2
 _BACKGROUND_MAX_RETRY_WAKES = 4
+
+
+def _merge_async_han_candidates(
+    previous: Sequence[Candidate],
+    completed: Sequence[Candidate],
+) -> tuple[Candidate, ...]:
+    """Keep every completed path discovered for an immutable input identity."""
+
+    best: dict[tuple[str, tuple[int, ...]], Candidate] = {}
+    for candidate in (*previous, *completed):
+        key = (unicodedata.normalize("NFKC", candidate.text), candidate.token_path)
+        current = best.get(key)
+        if current is None or _candidate_key(candidate) < _candidate_key(current):
+            best[key] = candidate
+    return tuple(sorted(best.values(), key=_candidate_key))
 
 
 def _selected_log_probs(logits: Sequence[float], token_ids: Sequence[int]) -> np.ndarray:
@@ -427,8 +439,16 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                         and (unicodedata.normalize("NFKC", candidate.text), candidate.token_path)
                         not in before
                     )
-                    if completed and completed != self._async_han_cache.get(identity_key):
-                        self._async_han_cache[identity_key] = completed
+                    previous = self._async_han_cache.get(identity_key, ())
+                    merged = _merge_async_han_candidates(previous, completed)
+                    if merged and merged != previous:
+                        # Page publication removes candidates from
+                        # ``session.pending`` while an in-flight continuation
+                        # batch may still be returning. Never let that later
+                        # publication replace the cache with only the remaining
+                        # tail and thereby drop an already published candidate
+                        # from the next composition revision.
+                        self._async_han_cache[identity_key] = merged
                         self._async_han_cache.move_to_end(identity_key)
                         while len(self._async_han_cache) > _MAX_ASYNC_HAN_CACHE:
                             self._async_han_cache.popitem(last=False)
@@ -504,7 +524,12 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
 
         try:
             # Keep backend ownership/generation validation on the context state.
-            self.backend.score_allowed_tokens(state, token_ids)
+            selected = self.backend.score_allowed_tokens(state, token_ids)
+            if state.log_normalizer is not None:
+                return np.asarray(
+                    np.asarray(selected, dtype=np.float64) - state.log_normalizer,
+                    dtype=np.float32,
+                )
             payload = np.asarray(state.payload)
             if payload.ndim != 1:
                 raise ValueError("candidate paging requires a full-vocabulary root")
@@ -583,7 +608,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     allow_prewarm_cache=False,
                 )
                 self._baseline_single_letter[(raw, mode)] = tuple(
-                    candidates[:MAX_FROZEN_CANDIDATES]
+                    self._freeze_single_letter_prewarm(candidates, mode)
                 )
 
     def _remember_baseline_latin_candidate(self, candidate: Candidate) -> None:

@@ -29,6 +29,26 @@ class BaselineRuntime:
         pass
 
 
+class WarmupRuntime(BaselineRuntime):
+    def __init__(self, logits: np.ndarray) -> None:
+        super().__init__(logits)
+        self.warm_calls: list[tuple[object, float]] = []
+
+    def full_logits(self, before: str, after: str) -> RuntimeSnapshot:
+        snapshot = super().full_logits(before, after)
+        return RuntimeSnapshot(
+            snapshot.payload,
+            snapshot.before_hash,
+            snapshot.after_hash,
+            snapshot.latency_ms,
+            continuation_root="empty-context-root",
+        )
+
+    def warm_candidate_continuation(self, root: object, *, deadline_ms: float) -> bool:
+        self.warm_calls.append((root, deadline_ms))
+        return True
+
+
 # Ordinary Mandarin syllables start with these ASCII letters. i/u do not start
 # a syllable in the pinyin graph, while v is the ASCII spelling of umlaut-u
 # inside syllables such as lv/nv rather than an initial of its own.
@@ -57,6 +77,23 @@ _VALID_SINGLE_LETTER_ENTRANCES = {
     "y": (22, "有", "you"),
     "z": (23, "在", "zai"),
 }
+
+
+def test_baseline_continuation_is_warm_before_initialization_returns(make_index) -> None:
+    index = make_index([(1, "吗", "ma", "ma", 1, 0)])
+    runtime = WarmupRuntime(np.zeros(8, dtype=np.float32))
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+
+    engine.initialize_neural_baseline()
+
+    assert len(runtime.warm_calls) == 1
+    root, deadline_ms = runtime.warm_calls[0]
+    assert root == "empty-context-root"
+    assert deadline_ms >= 10_000.0
 
 
 def test_all_valid_single_letter_entrances_are_prewarmed_neural_han(make_index) -> None:
@@ -100,3 +137,48 @@ def test_all_valid_single_letter_entrances_are_prewarmed_neural_han(make_index) 
     # Querying every entrance consumed only the permanent startup scores. Page 0
     # did not trigger another model forward for any letter.
     assert runtime.calls == 1
+
+
+def test_context_bound_single_letter_reuses_prewarmed_structure(make_index, monkeypatch) -> None:
+    index = make_index(
+        [
+            (1, "马", "ma", "ma", 1, 0),
+            (2, "美", "mei", "mei", 1, 0),
+        ]
+    )
+    logits = np.full(16, -20.0, dtype=np.float32)
+    logits[1] = 10.0
+    logits[2] = 9.0
+    runtime = BaselineRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+    contextual_logits = logits.copy()
+    contextual_logits[2] = 1_000.0
+    runtime.logits = contextual_logits
+    state = engine.update_context("bounded context")
+
+    def fail_cold_single_letter_matches(*_args, **_kwargs):
+        raise AssertionError("context-bound single letters must reuse prewarmed pinyin structure")
+
+    monkeypatch.setattr(
+        engine.candidate_pages.matcher,
+        "neural_matches",
+        fail_cold_single_letter_matches,
+    )
+    page = engine.query_candidate_page(
+        client_session_id="context-bound-single-letter",
+        composition_revision=1,
+        context_epoch=state.epoch,
+        context_session="test-context-session",
+        source_revision=1,
+        language_mode="chinese_first",
+        raw_keys="m",
+        page_index=0,
+    )
+
+    assert page.score_source == "context"
+    assert page.candidates[0].text == "美"

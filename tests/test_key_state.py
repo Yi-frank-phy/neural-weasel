@@ -35,23 +35,20 @@ def chinese_state() -> CompositionState:
     )
 
 
-def test_latin_space_commits_literal_until_completion_is_explicitly_selected() -> None:
-    """AT-KS-01: a visible suggestion alone does not authorize replacement."""
+def test_latin_space_accepts_default_completion_and_falls_back_without_one() -> None:
+    """AT-KS-01: Space accepts the current completion when one is available."""
     transition = reduce_key(latin_state(), KeyAction.SPACE)
 
-    assert transition.committed_text == "asy "
+    assert transition.committed_text == "asymmetric "
     assert transition.state.is_idle
 
-    selected = CompositionState(
+    without_completion = CompositionState(
         mode=CompositionMode.LATIN_FIRST,
         literal="asy",
-        candidates=("asymmetric", "asymmetry"),
-        selected_index=0,
-        completion_visible=True,
-        completion_explicitly_selected=True,
     )
-    accepted = reduce_key(selected, KeyAction.SPACE)
-    assert accepted.committed_text == "asymmetric "
+    fallback = reduce_key(without_completion, KeyAction.SPACE)
+    assert fallback.committed_text == "asy "
+    assert fallback.state.is_idle
 
 
 def test_latin_tab_accepts_selected_completion() -> None:

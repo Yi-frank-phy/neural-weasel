@@ -14,7 +14,7 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-def test_presentation_refresh_does_not_create_an_input_revision() -> None:
+def test_presentation_refresh_replays_an_existing_frozen_page() -> None:
     translator = _read(TRANSLATOR)
     refresh_header = _read(REFRESH_HEADER)
 
@@ -33,20 +33,36 @@ def test_presentation_refresh_does_not_create_an_input_revision() -> None:
     assert "++composition_revision_" not in refresh_block
     assert 'request["presentation_refresh"] = true;' in translator
     assert "candidate_set_id_ = response_set;" in translator
+    assert "if (cached != frozen_pages_.end())" in translator
+    assert "if (!presentation_refresh && cached != frozen_pages_.end())" not in translator
 
 
-def test_first_page_timeout_uses_prompt_bounded_owner_thread_retries() -> None:
+def test_first_page_timeout_uses_elapsed_budgeted_owner_thread_retries() -> None:
     overlay = _read(OVERLAY)
     refresh_header = _read(REFRESH_HEADER)
 
     assert "kNeuralFirstPageRetryDelayMs = 25" in refresh_header
     assert "kNeuralFirstPageRetryIntervalMs = 50" in refresh_header
-    assert "kNeuralFirstPageRetryMaxAttempts = 4" in refresh_header
+    assert "kNeuralFirstPageRetryBudgetMs = 2500" in refresh_header
+    assert "kNeuralFirstPageRetryMaxIntervalMs = 200" in refresh_header
     assert "const bool presentation_ready = m_client.ProcessKeyEvent(refresh);" in overlay
     assert "ShouldRetryFirstPage(" in overlay
     assert "FirstPageRetryDelayMs(" in overlay
+    assert "GetTickCount64() - _neuralRefreshStartedTick" in overlay
     assert "GetCurrentThreadId() != _neuralRefreshOwnerThreadId" in overlay
     assert "std::this_thread::sleep_for" not in overlay
+
+
+def test_real_selector_navigation_locks_explicit_candidate_choice() -> None:
+    processor = _read(PROCESSOR)
+
+    assert "IsCandidateNavigationKey(key_event)" in processor
+    for key in ("XK_Up", "XK_Down", "XK_Home", "XK_End"):
+        assert key in processor
+    navigation = processor[processor.index("if (IsCandidateNavigationKey") :]
+    navigation = navigation[: navigation.index("const auto mode")]
+    assert "LockPresentation(context);" in navigation
+    assert "return ::rime::kNoop;" in navigation
 
 
 def test_timed_refresh_requires_pending_unlocked_default_selection() -> None:

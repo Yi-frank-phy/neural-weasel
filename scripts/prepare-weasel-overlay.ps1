@@ -308,6 +308,7 @@ $1  ULONGLONG _nextReconnectTick = 0;
   UINT_PTR _neuralRefreshTimer = 0;
   DWORD _neuralRefreshOwnerThreadId = 0;
   unsigned int _neuralRefreshAttempts = 0;
+  ULONGLONG _neuralRefreshStartedTick = 0;
   com_ptr<ITfContext> _neuralRefreshContext;
 $2
 '@
@@ -428,6 +429,7 @@ void WeaselTSF::_CancelNeuralRefresh() {
   }
   _neuralRefreshTimer = 0;
   _neuralRefreshAttempts = 0;
+  _neuralRefreshStartedTick = 0;
   _neuralRefreshContext.Release();
 }
 
@@ -447,6 +449,7 @@ void WeaselTSF::_ScheduleNeuralRefresh(com_ptr<ITfContext> pContext) {
     return;
   }
   _neuralRefreshContext = pContext;
+  _neuralRefreshStartedTick = GetTickCount64();
   _neuralRefreshTimer = SetTimer(
       _neuralRefreshWindow, kNeuralRefreshTimerId,
       neural_weasel::rime_plugin::FirstPageRetryDelayMs(0),
@@ -477,7 +480,11 @@ void WeaselTSF::_RunNeuralRefresh() {
   }
   _neuralRefreshTimer = 0;
   const auto context = _neuralRefreshContext;
+  const ULONGLONG elapsed_before_query =
+      GetTickCount64() - _neuralRefreshStartedTick;
   if (context == nullptr || GetCurrentThreadId() != _neuralRefreshOwnerThreadId ||
+      !neural_weasel::rime_plugin::ShouldRetryFirstPage(
+          false, elapsed_before_query) ||
       !_status.composing ||
       !neural_weasel::tsf::IsWeaselPredictionAllowed() ||
       !_EnsureServerConnected()) {
@@ -490,9 +497,10 @@ void WeaselTSF::_RunNeuralRefresh() {
       neural_weasel::rime_plugin::kNeuralRefreshKeycode, 0);
   const bool presentation_ready = m_client.ProcessKeyEvent(refresh);
   _UpdateComposition(context);
+  const ULONGLONG elapsed_ms = GetTickCount64() - _neuralRefreshStartedTick;
 
   if (!neural_weasel::rime_plugin::ShouldRetryFirstPage(
-          presentation_ready, _neuralRefreshAttempts)) {
+          presentation_ready, elapsed_ms)) {
     _CancelNeuralRefresh();
     return;
   }

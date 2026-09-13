@@ -57,7 +57,9 @@ class BlockingContinuationRuntime:
         pass
 
 
-def test_candidate_page_reports_background_readiness_for_exact_identity(make_index) -> None:
+def test_published_page_zero_stays_frozen_while_background_prepares_later_pages(
+    make_index,
+) -> None:
     index = make_index(
         [
             (1, "你", "ni", "ni", 1, 0),
@@ -88,25 +90,26 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
         "page_index": 0,
     }
 
-    first = server.handle_message(request)
-    assert first["ok"] is True
-    assert first["has_more"] is True
-    assert first["background_pending"] is True
-    assert first["presentation_refresh"] is False
+    pending = server.handle_message(request)
+    assert pending["ok"] is False
+    assert pending["error"]["retryable"] is True
     assert runtime.started.wait(0.5)
-    completion = engine.candidate_pages._background_search_events.get(first["candidate_set_id"])
+    candidate_set_id = next(iter(engine.candidate_pages._sessions))
+    completion = engine.candidate_pages._background_search_events.get(candidate_set_id)
     assert completion is not None
 
     runtime.release.set()
     assert completion.wait(1.0)
 
-    replay = server.handle_message(request)
-    assert replay["ok"] is True
-    assert replay["candidate_set_id"] == first["candidate_set_id"]
-    assert replay["background_pending"] is True
-    assert tuple(item["candidate_id"] for item in replay["candidates"]) == tuple(
-        item["candidate_id"] for item in first["candidates"]
+    first = server.handle_message(request)
+    assert first["ok"] is True
+    assert "你好" in {item["text"] for item in first["candidates"]}
+    assert all(
+        item["completes_input"]
+        for item in first["candidates"]
+        if item["script"] == "han"
     )
+    assert first["background_pending"] is False
 
     refreshed_request = dict(
         request,
@@ -118,20 +121,5 @@ def test_candidate_page_reports_background_readiness_for_exact_identity(make_ind
     assert refreshed["background_pending"] is False
     assert refreshed["presentation_refresh"] is True
     assert refreshed["candidate_set_id"] == first["candidate_set_id"]
-    assert "你好" in {item["text"] for item in refreshed["candidates"]}
-    assert refreshed["candidates"] != first["candidates"]
+    assert refreshed["candidates"] == first["candidates"]
     assert refreshed["has_more"] is True
-
-    settled = server.handle_message(request)
-    assert settled["candidates"] == refreshed["candidates"]
-    assert settled["background_pending"] is False
-
-    manager = engine.candidate_pages
-    preparation = manager._page_preparation_events.get(first["candidate_set_id"])
-    assert preparation is not None
-    assert preparation.wait(1.0)
-    later = server.handle_message(
-        dict(request, page_index=1, candidate_set_id=first["candidate_set_id"])
-    )
-    assert later["ok"] is True
-    assert "你好" not in {item["text"] for item in later["candidates"]}

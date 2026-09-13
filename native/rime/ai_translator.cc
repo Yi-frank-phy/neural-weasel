@@ -265,7 +265,10 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
 
     std::string page_payload;
     const auto cached = frozen_pages_.find(requested_page);
-    if (!presentation_refresh && cached != frozen_pages_.end()) {
+    // A published page is immutable for this composition revision. The private
+    // refresh key may retry a missing first page, but may never replace one
+    // that the user can already see.
+    if (cached != frozen_pages_.end()) {
       page_payload = cached->second;
     } else {
       if (requested_page > 0 &&
@@ -379,9 +382,6 @@ void AiTranslator::OnContextUpdate(::rime::Context* context) {
           } else {
             if (requested_page == 0) {
               candidate_set_id_ = response_set;
-              if (presentation_refresh) {
-                frozen_pages_.clear();
-              }
             }
             current_page_index_ = requested_page;
             current_has_more_ = response.value("has_more", false);

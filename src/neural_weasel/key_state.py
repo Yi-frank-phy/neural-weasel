@@ -114,9 +114,7 @@ def reduce_key(state: CompositionState, action: KeyAction) -> KeyTransition:
 
     if action == KeyAction.SPACE:
         if state.mode == CompositionMode.LATIN_FIRST:
-            completion = (
-                _selected_candidate(state) if state.completion_explicitly_selected else None
-            )
+            completion = _selected_candidate(state)
             return _commit(state, (completion or state.literal) + " ")
         return _commit(state, _selected_candidate(state) or state.literal)
 

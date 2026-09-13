@@ -1,5 +1,5 @@
 # case	mode	intent	has_candidate	candidate_is_completion	candidate_fresh	service_available	explicit_selection	expected
-latin_space	latin_first	space	1	1	1	1	0	commit_literal_space
+latin_space	latin_first	space	1	1	1	1	0	accept_completion_space
 latin_selected_space	latin_first	space	1	1	1	1	1	accept_completion_space
 latin_tab	latin_first	tab	1	1	1	1	0	accept_completion
 latin_escape	latin_first	escape	1	1	1	1	0	cancel

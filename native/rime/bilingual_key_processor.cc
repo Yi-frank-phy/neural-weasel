@@ -48,6 +48,18 @@ bool IsShiftKey(const ::rime::KeyEvent& event) {
   return event.keycode() == XK_Shift_L || event.keycode() == XK_Shift_R;
 }
 
+bool IsCandidateNavigationKey(const ::rime::KeyEvent& event) {
+  switch (event.keycode()) {
+    case XK_Up:
+    case XK_Down:
+    case XK_Home:
+    case XK_End:
+      return true;
+    default:
+      return false;
+  }
+}
+
 KeyIntent IntentFor(const ::rime::KeyEvent& event) {
   switch (event.keycode()) {
     case XK_space:
@@ -176,6 +188,13 @@ void LockPresentation(::rime::Context* context) {
     shift_used_as_modifier_ = true;
   }
   if (key_event.ctrl() || key_event.alt() || key_event.super()) {
+    return ::rime::kNoop;
+  }
+  // The selector runs after this processor and mutates selected_index without
+  // reliably emitting Context::select_notifier(). Record navigation intent
+  // before yielding so Down followed by Up still means an explicit choice.
+  if (IsCandidateNavigationKey(key_event)) {
+    LockPresentation(context);
     return ::rime::kNoop;
   }
   const auto mode = CurrentLanguageMode(context);

@@ -146,7 +146,8 @@ def test_background_cpu_work_does_not_block_invalidation(make_index, monkeypatch
         return original(*args, **kwargs)
 
     monkeypatch.setattr(manager, stage, blocked)
-    _page(engine, client="cpu", revision=1, raw="nh")
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, client="cpu", revision=1, raw="nh")
     assert entered.wait(1)
     thread, done, result = _run_in_thread(manager.clear_sessions)
     try:
@@ -166,7 +167,7 @@ def test_foreground_han_edge_traversal_does_not_block_invalidation(make_index, m
     runtime.release.set()
     manager = engine.candidate_pages
     monkeypatch.setattr(manager, "_maybe_start_page_preparation", lambda session: None)
-    _page(engine, client="foreground", revision=1, raw="nh")
+    _page(engine, client="foreground", revision=1, raw="ni")
     session = next(iter(manager._sessions.values()))
     entered, release = threading.Event(), threading.Event()
     original = manager._han_edges_for
@@ -276,3 +277,30 @@ def test_blocked_later_page_does_not_queue_page_zero_or_focus_invalidation(make_
             deadline_ms=120.0,
         )
     assert runtime.continuation_calls == 1
+
+
+def test_pending_later_page_retry_keeps_candidate_set_in_active_lru(make_index) -> None:
+    engine, runtime = _engine(make_index)
+    runtime.release.set()
+    manager = engine.candidate_pages
+    manager._maybe_start_page_preparation = lambda session: None
+
+    pages = [
+        _page(engine, client=f"client-{index}", revision=1, raw="ni")
+        for index in range(4)
+    ]
+    with pytest.raises(CandidatePageTimeout):
+        _page(
+            engine,
+            client="client-0",
+            revision=1,
+            raw="ni",
+            page_index=1,
+            candidate_set_id=pages[0].candidate_set_id,
+        )
+
+    _page(engine, client="client-4", revision=1, raw="ni")
+
+    with manager._state_lock:
+        assert pages[0].candidate_set_id in manager._sessions
+        assert pages[1].candidate_set_id not in manager._sessions

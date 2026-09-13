@@ -26,10 +26,13 @@ int main() {
   using neural_weasel::rime_plugin::FirstPageRetryDelayMs;
   using neural_weasel::rime_plugin::ShouldRetryFirstPage;
   if (FirstPageRetryDelayMs(0) != 25 || FirstPageRetryDelayMs(1) != 50 ||
-      !ShouldRetryFirstPage(false, 0) ||
-      !ShouldRetryFirstPage(false, 3) ||
-      ShouldRetryFirstPage(false, 4) ||
-      ShouldRetryFirstPage(true, 1)) {
+      FirstPageRetryDelayMs(2) != 100 || FirstPageRetryDelayMs(4) != 200 ||
+      FirstPageRetryDelayMs(20) != 200 ||
+      !ShouldRetryFirstPage(false, 35) ||
+      !ShouldRetryFirstPage(false, 120) ||
+      !ShouldRetryFirstPage(false, 2499) ||
+      ShouldRetryFirstPage(false, 2500) ||
+      ShouldRetryFirstPage(true, 50)) {
     std::cerr << "first-page retry scheduling semantics mismatch\n";
     return 1;
   }

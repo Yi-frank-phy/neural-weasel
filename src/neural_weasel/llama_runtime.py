@@ -25,7 +25,8 @@ from .llama_vocab import LlamaVocabAdapter
 DEFAULT_MAX_BEFORE_TOKENS = 3072
 DEFAULT_N_CTX = 4096
 DEFAULT_N_BATCH = 512
-DEFAULT_PARALLEL_SEQUENCES = 4
+DEFAULT_PARALLEL_SEQUENCES = 1
+CANDIDATE_WARMUP_MAX_PATH_TOKENS = 4
 # The production runtime fully offloads model layers and K/Q/V to CUDA.  Keep
 # llama.cpp's host-side workers bounded so the same process always retains CPU
 # scheduling headroom for the latency-critical named-pipe candidate thread.
@@ -141,9 +142,14 @@ class LlamaCppBackend:
         self.n_ctx = int(n_ctx)
         self.n_batch = int(n_batch)
         self._lock = threading.Lock()
+        self._context_waiters_lock = threading.Lock()
+        self._context_waiters = 0
         self._epoch = 0
         self._cached_token_ids: tuple[int, ...] | None = None
         self._cached_logits: np.ndarray | None = None
+        self._continuation_state_token_ids: tuple[int, ...] | None = None
+        self._continuation_state_buffer: Any | None = None
+        self._continuation_state_size = 0
         # Replaced atomically after a successful refresh. The immutable tuple
         # contains only counts and elapsed time, never editor text or hashes.
         self._last_refresh_diagnostics: tuple[int, int, float] | None = None
@@ -163,9 +169,10 @@ class LlamaCppBackend:
             model_path=str(acquired.path),
             n_gpu_layers=-1,
             main_gpu=0,
-            # llama.cpp divides this total context across n_seq_max. Four
-            # sequences therefore retain the configured per-sequence limit.
-            n_ctx=self.n_ctx * DEFAULT_PARALLEL_SEQUENCES,
+            # The editor prefix is shared by every candidate. Keep one KV
+            # sequence instead of reserving a full context per beam branch;
+            # continuation restores the shared root around each short suffix.
+            n_ctx=self.n_ctx,
             n_batch=self.n_batch,
             n_threads=DEFAULT_LLAMA_CPU_THREADS,
             n_threads_batch=DEFAULT_LLAMA_CPU_THREADS,
@@ -233,8 +240,9 @@ class LlamaCppBackend:
             return None
         raw_context = getattr(context, "ctx", None)
         if raw_context is not None:
-            # Production continuation replays the short editor token prefix into
-            # parallel sequences and never restores a copied sequence state.
+            # Production continuation replays the editor prefix once and then
+            # rewinds only short candidate suffixes. It never restores a copied
+            # sequence state.
             # Copying that state on every context refresh can take longer than
             # the native page-0 deadline even when no token needs evaluation.
             return LlamaContinuationRoot(b"", n_tokens, replay_token_ids)
@@ -300,9 +308,18 @@ class LlamaCppBackend:
 
     def create_snapshot(self, before: str, after: str = "") -> GgufLogitsSnapshot:
         token_ids = self._tokenize_context(before)
-        with self._lock:
+        with self._context_waiters_lock:
+            self._context_waiters += 1
+        try:
+            self._lock.acquire()
+        finally:
+            with self._context_waiters_lock:
+                self._context_waiters -= 1
+        try:
             started = time.perf_counter()
             evaluated_tokens = 0
+            if token_ids != self._cached_token_ids:
+                self._clear_cached_continuation_state()
             if token_ids == self._cached_token_ids and self._cached_logits is not None:
                 logits = self._cached_logits
             else:
@@ -346,6 +363,17 @@ class LlamaCppBackend:
                 latency_ms=latency_ms,
                 continuation_root=continuation_root,
             )
+        finally:
+            self._lock.release()
+
+    def _context_refresh_is_waiting(self) -> bool:
+        with self._context_waiters_lock:
+            return self._context_waiters > 0
+
+    def _clear_cached_continuation_state(self) -> None:
+        self._continuation_state_token_ids = None
+        self._continuation_state_buffer = None
+        self._continuation_state_size = 0
 
     def full_logits(self, before: str, after: str = "") -> RuntimeSnapshot:
         snapshot = self.create_snapshot(before, after)
@@ -417,7 +445,7 @@ class LlamaCppBackend:
             context = getattr(self.llama, "_ctx", None)
             raw_context = getattr(context, "ctx", None)
             if raw_context is not None and root.replay_token_ids:
-                return self._continue_parallel_replay(
+                return self._continue_single_sequence_restore(
                     root.replay_token_ids,
                     paths,
                     allowed_sets,
@@ -433,6 +461,8 @@ class LlamaCppBackend:
                 outputs.append(np.asarray(logits[allowed], dtype=np.float32).copy())
                 if time.monotonic() >= deadline:
                     return None
+                if len(outputs) < len(paths) and self._context_refresh_is_waiting():
+                    return None
             return outputs
         finally:
             try:
@@ -444,7 +474,31 @@ class LlamaCppBackend:
             finally:
                 self._lock.release()
 
-    def _continue_parallel_replay(
+    def warm_candidate_continuation(
+        self,
+        root: LlamaContinuationRoot,
+        *,
+        deadline_ms: float,
+    ) -> bool:
+        """Exercise representative single-sequence paths before the pipe is exposed."""
+
+        fallback = self._fallback_token()
+        allowed = (fallback,)
+        paths = tuple(
+            allowed * path_length
+            for path_length in range(1, CANDIDATE_WARMUP_MAX_PATH_TOKENS + 1)
+            for _ in range(DEFAULT_PARALLEL_SEQUENCES)
+        )
+        allowed_sets = (allowed,) * len(paths)
+        results = self.continue_from_root(
+            root,
+            paths,
+            allowed_sets,
+            deadline_ms=deadline_ms,
+        )
+        return results is not None and len(results) == len(paths)
+
+    def _continue_single_sequence_restore(
         self,
         replay_token_ids: Sequence[int],
         token_paths: Sequence[Sequence[int]],
@@ -452,94 +506,76 @@ class LlamaCppBackend:
         *,
         deadline: float,
     ) -> list[np.ndarray] | None:
-        """Replay one root into bounded sequence groups and decode in parallel."""
+        """Replay one root once, then restore its single-sequence state per branch."""
 
         from llama_cpp import llama_cpp
 
         context = getattr(self.llama, "_ctx", None)
         raw_context = getattr(context, "ctx", None)
         if raw_context is None:
-            raise RuntimeError("llama.cpp raw context is unavailable for parallel replay")
-        available_sequences = int(llama_cpp.llama_n_seq_max(raw_context))
-        if available_sequences < DEFAULT_PARALLEL_SEQUENCES:
-            raise RuntimeError("llama.cpp context does not expose the required parallel sequences")
-
-        vocabulary_size = len(self.tokenizer)
-        outputs: list[np.ndarray] = []
+            raise RuntimeError("llama.cpp raw context is unavailable for sequence restore")
         root_tokens = tuple(int(token_id) for token_id in replay_token_ids)
-        for group_start in range(0, len(token_paths), DEFAULT_PARALLEL_SEQUENCES):
+        root_state = self._continuation_state_buffer
+        state_size = self._continuation_state_size
+        if self._continuation_state_token_ids != root_tokens or root_state is None:
+            self._clear_live_sequence()
+            self.llama.eval(list(root_tokens))
+            state_size = int(llama_cpp.llama_state_seq_get_size(raw_context, 0))
+            if state_size <= 0:
+                raise RuntimeError("llama.cpp sequence state is unavailable for branch restore")
+            root_state = (ctypes.c_uint8 * state_size)()
+            copied = int(
+                llama_cpp.llama_state_seq_get_data(
+                    raw_context,
+                    root_state,
+                    state_size,
+                    0,
+                )
+            )
+            if copied != state_size:
+                raise RuntimeError("llama.cpp did not capture the complete root sequence state")
+            self._continuation_state_token_ids = root_tokens
+            self._continuation_state_buffer = root_state
+            self._continuation_state_size = state_size
+        else:
+            self._clear_live_sequence()
+            restored = int(
+                llama_cpp.llama_state_seq_set_data(
+                    raw_context,
+                    root_state,
+                    state_size,
+                    0,
+                )
+            )
+            if restored != state_size:
+                raise RuntimeError("llama.cpp could not restore the cached root sequence state")
+            self.llama.n_tokens = len(root_tokens)
+
+        outputs: list[np.ndarray] = []
+        for path, allowed in zip(token_paths, allowed_token_sets, strict=True):
             if time.monotonic() >= deadline:
                 return None
-            group_paths = [
-                tuple(int(token_id) for token_id in path)
-                for path in token_paths[group_start : group_start + DEFAULT_PARALLEL_SEQUENCES]
-            ]
-            group_allowed = allowed_token_sets[
-                group_start : group_start + DEFAULT_PARALLEL_SEQUENCES
-            ]
-            sequences = [(*root_tokens, *path) for path in group_paths]
-            self._clear_live_sequence()
-            batch = llama_cpp.llama_batch_init(
-                self.n_batch,
-                0,
-                DEFAULT_PARALLEL_SEQUENCES,
+            self.llama.eval(list(path))
+            logits = self._copy_last_logits()
+            selected = np.asarray(logits[allowed], dtype=np.float32).copy()
+            if not np.isfinite(selected).all():
+                raise RuntimeError("llama.cpp returned non-finite continuation logits")
+            outputs.append(selected)
+            if len(outputs) == len(token_paths):
+                break
+            if time.monotonic() >= deadline or self._context_refresh_is_waiting():
+                return None
+            restored = int(
+                llama_cpp.llama_state_seq_set_data(
+                    raw_context,
+                    root_state,
+                    state_size,
+                    0,
+                )
             )
-            group_outputs: list[np.ndarray | None] = [None] * len(sequences)
-            try:
-                records = [
-                    (token_id, position, sequence_id, position == len(sequence) - 1)
-                    for position in range(max(len(sequence) for sequence in sequences))
-                    for sequence_id, sequence in enumerate(sequences)
-                    if position < len(sequence)
-                    for token_id in (sequence[position],)
-                ]
-                for chunk_start in range(0, len(records), self.n_batch):
-                    if time.monotonic() >= deadline:
-                        return None
-                    chunk = records[chunk_start : chunk_start + self.n_batch]
-                    batch.n_tokens = len(chunk)
-                    for batch_index, (token_id, position, sequence_id, needs_logits) in enumerate(
-                        chunk
-                    ):
-                        batch.token[batch_index] = token_id
-                        batch.pos[batch_index] = position
-                        batch.n_seq_id[batch_index] = 1
-                        batch.seq_id[batch_index][0] = sequence_id
-                        batch.logits[batch_index] = 1 if needs_logits else 0
-                    decode_status = int(llama_cpp.llama_decode(raw_context, batch))
-                    if decode_status != 0:
-                        raise RuntimeError(
-                            f"llama_decode returned {decode_status} during parallel continuation"
-                        )
-                    for batch_index, (_, _, sequence_id, needs_logits) in enumerate(chunk):
-                        if not needs_logits:
-                            continue
-                        raw_logits = llama_cpp.llama_get_logits_ith(raw_context, batch_index)
-                        if not raw_logits:
-                            raise RuntimeError(
-                                "llama.cpp did not expose requested parallel continuation logits"
-                            )
-                        logits = np.ctypeslib.as_array(
-                            raw_logits,
-                            shape=(vocabulary_size,),
-                        )
-                        selected = np.asarray(
-                            logits[group_allowed[sequence_id]],
-                            dtype=np.float32,
-                        ).copy()
-                        if not np.isfinite(selected).all():
-                            raise RuntimeError(
-                                "llama.cpp returned non-finite parallel continuation logits"
-                            )
-                        group_outputs[sequence_id] = selected
-                    if time.monotonic() >= deadline:
-                        return None
-            finally:
-                llama_cpp.llama_batch_free(batch)
-
-            if any(values is None for values in group_outputs):
-                raise RuntimeError("parallel continuation did not score every sequence")
-            outputs.extend(values for values in group_outputs if values is not None)
+            if restored != state_size:
+                raise RuntimeError("llama.cpp could not restore the root sequence state")
+            self.llama.n_tokens = len(root_tokens)
         return outputs
 
     def continue_from_empty(
@@ -604,6 +640,7 @@ class LlamaCppBackend:
             self._clear_live_sequence()
             self._cached_token_ids = None
             self._cached_logits = None
+            self._clear_cached_continuation_state()
             self._last_refresh_diagnostics = None
 
     def performance_diagnostics(self) -> dict[str, object]:

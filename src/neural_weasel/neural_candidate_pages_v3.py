@@ -27,6 +27,7 @@ from .neural_candidates import (
     _RootHanPlanEntry,
     _SearchIdentity,
     _SearchSession,
+    _single_initial_static_ranks,
 )
 from .pinyin import parse_raw_pinyin
 
@@ -69,8 +70,10 @@ class _DeferredHanFrontier:
 
 @dataclass(frozen=True, slots=True)
 class _RootHanSelectionOrder:
+    ranking_tier: np.ndarray
     incomplete: np.ndarray
     predicted_syllables: np.ndarray
+    static_rank: np.ndarray
     static_tie_rank: np.ndarray
 
 
@@ -226,6 +229,11 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 len(plan), dtype=np.int32
             )
             order = _RootHanSelectionOrder(
+                ranking_tier=np.fromiter(
+                    (entry.ranking_tier for entry in plan),
+                    dtype=np.int32,
+                    count=len(plan),
+                ),
                 incomplete=np.fromiter(
                     (not entry.completes_input for entry in plan),
                     dtype=np.bool_,
@@ -233,6 +241,11 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 ),
                 predicted_syllables=np.fromiter(
                     (entry.predicted_syllables for entry in plan),
+                    dtype=np.int32,
+                    count=len(plan),
+                ),
+                static_rank=np.fromiter(
+                    (entry.static_rank for entry in plan),
                     dtype=np.int32,
                     count=len(plan),
                 ),
@@ -246,8 +259,10 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             (
                 order.static_tie_rank,
                 -values,
+                order.static_rank,
                 order.predicted_syllables,
                 order.incomplete,
+                order.ranking_tier,
             )
         )
         selected: list[Candidate] = []
@@ -280,6 +295,8 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                     model_score=score,
                     total_score=score,
                     token_path=(entry.token_id,),
+                    ranking_tier=entry.ranking_tier,
+                    static_rank=entry.static_rank,
                     predicted_syllables=entry.predicted_syllables,
                 )
             )
@@ -314,6 +331,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             and len(match.entry.text) <= MAX_HAN_CHARACTERS
         ]
         self._raise_if_query_expired()
+        static_ranks = _single_initial_static_ranks(matches, raw)
         plan = tuple(
             _RootHanPlanEntry(
                 text=match.entry.text,
@@ -323,6 +341,8 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 completes_input=match.next_position == len(raw),
                 syllables=match.entry.syllables,
                 token_id=int(match.entry.token_id),
+                ranking_tier=0 if match.entry.pinyin == raw else 1,
+                static_rank=static_ranks.get(int(match.entry.token_id), 0),
                 predicted_syllables=(
                     match.completion_syllables if match.next_position == len(raw) else 0
                 ),

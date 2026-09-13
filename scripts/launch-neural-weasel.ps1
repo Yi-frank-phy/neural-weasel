@@ -34,6 +34,7 @@ $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental'
 $StatePath = Join-Path $RuntimeRoot 'model-service.json'
 $LogRoot = Join-Path $RuntimeRoot 'logs'
 $ModelTaskPrefix = 'NeuralWeasel Experimental Model Service'
+$UiServerTaskName = 'NeuralWeasel Experimental UI Server'
 $AutomaticGgufPathToken = '__NEURAL_WEASEL_AUTOMATIC_GGUF__'
 
 function Assert-LastExitCode {
@@ -184,6 +185,47 @@ function Convert-StateTimestampToUtc {
     ).UtcDateTime
 }
 
+function Ensure-UiServerStartupTask {
+    param([Parameter(Mandatory)][string]$Server)
+
+    $Action = New-ScheduledTaskAction `
+        -Execute $Server `
+        -WorkingDirectory $InstallRoot
+    $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
+    $Principal = New-ScheduledTaskPrincipal `
+        -UserId $UserId `
+        -LogonType Interactive `
+        -RunLevel Limited
+    $Settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew `
+        -RestartCount 10 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -StartWhenAvailable
+
+    $Existing = Get-ScheduledTask -TaskName $UiServerTaskName -ErrorAction SilentlyContinue
+    if ($Existing) {
+        Set-ScheduledTask `
+            -TaskName $UiServerTaskName `
+            -Action $Action `
+            -Trigger $Trigger `
+            -Principal $Principal `
+            -Settings $Settings | Out-Null
+    } else {
+        Register-ScheduledTask `
+            -TaskName $UiServerTaskName `
+            -Description 'Starts and restarts the per-user Neural Weasel UI server.' `
+            -Action $Action `
+            -Trigger $Trigger `
+            -Principal $Principal `
+            -Settings $Settings | Out-Null
+    }
+    return $UiServerTaskName
+}
+
 function Ensure-ModelServiceStartupTask {
     param(
         [Parameter(Mandatory)][string]$ServiceScript,
@@ -318,6 +360,7 @@ foreach ($Path in @($ServiceScript, $Server, $RimeRuntime, $Activator)) {
 New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 $PipePath = Get-ModelPipePath
 $ServiceProcess = Get-LiveModelServiceProcess
+$UiServerTaskName = Ensure-UiServerStartupTask -Server $Server
 $ModelTaskName = Ensure-ModelServiceStartupTask `
     -ServiceScript $ServiceScript `
     -HiddenHostScript $HiddenHostScript
@@ -356,7 +399,7 @@ if (-not (Test-ModelPipe -PipePath $PipePath)) {
 }
 
 if (-not (Get-Process -Name 'NeuralWeaselServer' -ErrorAction SilentlyContinue)) {
-    Start-Process -FilePath $Server -WorkingDirectory $InstallRoot | Out-Null
+    Start-ScheduledTask -TaskName $UiServerTaskName
 }
 
 if (-not $NoActivate) {

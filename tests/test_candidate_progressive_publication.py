@@ -4,30 +4,29 @@ from dataclasses import replace
 import pytest
 from test_candidate_page_concurrency import _engine, _page
 
+from neural_weasel.neural_candidates import CandidatePageTimeout
 
-@pytest.mark.parametrize("batch_count", [2, 6])
-def test_completed_batches_improve_unlocked_page_in_place(make_index, monkeypatch, batch_count):
+
+def test_published_page_zero_cancels_progressive_background_search(
+    make_index, monkeypatch
+):
     engine, _ = _engine(make_index)
     manager = engine.candidate_pages
-    gates = [threading.Event() for _ in range(batch_count)]
-    started = [threading.Event() for _ in range(batch_count)]
+    gate = threading.Event()
+    started = threading.Event()
     calls = 0
 
     def batch(session, deadline, *, max_parents):
         nonlocal calls
         calls += 1
         if calls > 1:
-            slot = calls - 2
-            started[slot].set()
+            started.set()
             manager._state_lock.release()
             try:
-                assert gates[slot].wait(3)
+                assert gate.wait(3)
             finally:
                 manager._state_lock.acquire()
-        if calls == batch_count + 1:
-            session.exhausted = True
-            return 0
-        template = session.frozen_pages[0].candidates[0]
+        template = session.pending[0]
         session.pending.append(
             replace(
                 template,
@@ -42,7 +41,22 @@ def test_completed_batches_improve_unlocked_page_in_place(make_index, monkeypatc
         return 1
 
     monkeypatch.setattr(manager, "_expand_background_frontier_batch", batch)
+    # Later-page ownership is covered separately. Keep this regression focused
+    # on the handoff boundary: publication must cancel the broad search and no
+    # batch already in flight may replace the immutable first page.
+    monkeypatch.setattr(manager, "_maybe_start_page_preparation", lambda session: None)
+    with pytest.raises(
+        CandidatePageTimeout, match="complete candidate page is still being prepared"
+    ):
+        _page(engine, client="progressive", revision=1, raw="nihao")
+    assert started.wait(3)
+
     first = _page(engine, client="progressive", revision=1, raw="nihao")
+    assert all(
+        candidate.completes_input
+        for candidate in first.candidates
+        if candidate.script == "han"
+    )
     assert first.has_more is True
     completion = manager._background_search_events[first.candidate_set_id]
     kwargs = dict(
@@ -59,41 +73,28 @@ def test_completed_batches_improve_unlocked_page_in_place(make_index, monkeypatc
         presentation_refresh=True,
     )
     try:
-        for slot in range(batch_count):
-            assert started[slot].wait(1)
-            current = manager.query_page(**kwargs)
-            assert current.candidate_set_id == first.candidate_set_id
-            assert ("你好" + "啊" * (slot + 1)) in {
-                candidate.text for candidate in current.candidates
-            }
-            assert current.candidates != first.candidates
-            assert current.candidate_ids != first.candidate_ids
-            assert current.has_more is True
-            text = "你好" + "啊" * (slot + 1)
-            with manager._state_lock:
-                session = manager._sessions[first.candidate_set_id]
-                assert text in [candidate.text for candidate in session.frozen_pages[0].candidates]
-            assert manager.presentation_update_pending(current.candidate_set_id)
-            assert len(manager._sessions) == 1
-            assert calls == slot + 2
-            gates[slot].set()
+        with manager._state_lock:
+            cancel = manager._background_cancel_events[first.candidate_set_id]
+            assert cancel.is_set()
+        current = manager.query_page(**kwargs)
+        assert current.candidate_set_id == first.candidate_set_id
+        assert current.candidates == first.candidates
+        assert current.candidate_ids == first.candidate_ids
+        assert current.has_more is True
+        assert not manager.presentation_update_pending(current.candidate_set_id)
+        assert len(manager._sessions) == 1
+        assert calls == 2
+        gate.set()
         assert completion.wait(1.0)
         final = manager.query_page(**kwargs)
-        assert "你好" + "啊" * batch_count in {candidate.text for candidate in final.candidates}
-        manager._maybe_start_page_preparation(manager._sessions[first.candidate_set_id])
-        preparation = manager._page_preparation_events[first.candidate_set_id]
-        assert preparation.wait(1.0)
+        assert final.candidates == first.candidates
         with manager._state_lock:
-            later_text = {
+            pending_text = {
                 candidate.text
-                for page_index, page in manager._sessions[
-                    first.candidate_set_id
-                ].frozen_pages.items()
-                if page_index > 0
-                for candidate in page.candidates
+                for candidate in manager._sessions[first.candidate_set_id].pending
             }
-        assert "你好" + "啊" * batch_count not in later_text
+        assert "你好啊啊" in pending_text
+        assert calls == 2
     finally:
-        for gate in gates:
-            gate.set()
+        gate.set()
         manager.clear_sessions()

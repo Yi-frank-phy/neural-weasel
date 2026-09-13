@@ -12,6 +12,8 @@ from .neural_candidates import CandidatePage, NeuralLanguageMode
 from .realtime import SnapshotCoordinator
 from .unified import Constraint, ContextScriptPolicy, UnifiedConstraintEngine
 
+_BASELINE_CONTINUATION_WARMUP_DEADLINE_MS = 20_000.0
+
 
 class BilingualImeEngine:
     """Service-facing v0.2 engine with retained epoch-consistent context."""
@@ -70,6 +72,16 @@ class BilingualImeEngine:
             continuation_root=state.continuation_root,
         )
         self.candidate_pages.prewarm_single_letter_pages()
+        warm_continuation = getattr(
+            self.coordinator.backend,
+            "warm_candidate_continuation",
+            None,
+        )
+        if callable(warm_continuation) and not warm_continuation(
+            state.continuation_root,
+            deadline_ms=_BASELINE_CONTINUATION_WARMUP_DEADLINE_MS,
+        ):
+            raise RuntimeError("baseline candidate continuation warmup did not complete")
 
     def _remember_context(self, epoch: int, before: str, after: str) -> None:
         with self._contexts_lock:

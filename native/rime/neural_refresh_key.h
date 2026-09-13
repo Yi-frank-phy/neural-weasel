@@ -20,17 +20,24 @@ inline constexpr char kNeuralPresentationLockedProperty[] =
 // published pages never enter this policy.
 inline constexpr std::uint32_t kNeuralFirstPageRetryDelayMs = 25;
 inline constexpr std::uint32_t kNeuralFirstPageRetryIntervalMs = 50;
-inline constexpr unsigned int kNeuralFirstPageRetryMaxAttempts = 4;
+inline constexpr std::uint32_t kNeuralFirstPageRetryMaxIntervalMs = 200;
+inline constexpr std::uint32_t kNeuralFirstPageRetryBudgetMs = 2500;
 
 inline constexpr bool ShouldRetryFirstPage(bool presentation_ready,
-                                           unsigned int attempts) noexcept {
-  return !presentation_ready && attempts < kNeuralFirstPageRetryMaxAttempts;
+                                           std::uint64_t elapsed_ms) noexcept {
+  return !presentation_ready && elapsed_ms < kNeuralFirstPageRetryBudgetMs;
 }
 
 inline constexpr std::uint32_t FirstPageRetryDelayMs(
     unsigned int attempts) noexcept {
-  return attempts == 0 ? kNeuralFirstPageRetryDelayMs
-                       : kNeuralFirstPageRetryIntervalMs;
+  if (attempts == 0) {
+    return kNeuralFirstPageRetryDelayMs;
+  }
+  const std::uint64_t backed_off =
+      static_cast<std::uint64_t>(kNeuralFirstPageRetryIntervalMs) * attempts;
+  return backed_off < kNeuralFirstPageRetryMaxIntervalMs
+             ? static_cast<std::uint32_t>(backed_off)
+             : kNeuralFirstPageRetryMaxIntervalMs;
 }
 
 }  // namespace neural_weasel::rime_plugin

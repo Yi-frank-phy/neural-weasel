@@ -54,7 +54,7 @@ KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
                             bool has_completion,
                             bool candidate_fresh,
                             bool service_available,
-                            bool completion_explicitly_selected) noexcept {
+                            bool /*completion_explicitly_selected*/) noexcept {
   const bool effective_completion =
       has_completion && candidate_fresh && service_available;
   if (intent == KeyIntent::kPageNext) {
@@ -76,9 +76,8 @@ KeyOutcome ResolveKeyOutcome(NeuralLanguageMode mode,
   if (mode == NeuralLanguageMode::kLatinFirst) {
     switch (intent) {
       case KeyIntent::kSpace:
-        return effective_completion && completion_explicitly_selected
-                   ? KeyOutcome::kAcceptCompletionSpace
-                   : KeyOutcome::kCommitLiteralSpace;
+        return effective_completion ? KeyOutcome::kAcceptCompletionSpace
+                                    : KeyOutcome::kCommitLiteralSpace;
       case KeyIntent::kTab:
         return effective_completion ? KeyOutcome::kAcceptCompletion
                                     : KeyOutcome::kKeepLiteral;

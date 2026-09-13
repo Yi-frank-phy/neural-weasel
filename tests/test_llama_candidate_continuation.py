@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -147,6 +149,44 @@ def test_context_free_continuation_replays_only_short_candidate_paths(tmp_path: 
     assert np.array_equal(scores[1], np.array([33.0, 34.0], dtype=np.float32))
 
 
+def test_candidate_continuation_warmup_covers_common_path_depths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("").continuation_root
+    assert root is not None
+    calls: list[tuple[object, tuple[tuple[int, ...], ...], tuple[object, ...], float]] = []
+
+    def observe(root_arg, token_paths, allowed_token_sets, *, deadline_ms: float):
+        calls.append(
+            (
+                root_arg,
+                tuple(tuple(path) for path in token_paths),
+                tuple(allowed_token_sets),
+                deadline_ms,
+            )
+        )
+        return [np.zeros(1, dtype=np.float32) for _ in token_paths]
+
+    monkeypatch.setattr(backend, "continue_from_root", observe)
+
+    assert backend.warm_candidate_continuation(root, deadline_ms=4_000.0) is True
+    assert len(calls) == 1
+    root_arg, paths, allowed_sets, deadline_ms = calls[0]
+    assert root_arg is root
+    fallback = backend._fallback_token()
+    expected_paths = tuple(
+        (fallback,) * path_length
+        for path_length in range(1, llama_runtime.CANDIDATE_WARMUP_MAX_PATH_TOKENS + 1)
+        for _ in range(llama_runtime.DEFAULT_PARALLEL_SEQUENCES)
+    )
+    assert paths == expected_paths
+    assert allowed_sets == ((fallback,),) * len(expected_paths)
+    assert len({id(allowed) for allowed in allowed_sets}) == 1
+    assert deadline_ms == 4_000.0
+
+
 def test_shared_allowed_vocabulary_is_materialized_once_per_batch(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
     root = backend.create_snapshot("你").continuation_root
@@ -195,7 +235,7 @@ def test_snapshot_root_restores_exact_context_before_candidate_branch(tmp_path: 
     assert np.array_equal(scores[0], np.array([11.0, 13.0], dtype=np.float32))
 
 
-def test_production_context_replays_multiple_roots_through_parallel_decoder(
+def test_production_context_replays_root_once_and_restores_candidate_branches(
     tmp_path: Path, monkeypatch
 ) -> None:
     backend = _backend(tmp_path)
@@ -203,27 +243,17 @@ def test_production_context_replays_multiple_roots_through_parallel_decoder(
     root = snapshot.continuation_root
     assert root is not None
     backend.llama._ctx.ctx = object()
-    calls: list[tuple[tuple[int, ...], tuple[tuple[int, ...], ...], float]] = []
-
-    def parallel_replay(
-        replay_token_ids,
-        token_paths,
-        allowed_token_sets,
-        *,
-        deadline,
-    ):
-        del allowed_token_sets
-        calls.append(
-            (
-                tuple(replay_token_ids),
-                tuple(tuple(path) for path in token_paths),
-                deadline,
-            )
-        )
-        return [np.array([7.0], dtype=np.float32) for _ in token_paths]
-
-    monkeypatch.setattr(backend, "_continue_parallel_replay", parallel_replay)
+    restores: list[tuple[object, int, int]] = []
+    low_level = SimpleNamespace(
+        llama_state_seq_get_size=lambda raw_context, seq_id: 4,
+        llama_state_seq_get_data=lambda raw_context, buffer, size, seq_id: size,
+        llama_state_seq_set_data=lambda raw_context, buffer, size, seq_id: (
+            restores.append((raw_context, size, seq_id)) or size
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(llama_cpp=low_level))
     restored_before = list(backend.llama.restored_states)
+    eval_before = len(backend.llama.eval_calls)
 
     scores = backend.continue_from_root(
         root,
@@ -234,8 +264,8 @@ def test_production_context_replays_multiple_roots_through_parallel_decoder(
 
     assert scores is not None
     assert len(scores) == 3
-    assert calls and calls[0][0] == (1,)
-    assert calls[0][1] == ((1,), (2,), (3,))
+    assert backend.llama.eval_calls[eval_before:] == [[1], [1], [2], [3]]
+    assert restores == [(backend.llama._ctx.ctx, 4, 0)] * 2
     assert backend.llama.restored_states == restored_before
 
 
@@ -258,6 +288,96 @@ def test_continuation_never_queues_past_model_lock_budget(tmp_path: Path) -> Non
 
     assert scores is None
     assert elapsed_ms < 50.0
+
+
+def test_context_refresh_preempts_remaining_candidate_branches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    backend.llama._ctx.ctx = object()
+    restores: list[int] = []
+    low_level = SimpleNamespace(
+        llama_state_seq_get_size=lambda raw_context, seq_id: 4,
+        llama_state_seq_get_data=lambda raw_context, buffer, size, seq_id: size,
+        llama_state_seq_set_data=lambda raw_context, buffer, size, seq_id: (
+            restores.append(size) or size
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(llama_cpp=low_level))
+    with backend._context_waiters_lock:
+        backend._context_waiters = 1
+    eval_before = len(backend.llama.eval_calls)
+
+    try:
+        scores = backend.continue_from_root(
+            root,
+            [(1,), (2,), (3,)],
+            [(0,), (0,), (0,)],
+            deadline_ms=1000.0,
+        )
+    finally:
+        with backend._context_waiters_lock:
+            backend._context_waiters = 0
+
+    assert scores is None
+    assert backend.llama.eval_calls[eval_before:] == [[1], [1]]
+    assert restores == []
+
+
+def test_production_continuation_reuses_cached_root_state_across_batches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    backend.llama._ctx.ctx = object()
+    captures: list[int] = []
+    restores: list[int] = []
+    low_level = SimpleNamespace(
+        llama_state_seq_get_size=lambda raw_context, seq_id: 4,
+        llama_state_seq_get_data=lambda raw_context, buffer, size, seq_id: (
+            captures.append(size) or size
+        ),
+        llama_state_seq_set_data=lambda raw_context, buffer, size, seq_id: (
+            restores.append(size) or size
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(llama_cpp=low_level))
+
+    first = backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0)
+    eval_after_first = len(backend.llama.eval_calls)
+    second = backend.continue_from_root(root, [(2,), (3,)], [(0,), (0,)], deadline_ms=1000.0)
+
+    assert first is not None and second is not None
+    assert captures == [4]
+    assert backend.llama.eval_calls[eval_after_first:] == [[2], [3]]
+    # One restore installs the cached root at batch start; one separates branches.
+    assert restores == [4, 4]
+
+
+def test_private_state_invalidation_discards_cached_continuation_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    backend.llama._ctx.ctx = object()
+    low_level = SimpleNamespace(
+        llama_state_seq_get_size=lambda raw_context, seq_id: 4,
+        llama_state_seq_get_data=lambda raw_context, buffer, size, seq_id: size,
+        llama_state_seq_set_data=lambda raw_context, buffer, size, seq_id: size,
+    )
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(llama_cpp=low_level))
+    assert backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0) is not None
+    assert backend._continuation_state_buffer is not None
+
+    backend.invalidate_private_state()
+
+    assert backend._continuation_state_token_ids is None
+    assert backend._continuation_state_buffer is None
+    assert backend._continuation_state_size == 0
 
 
 def test_candidate_branch_invalidates_editor_incremental_cache(tmp_path: Path) -> None:

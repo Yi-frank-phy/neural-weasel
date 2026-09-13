@@ -1,24 +1,32 @@
 import threading
 from types import SimpleNamespace
 
+import pytest
 from test_candidate_page_concurrency import _engine, _page
 
 from neural_weasel import pipe_server
+from neural_weasel.neural_candidates import CandidatePageTimeout
 from neural_weasel.response_workers import after_response, start_worker
 
 
-def test_continuation_waits_for_response_before_marking_improvement_pending(make_index):
+def test_continuation_waits_for_response_before_building_page_zero(make_index):
     engine, runtime = _engine(make_index)
     try:
         with after_response():
-            page = _page(engine, client="test", revision=1, raw="nihao")
-            replay = _page(engine, client="test", revision=1, raw="nihao")
-            assert replay.candidate_set_id == page.candidate_set_id
-            assert replay.candidates == page.candidates
-            assert replay.candidate_ids == page.candidate_ids
-            assert engine.candidate_pages.presentation_update_pending(page.candidate_set_id)
+            with pytest.raises(CandidatePageTimeout):
+                _page(engine, client="test", revision=1, raw="nihao")
+            with engine.candidate_pages._state_lock:
+                session = next(iter(engine.candidate_pages._sessions.values()))
+                assert 0 not in session.frozen_pages
             assert not runtime.started.is_set()
         assert runtime.started.wait(1)
+        runtime.release.set()
+        completion = engine.candidate_pages._background_search_events[
+            session.candidate_set_id
+        ]
+        assert completion.wait(1)
+        page = _page(engine, client="test", revision=1, raw="nihao")
+        assert "你好" in {candidate.text for candidate in page.candidates}
     finally:
         runtime.release.set()
         engine.candidate_pages.clear_sessions()

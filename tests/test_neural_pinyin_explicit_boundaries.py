@@ -6,6 +6,7 @@ import numpy as np
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
+from neural_weasel.neural_candidates import CandidatePageTimeout
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
 
@@ -105,6 +106,18 @@ def _page(
     )
 
 
+def _coherent_page(engine):
+    try:
+        return _page(engine)
+    except CandidatePageTimeout:
+        manager = engine.candidate_pages
+        with manager._state_lock:
+            candidate_set_id = next(iter(manager._sessions))
+            completion = manager._background_search_events[candidate_set_id]
+        assert completion.wait(1.0)
+        return _page(engine)
+
+
 def _wait_for_async_han(engine: BilingualImeEngine, candidate_set_id: str) -> None:
     manager = engine.candidate_pages
     with manager._state_lock:
@@ -153,17 +166,15 @@ def test_explicit_apostrophe_blocks_one_syllable_path_that_crosses_it(make_index
 def test_explicit_apostrophe_is_preserved_across_multitoken_exact_search(make_index) -> None:
     engine, runtime = _engine(make_index, include_phrase_token=False)
 
-    first = _page(engine)
-    assert "西安" not in {candidate.text for candidate in first.candidates}
-    assert first.has_more is True
+    first = _coherent_page(engine)
+    assert "西安" in {candidate.text for candidate in first.candidates}
 
-    _wait_for_async_han(engine, first.candidate_set_id)
     refreshed = _page(engine, presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
-    assert "西安" in {candidate.text for candidate in refreshed.candidates}
+    assert refreshed.candidates == first.candidates
+    assert refreshed.candidate_ids == first.candidate_ids
 
-    later = _later_candidates(engine, first.candidate_set_id)
-    phrase = next(candidate for candidate in refreshed.candidates if candidate.text == "西安")
+    phrase = next(candidate for candidate in first.candidates if candidate.text == "西安")
     assert phrase.token_path == (2, 3)
     assert phrase.pinyin == "xi'an"
     assert phrase.completes_input is True
@@ -177,7 +188,7 @@ def test_explicit_apostrophe_is_preserved_across_multitoken_exact_search(make_in
     # zero-prediction exact-cover path for the typed raw keys.
     exact_cover = [
         candidate
-        for candidate in (*refreshed.candidates, *later)
+        for candidate in refreshed.candidates
         if candidate.completes_input
         and candidate.consumed_keys == len("xi'an")
         and candidate.predicted_syllables == 0

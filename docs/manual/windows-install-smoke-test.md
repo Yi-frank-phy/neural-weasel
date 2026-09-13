@@ -99,8 +99,8 @@ correction; they are outside this slice.
 With an English/Latin candidate visible:
 
 1. Type a literal prefix and confirm the literal remains visible.
-2. Without moving or selecting the candidate, press Space. It must commit the
-   literal prefix and one space, without accepting the offered completion.
+2. Without moving or selecting the candidate, press Space. A fresh valid
+   default completion must be accepted followed by one space.
 3. Type another prefix and press Tab. Tab may explicitly accept the selected
    completion.
 4. Press Escape. The completion must close while the literal prefix remains.
@@ -110,7 +110,8 @@ With an English/Latin candidate visible:
 7. Press 1 through 5 to commit the corresponding valid English candidate.
    Move the highlight with arrows or select a candidate with the mouse, then
    verify Space accepts that explicitly selected candidate and one space.
-   Stale candidates must not commit.
+   If the candidate is stale or the service is unavailable, Space must instead
+   commit the original literal prefix and one space; stale candidates must not commit.
 
 This slice provides only the current single-token live baseline. It does not
 claim complete multi-token causal rescoring.

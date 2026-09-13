@@ -195,7 +195,7 @@ def test_overlay_uses_owner_thread_timer_and_fails_closed_for_protected_scope() 
     assert "_RunNeuralRefresh" in overlay
     assert "IsWeaselPredictionAllowed()" in overlay
     assert "kNeuralRefreshKeycode" in overlay
-    assert "kNeuralFirstPageRetryMaxAttempts = 4" in refresh_policy
+    assert "kNeuralFirstPageRetryBudgetMs = 2500" in refresh_policy
     assert "ShouldRetryFirstPage(" in overlay
     assert "FirstPageRetryDelayMs(" in overlay
     assert "const bool presentation_ready = m_client.ProcessKeyEvent(refresh);" in overlay

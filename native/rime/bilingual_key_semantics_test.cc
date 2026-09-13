@@ -95,6 +95,24 @@ std::string ObservableOutcome(NeuralLanguageMode mode,
 }  // namespace
 
 int main() {
+  using neural_weasel::rime_plugin::ResolveKeyOutcome;
+  if (ResolveKeyOutcome(NeuralLanguageMode::kLatinFirst, KeyIntent::kSpace,
+                        true, true, true, false) !=
+          KeyOutcome::kAcceptCompletionSpace ||
+      ResolveKeyOutcome(NeuralLanguageMode::kLatinFirst, KeyIntent::kSpace,
+                        false, true, true, false) !=
+          KeyOutcome::kCommitLiteralSpace ||
+      ResolveKeyOutcome(NeuralLanguageMode::kLatinFirst, KeyIntent::kSpace,
+                        true, false, true, false) !=
+          KeyOutcome::kCommitLiteralSpace ||
+      ResolveKeyOutcome(NeuralLanguageMode::kLatinFirst, KeyIntent::kSpace,
+                        true, true, false, false) !=
+          KeyOutcome::kCommitLiteralSpace) {
+    std::cerr << "Latin Space must accept the default completion and fall back "
+                 "only when no effective completion exists\n";
+    return 1;
+  }
+
   if (!PresentationMayRefresh(true, false, 0) ||
       PresentationMayRefresh(false, false, 0) ||
       PresentationMayRefresh(true, true, 0) ||

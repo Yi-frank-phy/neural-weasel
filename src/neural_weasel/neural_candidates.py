@@ -32,6 +32,7 @@ MAX_FRONTIER_PER_BUCKET = 32
 PAGE0_DEADLINE_MS = 35.0
 NEXT_PAGE_DEADLINE_MS = 120.0
 _MAX_ROOT_HAN_PLAN_CACHE = 256
+_SINGLE_INITIAL_FREQUENCY_BUCKET = 32
 
 
 class NeuralLanguageMode(StrEnum):
@@ -92,6 +93,8 @@ class _RootHanPlanEntry:
     completes_input: bool
     syllables: int
     token_id: int
+    ranking_tier: int
+    static_rank: int
     predicted_syllables: int
 
 
@@ -114,14 +117,29 @@ class _SearchSession:
 
 def _candidate_key(candidate: Candidate) -> tuple[object, ...]:
     return (
+        candidate.ranking_tier,
         not candidate.completes_input,
         candidate.predicted_syllables,
+        candidate.static_rank,
         -(candidate.model_score if candidate.model_score is not None else -math.inf),
         -candidate.consumed_keys,
         unicodedata.normalize("NFKC", candidate.text),
         candidate.token_path,
         candidate.pinyin,
     )
+
+
+def _single_initial_static_ranks(matches: Sequence[Any], raw: str) -> dict[int, int]:
+    """Bucket lone-initial roots by stable tokenizer frequency."""
+    if len(raw) != 1:
+        return {}
+    token_ids = sorted(
+        {int(match.entry.token_id) for match in matches if match.entry.token_id is not None}
+    )
+    return {
+        token_id: rank // _SINGLE_INITIAL_FREQUENCY_BUCKET
+        for rank, token_id in enumerate(token_ids)
+    }
 
 
 def _latin_key(candidate: Candidate) -> tuple[object, ...]:
@@ -257,8 +275,31 @@ class NeuralCandidatePageManager:
                     allow_prewarm_cache=False,
                 )
                 self._baseline_single_letter[(raw, mode)] = tuple(
-                    candidates[:MAX_FROZEN_CANDIDATES]
+                    self._freeze_single_letter_prewarm(candidates, mode)
                 )
+
+    @staticmethod
+    def _freeze_single_letter_prewarm(
+        candidates: Sequence[Candidate],
+        mode: NeuralLanguageMode,
+    ) -> list[Candidate]:
+        """Bound a prewarm without letting one script erase page-zero coverage."""
+        if len(candidates) <= MAX_FROZEN_CANDIDATES:
+            return list(candidates)
+        if mode is NeuralLanguageMode.LATIN_FIRST:
+            return list(candidates[:MAX_FROZEN_CANDIDATES])
+
+        han = [candidate for candidate in candidates if candidate.script == "han"]
+        latin = [candidate for candidate in candidates if candidate.script == "latin"]
+        # Chinese-first page zero reserves one position for Latin whenever it
+        # exists. Preserve the matching Han coverage before filling the rest in
+        # the original neural order.
+        han_reserve = CHINESE_PAGE_SIZE - (1 if latin else 0)
+        reserved = [*han[:han_reserve], *latin[:1]]
+        selected_ids = {id(candidate) for candidate in reserved}
+        frozen = list(reserved)
+        frozen.extend(candidate for candidate in candidates if id(candidate) not in selected_ids)
+        return frozen[:MAX_FROZEN_CANDIDATES]
 
     def clear_sessions(self) -> None:
         self._sessions.clear()
@@ -514,6 +555,7 @@ class NeuralCandidatePageManager:
             and len(match.entry.text) <= MAX_HAN_CHARACTERS
         ]
         self._raise_if_query_expired()
+        static_ranks = _single_initial_static_ranks(matches, raw)
         plan = tuple(
             _RootHanPlanEntry(
                 text=match.entry.text,
@@ -523,6 +565,12 @@ class NeuralCandidatePageManager:
                 completes_input=match.next_position == len(raw),
                 syllables=match.entry.syllables,
                 token_id=int(match.entry.token_id),
+                ranking_tier=0 if match.entry.pinyin == raw else 1,
+                # A lone initial has no exact syllable and otherwise lets a
+                # transient context logit freeze arbitrary rare characters on
+                # page zero. Tokenizer ids provide the stable corpus-frequency
+                # order used only for this structurally ambiguous shorthand.
+                static_rank=static_ranks.get(int(match.entry.token_id), 0),
                 predicted_syllables=(
                     match.completion_syllables if match.next_position == len(raw) else 0
                 ),
@@ -557,8 +605,10 @@ class NeuralCandidatePageManager:
                 continue
             value = float(score)
             sort_key = (
+                entry.ranking_tier,
                 not entry.completes_input,
                 entry.predicted_syllables,
+                entry.static_rank,
                 -value,
                 -entry.consumed_keys,
                 entry.normalized_text,
@@ -596,6 +646,8 @@ class NeuralCandidatePageManager:
                 model_score=score,
                 total_score=score,
                 token_path=(entry.token_id,),
+                ranking_tier=entry.ranking_tier,
+                static_rank=entry.static_rank,
                 predicted_syllables=entry.predicted_syllables,
             )
             for _, entry, score in selected

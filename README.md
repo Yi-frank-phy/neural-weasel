@@ -34,8 +34,8 @@ The repository currently contains the independently testable core:
 - immutable context snapshots and non-blocking epoch-consistent queries;
 - one unified Chinese/English candidate type, script policy, ranking, and protocol;
 - English-context Han hard exclusion and Chinese-context Latin allowance;
-- literal-safe default English `Space`, explicit-selection `Space`,
-  explicit-completion `Tab`, and `Escape` semantics;
+- fresh default English-completion `Space`, literal-plus-space fallback for a
+  stale or unavailable completion, explicit-completion `Tab`, and `Escape` semantics;
 - bounded multi-token constrained-beam core for background expansion;
 - length-prefixed JSON protocol and Windows named-pipe service;
 - bounded, authenticated Neural TSF surrounding-context capture;

@@ -4,9 +4,11 @@ import threading
 from dataclasses import dataclass, field
 
 import numpy as np
+import pytest
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
+from neural_weasel.neural_candidates import CandidatePageTimeout
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
 
@@ -142,15 +144,16 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
 
         monkeypatch.setattr(backend, "_continue_from_root_bounded", observed_continue)
 
-    revision_one = _page(engine, revision=1)
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, revision=1)
     assert runtime.first_started.wait(0.5)
-    assert "你好" not in {candidate.text for candidate in revision_one.candidates}
 
-    revision_two = _page(engine, revision=2)
+    with pytest.raises(CandidatePageTimeout):
+        _page(engine, revision=2)
     assert busy_seen.wait(0.5), "revision 2 never attempted continuation while revision 1 was busy"
     assert runtime.continuation_calls == 1
-    assert "你好" not in {candidate.text for candidate in revision_two.candidates}
-    completion = engine.candidate_pages._background_search_events.get(revision_two.candidate_set_id)
+    revision_two_id = next(iter(engine.candidate_pages._sessions))
+    completion = engine.candidate_pages._background_search_events.get(revision_two_id)
     assert completion is not None
 
     runtime.release_first.set()
@@ -161,21 +164,14 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
     assert completion.wait(1.0), "resumed revision did not publish its completed candidates"
 
     replay = _page(engine, revision=2)
-    assert replay.candidate_set_id == revision_two.candidate_set_id
-    assert replay.candidate_ids == revision_two.candidate_ids
+    assert replay.candidate_set_id == revision_two_id
+    assert "你好" in {candidate.text for candidate in replay.candidates}
 
     refreshed = _page(engine, revision=2, presentation_refresh=True)
-    assert refreshed.candidate_set_id == revision_two.candidate_set_id
-    assert "你好" in {candidate.text for candidate in refreshed.candidates}
-    preparation = engine.candidate_pages._page_preparation_events[revision_two.candidate_set_id]
-    assert preparation.wait(1.0)
-    with engine.candidate_pages._state_lock:
-        later = {
-            candidate.text
-            for page_index, page in engine.candidate_pages._sessions[
-                revision_two.candidate_set_id
-            ].frozen_pages.items()
-            if page_index > 0
-            for candidate in page.candidates
-        }
-    assert "你好" not in later
+    assert refreshed.candidate_set_id == revision_two_id
+    assert refreshed.candidates == replay.candidates
+    assert all(
+        candidate.completes_input
+        for candidate in replay.candidates
+        if candidate.script == "han"
+    )

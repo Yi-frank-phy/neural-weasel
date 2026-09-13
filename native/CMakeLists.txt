@@ -340,6 +340,12 @@ endif()
 
 if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
   set(RIME_ROOT "" CACHE PATH "Path to a librime source tree")
+  set(NEURAL_WEASEL_RIME_TEST_LIBRARY "" CACHE FILEPATH
+      "Optional librime import library for the real selector integration test")
+  set(NEURAL_WEASEL_RIME_TEST_DATA_DIR "" CACHE PATH
+      "Optional deployed isolated Rime data directory for integration tests")
+  set(NEURAL_WEASEL_RIME_TEST_RUNTIME_DIR "" CACHE PATH
+      "Optional directory containing the matching rime.dll")
 
   if(NOT EXISTS "${RIME_ROOT}/src/rime/translator.h")
     message(FATAL_ERROR
@@ -380,4 +386,36 @@ if(NEURAL_WEASEL_BUILD_RIME_PLUGIN)
     neural_weasel_pipe
     nlohmann_json::nlohmann_json
   )
+
+  if(NEURAL_WEASEL_BUILD_NATIVE_TESTS
+     AND EXISTS "${NEURAL_WEASEL_RIME_TEST_LIBRARY}"
+     AND EXISTS "${NEURAL_WEASEL_RIME_TEST_DATA_DIR}/build/neural_weasel.schema.yaml")
+    add_executable(neural_weasel_bilingual_candidate_integration_test
+      rime/bilingual_candidate_integration_test.cc
+    )
+    target_include_directories(neural_weasel_bilingual_candidate_integration_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${RIME_GENERATED_INCLUDE_DIR}
+      ${RIME_ROOT}/src
+      ${RIME_ROOT}/include
+    )
+    target_compile_definitions(neural_weasel_bilingual_candidate_integration_test PRIVATE
+      UNICODE
+      _UNICODE
+      WIN32_LEAN_AND_MEAN
+      NOMINMAX
+    )
+    target_link_libraries(neural_weasel_bilingual_candidate_integration_test PRIVATE
+      neural_weasel_rime_plugin
+      "${NEURAL_WEASEL_RIME_TEST_LIBRARY}"
+    )
+    add_test(NAME neural_weasel_bilingual_candidate_integration_test
+      COMMAND neural_weasel_bilingual_candidate_integration_test
+              "${NEURAL_WEASEL_RIME_TEST_DATA_DIR}")
+    if(EXISTS "${NEURAL_WEASEL_RIME_TEST_RUNTIME_DIR}/rime.dll")
+      set_tests_properties(neural_weasel_bilingual_candidate_integration_test PROPERTIES
+        ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:${NEURAL_WEASEL_RIME_TEST_RUNTIME_DIR}")
+    endif()
+  endif()
 endif()

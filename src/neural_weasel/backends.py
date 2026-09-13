@@ -40,6 +40,7 @@ class BackendState:
     publication_latency_ms: float
     payload: Any = field(repr=False)
     continuation_root: Any | None = field(default=None, repr=False)
+    log_normalizer: float | None = field(default=None, repr=False)
     _backend_identity: int = field(repr=False, default=0)
     _generation: int = field(repr=False, default=0)
 
@@ -91,6 +92,7 @@ class _SnapshotBackend:
         payload: Any,
         *,
         expected_generation: int,
+        log_normalizer: float | None = None,
     ) -> BackendState:
         publication_started = time.perf_counter()
         with self._lock:
@@ -107,6 +109,7 @@ class _SnapshotBackend:
                 + (time.perf_counter() - publication_started) * 1000,
                 payload=payload,
                 continuation_root=runtime_snapshot.continuation_root,
+                log_normalizer=log_normalizer,
                 _backend_identity=self._identity,
                 _generation=self._generation,
             )
@@ -179,8 +182,18 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         logits = np.asarray(result.payload, dtype=np.float32).copy()
         if logits.ndim != 1:
             raise ValueError("full logits snapshot must be one-dimensional")
+        log_normalizer: float | None = None
+        if logits.size and np.all(np.isfinite(logits)):
+            values = logits.astype(np.float64, copy=False)
+            maximum = float(np.max(values))
+            log_normalizer = maximum + float(np.log(np.exp(values - maximum).sum()))
         logits.flags.writeable = False
-        return self._publish(result, logits, expected_generation=generation)
+        return self._publish(
+            result,
+            logits,
+            expected_generation=generation,
+            log_normalizer=log_normalizer,
+        )
 
     def score_allowed_tokens(
         self,
@@ -191,6 +204,16 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         logits = state.payload
         token_ids = self._validated_token_ids(allowed_token_ids, logits.size)
         return np.asarray(logits[token_ids], dtype=np.float32)
+
+    def warm_candidate_continuation(self, root: Any, *, deadline_ms: float) -> bool:
+        """Warm an optional runtime continuation path before service readiness."""
+
+        provider = getattr(self.runtime, "warm_candidate_continuation", None)
+        if not callable(provider):
+            return True
+        if root is None:
+            return False
+        return bool(provider(root, deadline_ms=deadline_ms))
 
     def _finish_continuation_slot(self) -> None:
         with self._continuation_gate:

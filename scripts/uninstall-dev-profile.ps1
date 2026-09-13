@@ -18,7 +18,8 @@ $ExperimentalRuntimeRoot = [IO.Path]::GetFullPath(
     (Join-Path $env:LOCALAPPDATA 'NeuralWeasel\Experimental')
 )
 $ExpectedInstallRoot = Join-Path $ExperimentalRuntimeRoot 'experimental-profile'
-$ModelTaskNames = @(
+$RuntimeTaskNames = @(
+    'NeuralWeasel Experimental UI Server',
     'NeuralWeasel Experimental Model Service Q4',
     'NeuralWeasel Experimental Model Service Q8'
 )
@@ -47,7 +48,7 @@ if ($DryRun) {
 Get-Process -Name 'NeuralWeaselServer' -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction Stop
 
-foreach ($TaskName in $ModelTaskNames) {
+foreach ($TaskName in $RuntimeTaskNames) {
     $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($Task) {
         if ($Task.State -eq 'Running') {

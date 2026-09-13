@@ -221,6 +221,14 @@ def test_bundle_copies_declared_python_readme() -> None:
     assert '"python-service/README.md"' in verifier
 
 
+def test_bundle_excludes_python_bytecode_caches_from_manifest() -> None:
+    bundle = (ROOT / "scripts/build-windows-bundle.ps1").read_text(encoding="utf-8")
+
+    assert "Remove-PythonBytecodeCaches" in bundle
+    assert "__pycache__" in bundle
+    assert "*.pyc" in bundle
+
+
 def test_model_launcher_exposes_locked_torch_cuda_runtime() -> None:
     launcher = (ROOT / "scripts/start-model-service.ps1").read_text(encoding="utf-8")
 

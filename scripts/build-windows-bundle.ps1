@@ -34,6 +34,33 @@ function Copy-RequiredFile {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Remove-PythonBytecodeCaches {
+    param([Parameter(Mandatory)][string]$PythonSourceRoot)
+
+    $ResolvedSourceRoot = (Resolve-Path -LiteralPath $PythonSourceRoot).Path
+    $SourcePrefix = $ResolvedSourceRoot + [IO.Path]::DirectorySeparatorChar
+    $Targets = @(
+        Get-ChildItem -LiteralPath $ResolvedSourceRoot -Directory `
+            -Filter '__pycache__' -Recurse -ErrorAction Stop
+    )
+    $Targets += @(
+        Get-ChildItem -LiteralPath $ResolvedSourceRoot -File `
+            -Filter '*.pyc' -Recurse -ErrorAction Stop
+    )
+    foreach ($Target in $Targets) {
+        $ResolvedTarget = [IO.Path]::GetFullPath($Target.FullName)
+        if (-not $ResolvedTarget.StartsWith(
+            $SourcePrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "Refusing to remove a Python cache outside the bundle: $ResolvedTarget"
+        }
+        if (Test-Path -LiteralPath $ResolvedTarget) {
+            Remove-Item -LiteralPath $ResolvedTarget -Recurse -Force
+        }
+    }
+}
+
 function Resolve-RequiredBuildArtifact {
     param(
         [Parameter(Mandatory)][string]$FileName,
@@ -241,6 +268,7 @@ Copy-RequiredFile -Source (Join-Path $RepositoryRoot 'README.md') `
     -Destination (Join-Path $PythonService 'README.md')
 Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'src') `
     -Destination (Join-Path $PythonService 'src') -Recurse -Force
+Remove-PythonBytecodeCaches -PythonSourceRoot (Join-Path $PythonService 'src')
 
 $ActualWeaselRevision = (& git -C $WeaselRoot rev-parse HEAD).Trim()
 if ($ActualWeaselRevision -ne $WeaselRevision) {
