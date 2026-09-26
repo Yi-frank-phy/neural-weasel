@@ -808,6 +808,12 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             for candidate in session.pending
         )
 
+    def _is_exact_single_syllable_input(self, raw_keys: str) -> bool:
+        if self.matcher is None or not raw_keys or "'" in raw_keys or "-" in raw_keys:
+            return False
+        compact = raw_keys.casefold()
+        return compact in self.matcher.by_initial.get(compact[0], ())
+
     def _start_background_continuation(self, session: _SearchSession) -> None:
         # The scored layer asks again *after* page-zero publication. The
         # page-zero freeze cancelled any first-publication scorer, but this
@@ -950,6 +956,21 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 prepare = getattr(self, "_prepare_page_search", None)
                 if callable(prepare) and not prepare(session, cancel):
                     return
+
+            # A complete single pinyin syllable already has its useful root
+            # candidates in memory.  Do not spend the serial continuation lane
+            # manufacturing phrase continuations merely to fill the fixed
+            # 35-candidate pagination capacity: that work can block the next
+            # keypress for seconds on a cold GGUF runtime.  Any deferred root
+            # seeds were materialized above, so the remaining pages can be
+            # frozen from root/lexical candidates only.
+            if self._is_exact_single_syllable_input(session.identity.raw_keys):
+                with self._state_lock:
+                    if self._sessions.get(candidate_set_id) is not session:
+                        return
+                    session.frontier.clear()
+                    session.exhausted = True
+
             while not cancel.is_set():
                 retiring_search_event: threading.Event | None = None
                 freeze_ready_without_scorer = False
