@@ -131,10 +131,7 @@ def test_single_letter_prewarm_preserves_unwarmed_han_coverage(make_index, monke
 
 def test_lone_c_initial_keeps_rare_high_logit_tokens_off_page_zero(make_index) -> None:
     texts = "出成产长重程车场常种处单次查城从传持创此才参存层吃承材村超称采除仓财茶触朝"
-    rows = [
-        (token_id, text, "ci", "ci", 1, 0)
-        for token_id, text in enumerate(texts, start=1)
-    ]
+    rows = [(token_id, text, "ci", "ci", 1, 0) for token_id, text in enumerate(texts, start=1)]
     index = make_index(rows)
     logits = np.full(64, -20.0, dtype=np.float32)
     logits[1] = 0.0

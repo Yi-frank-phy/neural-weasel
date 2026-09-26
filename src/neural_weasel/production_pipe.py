@@ -62,9 +62,7 @@ _RUNTIME_BOOLEAN_KEYS = (
     "last_candidate_background_timed_out",
 )
 _RUNTIME_ENUM_KEYS = ("last_continuation_outcome",)
-_CONTINUATION_OUTCOMES = frozenset(
-    {"completed", "deadline", "lock_timeout", "preempted", "error"}
-)
+_CONTINUATION_OUTCOMES = frozenset({"completed", "deadline", "lock_timeout", "preempted", "error"})
 
 
 def _safe_runtime_metric(key: str, value: object) -> int | float | bool | str | None:

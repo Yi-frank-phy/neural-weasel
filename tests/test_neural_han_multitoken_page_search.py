@@ -257,9 +257,7 @@ def test_multitoken_han_is_selectable_inside_a_phrase(
     first = _coherent_page(engine, "bibi")
     later = _later_candidates(engine, first.candidate_set_id)
     target = next(
-        candidate
-        for candidate in (*first.candidates, *later)
-        if candidate.text == expected_text
+        candidate for candidate in (*first.candidates, *later) if candidate.text == expected_text
     )
     assert target.token_path == expected_path
     assert target.consumed_keys == 4
@@ -275,10 +273,7 @@ def test_thirty_third_root_can_recover_and_win_after_continuation(make_index) ->
     ][:33]
     assert len(heads) == 33
     index = make_index(
-        [
-            (token_id, head, "bi", "bi", 1, 0)
-            for token_id, head in enumerate(heads, start=1)
-        ]
+        [(token_id, head, "bi", "bi", 1, 0) for token_id, head in enumerate(heads, start=1)]
         + [(34, "好", "hao", "hao", 1, 0)]
     )
     logits = np.full(40, -100.0, dtype=np.float32)
@@ -296,9 +291,7 @@ def test_thirty_third_root_can_recover_and_win_after_continuation(make_index) ->
     later = _later_candidates(engine, first.candidate_set_id)
     assert any(path == (33,) for path, _allowed in runtime.continuation_calls)
     target = next(
-        candidate
-        for candidate in (*first.candidates, *later)
-        if candidate.text == heads[32] + "好"
+        candidate for candidate in (*first.candidates, *later) if candidate.text == heads[32] + "好"
     )
     assert target.token_path == (33, 34)
     assert target.ranking_tier == 0
@@ -369,9 +362,7 @@ def test_exact_han_cover_can_span_multiple_base_tokens(
 
     first = _coherent_page(engine, raw)
     assert all(
-        candidate.completes_input
-        for candidate in first.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in first.candidates if candidate.script == "han"
     )
     refreshed = _page(engine, raw, presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id

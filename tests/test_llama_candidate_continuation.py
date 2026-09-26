@@ -291,9 +291,7 @@ def test_continuation_never_queues_past_model_lock_budget(tmp_path: Path) -> Non
     assert elapsed_ms < 50.0
 
 
-def test_context_refresh_preempts_remaining_candidate_branches(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_context_refresh_preempts_remaining_candidate_branches(tmp_path: Path, monkeypatch) -> None:
     backend = _backend(tmp_path)
     root = backend.create_snapshot("你").continuation_root
     assert root is not None
@@ -413,9 +411,10 @@ def test_candidate_branch_restores_matching_editor_incremental_cache(tmp_path: P
     assert diagnostics["last_continuation_returned_tokens"] == 1
     assert diagnostics["last_continuation_cache_preserved"] is True
     assert diagnostics["last_continuation_outcome"] == "completed"
-    assert diagnostics["last_continuation_elapsed_ms"] >= diagnostics[
-        "last_continuation_queue_wait_ms"
-    ]
+    assert (
+        diagnostics["last_continuation_elapsed_ms"]
+        >= diagnostics["last_continuation_queue_wait_ms"]
+    )
     before = len(backend.llama.eval_calls)
     backend.create_snapshot("你")
     assert backend.llama.eval_calls[before:] == []
@@ -428,12 +427,15 @@ def test_candidate_branch_from_stale_root_invalidates_editor_cache(tmp_path: Pat
     backend.create_snapshot("n")
     assert backend._cached_token_ids == (3,)
 
-    assert backend.continue_from_root(
-        stale_root,
-        [(1,)],
-        [(2,)],
-        deadline_ms=1000.0,
-    ) is not None
+    assert (
+        backend.continue_from_root(
+            stale_root,
+            [(1,)],
+            [(2,)],
+            deadline_ms=1000.0,
+        )
+        is not None
+    )
 
     assert backend._cached_token_ids is None
     assert backend._cached_logits is None

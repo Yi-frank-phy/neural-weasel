@@ -493,10 +493,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     finally:
                         self._state_lock.acquire()
                         cancel_wait(retry_wake)
-                    if (
-                        cancel_event.is_set()
-                        or self._sessions.get(candidate_set_id) is not session
-                    ):
+                    if cancel_event.is_set() or self._sessions.get(candidate_set_id) is not session:
                         return
                     retry_wakes += 1
                     deadline = self.clock() + _BACKGROUND_CONTINUATION_DEADLINE_MS / 1000.0
@@ -779,9 +776,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         if resumed is not None:
             return resumed
 
-        log_prob_continuation = getattr(
-            self.backend, "continue_log_probs_from_root", None
-        )
+        log_prob_continuation = getattr(self.backend, "continue_log_probs_from_root", None)
         use_log_probs = callable(log_prob_continuation)
         continuation = (
             log_prob_continuation
@@ -1017,7 +1012,6 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
     ) -> None:
         """Allow publication layers to record capacity evidence off the request path."""
 
-
     def _resume_scored_han_frontier(
         self,
         session: _SearchSession,
@@ -1029,8 +1023,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             and len(path.token_path) == 1
             and self._path_key(path) not in session.expanded_paths
             and (
-                bool(getattr(path, "pending_options", ()))
-                or path.matched_letters < compact_length
+                bool(getattr(path, "pending_options", ())) or path.matched_letters < compact_length
             )
             for path in session.frontier
         )
@@ -1049,7 +1042,6 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             return progressed
         return None
 
-
     def _expand_one_frontier(
         self,
         session: _SearchSession,
@@ -1061,9 +1053,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         if not session.frontier:
             session.exhausted = True
             return 0
-        log_prob_continuation = getattr(
-            self.backend, "continue_log_probs_from_root", None
-        )
+        log_prob_continuation = getattr(self.backend, "continue_log_probs_from_root", None)
         use_log_probs = callable(log_prob_continuation)
         continuation = (
             log_prob_continuation
@@ -1161,9 +1151,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             kind = "legal-token" if use_log_probs else "full-vocabulary"
             raise RuntimeError(f"continuation scorer returned an invalid {kind} vector")
         values = (
-            returned.copy()
-            if use_log_probs
-            else _selected_log_probs(returned, legal_token_ids)
+            returned.copy() if use_log_probs else _selected_log_probs(returned, legal_token_ids)
         )
 
         before_pending = len(session.pending)

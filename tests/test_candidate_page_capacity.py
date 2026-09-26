@@ -38,8 +38,7 @@ def _manager():
         _ensure_freezable=lambda session, page_size, deadline: None,
         _freezable_candidates=lambda session: list(session.pending),
         _uses_fixed_chinese_capacity=lambda session: (
-            session.identity.mode is NeuralLanguageMode.CHINESE_FIRST
-            and 0 in session.frozen_pages
+            session.identity.mode is NeuralLanguageMode.CHINESE_FIRST and 0 in session.frozen_pages
         ),
     )
 

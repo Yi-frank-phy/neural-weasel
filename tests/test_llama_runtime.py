@@ -169,8 +169,7 @@ def test_runtime_exposes_only_refresh_metadata_and_explicit_limits(tmp_path: Pat
     assert isinstance(diagnostics["last_refresh_latency_ms"], float)
     assert diagnostics["last_refresh_latency_ms"] >= 0.0
     assert diagnostics["last_refresh_latency_ms"] == pytest.approx(
-        diagnostics["last_refresh_queue_wait_ms"]
-        + diagnostics["last_refresh_compute_ms"]
+        diagnostics["last_refresh_queue_wait_ms"] + diagnostics["last_refresh_compute_ms"]
     )
 
     backend.create_snapshot("你好")
