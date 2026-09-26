@@ -907,7 +907,9 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             # those resident candidates: even model-free lexical/root expansion
             # can build thousands of Python frontier objects and steal the GIL
             # from the next keypress for seconds.
-            single_key_syllable = self._is_exact_single_syllable_input(session.identity.raw_keys)
+            single_key_syllable = self._uses_fixed_chinese_capacity(
+                session
+            ) and self._is_exact_single_syllable_input(session.identity.raw_keys)
             if single_key_syllable:
                 with self._state_lock:
                     if self._sessions.get(candidate_set_id) is not session:
