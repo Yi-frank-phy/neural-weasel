@@ -14,7 +14,7 @@ namespace neural_weasel::context {
 constexpr std::uint32_t kContextFrameMagic = 0x5443574eU;  // "NWCT" LE
 constexpr std::uint16_t kContextFrameVersion = 1;
 constexpr std::size_t kContextFrameHeaderBytes = 44;
-constexpr std::uint32_t kMaxContextBeforeUtf16Units = 8192;
+constexpr std::uint32_t kMaxContextBeforeUtf16Units = 32768;
 constexpr std::uint32_t kMaxContextAfterUtf16Units = 4096;
 constexpr std::size_t kMaxContextFrameBytes =
     kContextFrameHeaderBytes +

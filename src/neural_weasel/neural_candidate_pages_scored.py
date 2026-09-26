@@ -479,16 +479,25 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                         or not callable(cancel_wait)
                     ):
                         break
-                    register_wait(retry_generation, cancel_event)
+                    # A retry-generation wake and permanent worker cancellation
+                    # are different signals.  Reusing ``cancel_event`` here
+                    # allowed the wake path below to clear a cancellation that
+                    # arrived while the provider was busy, leaving a retired
+                    # continuation alive and blocking later-page preparation.
+                    retry_wake = threading.Event()
+                    register_wait(retry_generation, retry_wake)
                     self._state_lock.release()
                     try:
-                        cancel_event.wait()
+                        while not cancel_event.is_set() and not retry_wake.wait(0.05):
+                            pass
                     finally:
                         self._state_lock.acquire()
-                        cancel_wait(cancel_event)
-                    if self._sessions.get(candidate_set_id) is not session:
+                        cancel_wait(retry_wake)
+                    if (
+                        cancel_event.is_set()
+                        or self._sessions.get(candidate_set_id) is not session
+                    ):
                         return
-                    cancel_event.clear()
                     retry_wakes += 1
                     deadline = self.clock() + _BACKGROUND_CONTINUATION_DEADLINE_MS / 1000.0
                 if self._sessions.get(candidate_set_id) is not session:
@@ -766,7 +775,19 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         once; the backend may execute that request in smaller GPU batches.
         """
 
-        continuation = getattr(self.backend, "continue_from_root", None)
+        resumed = self._resume_scored_han_frontier(session, absolute_deadline)
+        if resumed is not None:
+            return resumed
+
+        log_prob_continuation = getattr(
+            self.backend, "continue_log_probs_from_root", None
+        )
+        use_log_probs = callable(log_prob_continuation)
+        continuation = (
+            log_prob_continuation
+            if use_log_probs
+            else getattr(self.backend, "continue_from_root", None)
+        )
         if (
             max_parents <= 0
             or not callable(continuation)
@@ -783,11 +804,15 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 for path in session.frontier
                 if path.script == "han"
                 and self._path_key(path) not in session.expanded_paths
-                and int(getattr(path, "matched_letters", compact_length)) < compact_length
+                and (
+                    bool(getattr(path, "pending_options", ()))
+                    or int(getattr(path, "matched_letters", compact_length)) < compact_length
+                )
             ),
             key=lambda path: (
-                -int(getattr(path, "matched_letters", 0)),
                 path.predicted_syllables,
+                len(path.token_path),
+                -int(getattr(path, "matched_letters", 0)),
                 -path.score,
                 path.text,
                 path.token_path,
@@ -801,11 +826,16 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         # Every root with the same matched/predicted bucket has the same edge
         # set; computing it once avoids doing that work once per competing
         # shorthand root while the manager lock is held.
-        edge_cache: dict[tuple[int, int], dict[int, tuple[Any, ...]]] = {}
+        edge_cache: dict[tuple[object, ...], dict[int, tuple[Any, ...]]] = {}
         for parent in eligible:
             edge_key = (
-                int(getattr(parent, "matched_letters", 0)),
-                int(getattr(parent, "predicted_syllables", 0)),
+                ("pending", self._path_key(parent))
+                if getattr(parent, "pending_options", ())
+                else (
+                    "han",
+                    int(getattr(parent, "matched_letters", 0)),
+                    int(getattr(parent, "predicted_syllables", 0)),
+                )
             )
             if edge_key not in edge_cache:
                 # Trie traversal reads only the immutable index and identity.
@@ -827,6 +857,8 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 break
         if not selected:
             return 0
+
+        self._note_background_frontier_capacity(session, selected)
 
         selected_keys = {item[1] for item in selected}
         session.frontier = [
@@ -852,12 +884,25 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         self._state_lock.release()
         try:
             try:
-                attempt_provider = getattr(self.backend, "continue_from_root_attempt", None)
+                attempt_provider = getattr(
+                    self.backend,
+                    (
+                        "continue_log_probs_from_root_attempt"
+                        if use_log_probs
+                        else "continue_from_root_attempt"
+                    ),
+                    None,
+                )
+                allowed_sets = (
+                    [item[2] for item in selected]
+                    if use_log_probs
+                    else [self._all_model_token_ids] * len(selected)
+                )
                 if callable(attempt_provider):
                     attempt = attempt_provider(
                         session.continuation_root,
                         [item[0].token_path for item in selected],
-                        [self._all_model_token_ids] * len(selected),
+                        allowed_sets,
                         deadline_ms=remaining_ms,
                     )
                     scored = attempt.result
@@ -866,7 +911,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     scored = continuation(
                         session.continuation_root,
                         [item[0].token_path for item in selected],
-                        [self._all_model_token_ids] * len(selected),
+                        allowed_sets,
                         deadline_ms=remaining_ms,
                     )
                 if scored is not None:
@@ -874,12 +919,20 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                         raise RuntimeError("continuation scorer returned an invalid batch")
                     normalized = []
                     for values, item in zip(scored, selected, strict=True):
-                        full_logits = np.asarray(values, dtype=np.float32)
-                        if full_logits.size != len(self._all_model_token_ids):
+                        returned = np.asarray(values, dtype=np.float32)
+                        expected_size = (
+                            len(item[2]) if use_log_probs else len(self._all_model_token_ids)
+                        )
+                        if returned.size != expected_size:
+                            kind = "legal-token" if use_log_probs else "full-vocabulary"
                             raise RuntimeError(
-                                "continuation scorer returned an invalid full-vocabulary vector"
+                                f"continuation scorer returned an invalid {kind} vector"
                             )
-                        normalized.append(_selected_log_probs(full_logits, item[2]))
+                        normalized.append(
+                            returned.copy()
+                            if use_log_probs
+                            else _selected_log_probs(returned, item[2])
+                        )
             except Exception as error:
                 failure = error
         finally:
@@ -899,8 +952,16 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
 
         # Build a batch in private scratch state. Publish only after rechecking
         # the live session; never mutate shared lists while the lock is released.
+        replaceable_lexical_keys = {
+            (unicodedata.normalize("NFKC", candidate.text), candidate.consumed_keys)
+            for candidate in session.pending
+            if candidate.constraint_kind == "pinyin_lexical_fallback"
+        }
         scratch = replace(
-            session, pending=[], frontier=[], seen_candidates=set(session.seen_candidates)
+            session,
+            pending=[],
+            frontier=[],
+            seen_candidates=set(session.seen_candidates) - replaceable_lexical_keys,
         )
         progressed = 0
         self._state_lock.release()
@@ -918,6 +979,22 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             raise CandidatePageError("candidate set was invalidated during search")
         for candidate in scratch.pending:
             key = (unicodedata.normalize("NFKC", candidate.text), candidate.consumed_keys)
+            if key in replaceable_lexical_keys:
+                session.pending = [
+                    previous
+                    for previous in session.pending
+                    if not (
+                        previous.constraint_kind == "pinyin_lexical_fallback"
+                        and (
+                            unicodedata.normalize("NFKC", previous.text),
+                            previous.consumed_keys,
+                        )
+                        == key
+                    )
+                ]
+                replaceable_lexical_keys.remove(key)
+                session.pending.append(candidate)
+                continue
             if key in session.seen_candidates:
                 continue
             session.seen_candidates.add(key)
@@ -933,15 +1010,66 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             session.exhausted = True
         return progressed
 
+    def _note_background_frontier_capacity(
+        self,
+        session: _SearchSession,
+        selected: Sequence[tuple[Any, tuple[object, ...], tuple[int, ...], dict[int, Any]]],
+    ) -> None:
+        """Allow publication layers to record capacity evidence off the request path."""
+
+
+    def _resume_scored_han_frontier(
+        self,
+        session: _SearchSession,
+        absolute_deadline: float,
+    ) -> int | None:
+        compact_length = len(session.identity.raw_keys.replace("'", ""))
+        has_unscored_roots = any(
+            path.script == "han"
+            and len(path.token_path) == 1
+            and self._path_key(path) not in session.expanded_paths
+            and (
+                bool(getattr(path, "pending_options", ()))
+                or path.matched_letters < compact_length
+            )
+            for path in session.frontier
+        )
+        for index, path in enumerate(session.frontier):
+            if getattr(path, "scored_han_resume", False):
+                work = session.frontier.pop(index)
+                progressed = self._resume_han_expansion(session, work, absolute_deadline)
+            elif getattr(path, "root_seed_resume", False) and not has_unscored_roots:
+                work = session.frontier.pop(index)
+                progressed = self._resume_root_han_frontier(session, work)
+            else:
+                continue
+            self._refresh_dirty_single_letter_prewarms()
+            self._prune_frontier(session)
+            session.exhausted = not session.frontier
+            return progressed
+        return None
+
+
     def _expand_one_frontier(
         self,
         session: _SearchSession,
         absolute_deadline: float,
     ) -> int:
+        resumed = self._resume_scored_han_frontier(session, absolute_deadline)
+        if resumed is not None:
+            return resumed
         if not session.frontier:
             session.exhausted = True
             return 0
-        continuation = getattr(self.backend, "continue_from_root", None)
+        log_prob_continuation = getattr(
+            self.backend, "continue_log_probs_from_root", None
+        )
+        use_log_probs = callable(log_prob_continuation)
+        continuation = (
+            log_prob_continuation
+            if use_log_probs
+            else getattr(self.backend, "continue_from_root", None)
+        )
         if (
             not callable(continuation)
             or session.continuation_root is None
@@ -1004,7 +1132,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 scored = continuation(
                     session.continuation_root,
                     [parent.token_path],
-                    [self._all_model_token_ids],
+                    [legal_token_ids if use_log_probs else self._all_model_token_ids],
                     deadline_ms=remaining_ms,
                 )
             except Exception as error:
@@ -1026,11 +1154,17 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         if len(scored) != 1:
             self._rollback_parent(session, parent, parent_key)
             raise RuntimeError("continuation scorer returned an invalid batch")
-        full_logits = np.asarray(scored[0], dtype=np.float32)
-        if full_logits.size != len(self._all_model_token_ids):
+        returned = np.asarray(scored[0], dtype=np.float32)
+        expected_size = len(legal_token_ids) if use_log_probs else len(self._all_model_token_ids)
+        if returned.size != expected_size:
             self._rollback_parent(session, parent, parent_key)
-            raise RuntimeError("continuation scorer returned an invalid full-vocabulary vector")
-        values = _selected_log_probs(full_logits, legal_token_ids)
+            kind = "legal-token" if use_log_probs else "full-vocabulary"
+            raise RuntimeError(f"continuation scorer returned an invalid {kind} vector")
+        values = (
+            returned.copy()
+            if use_log_probs
+            else _selected_log_probs(returned, legal_token_ids)
+        )
 
         before_pending = len(session.pending)
         if parent.script == "han":

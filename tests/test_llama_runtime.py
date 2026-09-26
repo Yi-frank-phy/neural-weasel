@@ -168,6 +168,10 @@ def test_runtime_exposes_only_refresh_metadata_and_explicit_limits(tmp_path: Pat
     assert diagnostics["last_refresh_evaluated_tokens"] == 1
     assert isinstance(diagnostics["last_refresh_latency_ms"], float)
     assert diagnostics["last_refresh_latency_ms"] >= 0.0
+    assert diagnostics["last_refresh_latency_ms"] == pytest.approx(
+        diagnostics["last_refresh_queue_wait_ms"]
+        + diagnostics["last_refresh_compute_ms"]
+    )
 
     backend.create_snapshot("你好")
     diagnostics = backend.diagnostics()
@@ -192,6 +196,15 @@ def test_runtime_exposes_only_refresh_metadata_and_explicit_limits(tmp_path: Pat
         "last_refresh_context_tokens": None,
         "last_refresh_evaluated_tokens": None,
         "last_refresh_latency_ms": None,
+        "last_refresh_queue_wait_ms": None,
+        "last_refresh_compute_ms": None,
+        "last_continuation_queue_wait_ms": None,
+        "last_continuation_elapsed_ms": None,
+        "last_continuation_requested_branches": None,
+        "last_continuation_completed_branches": None,
+        "last_continuation_returned_tokens": None,
+        "last_continuation_cache_preserved": None,
+        "last_continuation_outcome": None,
     }
     assert backend.performance_diagnostics() == expected
 

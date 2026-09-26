@@ -15,7 +15,9 @@ from neural_weasel.index import SCHEMA_VERSION, PinyinIndex, PinyinIndexBuilder
 def make_index(tmp_path: Path):
     def factory(
         rows: Iterable[
-            tuple[int | None, str, str, int, int] | tuple[int | None, str, str, str, int, int]
+            tuple[int | None, str, str, int, int]
+            | tuple[int | None, str, str, str, int, int]
+            | tuple[int | None, str, str, str, int, int, tuple[int, ...]]
         ],
         *,
         tokenizer_hash: str = "test-tokenizer",
@@ -32,14 +34,28 @@ def make_index(tmp_path: Path):
                 if len(row) == 5:
                     token_id, text, pinyin, syllables, coverage = row
                     syllable_path = pinyin
-                else:
+                    token_path = (token_id,) if token_id is not None else (0,)
+                elif len(row) == 6:
                     token_id, text, pinyin, syllable_path, syllables, coverage = row
-                normalized_rows.append((token_id, text, pinyin, syllable_path, syllables, coverage))
+                    token_path = (token_id,) if token_id is not None else (0,)
+                else:
+                    token_id, text, pinyin, syllable_path, syllables, coverage, token_path = row
+                normalized_rows.append(
+                    (
+                        token_id,
+                        json.dumps(token_path),
+                        text,
+                        pinyin,
+                        syllable_path,
+                        syllables,
+                        coverage,
+                    )
+                )
             connection.executemany(
                 """
                 INSERT INTO pronunciations
-                (token_id, text, pinyin, syllable_path, syllables, coverage)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (token_id, token_path, text, pinyin, syllable_path, syllables, coverage)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 normalized_rows,
             )

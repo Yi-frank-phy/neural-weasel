@@ -32,20 +32,56 @@ _RUNTIME_COUNT_KEYS = (
     "last_candidate_search_depth",
     "last_candidate_length_bucket",
     "candidate_page_timeout_count",
+    "page_zero_lexical_attempt_count",
+    "last_page_zero_lexical_result_count",
+    "last_page_zero_lexical_freezable_count",
+    "last_continuation_requested_branches",
+    "last_continuation_completed_branches",
+    "last_continuation_returned_tokens",
+    "last_candidate_target_count",
+    "last_candidate_generated_count",
+    "last_candidate_pending_count",
+    "last_candidate_freezable_count",
+    "last_candidate_frontier_count",
+    "last_candidate_frozen_count",
+    "last_candidate_published_count",
 )
 _RUNTIME_LATENCY_KEYS = (
     "last_refresh_latency_ms",
+    "last_refresh_queue_wait_ms",
+    "last_refresh_compute_ms",
+    "last_continuation_queue_wait_ms",
+    "last_continuation_elapsed_ms",
     "last_candidate_search_elapsed_ms",
+    "last_candidate_background_elapsed_ms",
+    "last_page_zero_lexical_elapsed_ms",
+    "last_page_zero_lexical_budget_ms",
+)
+_RUNTIME_BOOLEAN_KEYS = (
+    "last_continuation_cache_preserved",
+    "last_candidate_background_timed_out",
+)
+_RUNTIME_ENUM_KEYS = ("last_continuation_outcome",)
+_CONTINUATION_OUTCOMES = frozenset(
+    {"completed", "deadline", "lock_timeout", "preempted", "error"}
 )
 
 
-def _safe_runtime_metric(key: str, value: object) -> int | float | None:
+def _safe_runtime_metric(key: str, value: object) -> int | float | bool | str | None:
     if value is None:
         return None
     if key in _RUNTIME_LATENCY_KEYS:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
             raise RuntimeError("invalid cached runtime latency metric")
         return float(value)
+    if key in _RUNTIME_BOOLEAN_KEYS:
+        if not isinstance(value, bool):
+            raise RuntimeError("invalid cached runtime boolean metric")
+        return value
+    if key in _RUNTIME_ENUM_KEYS:
+        if not isinstance(value, str) or value not in _CONTINUATION_OUTCOMES:
+            raise RuntimeError("invalid cached runtime enum metric")
+        return value
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RuntimeError("invalid cached runtime count metric")
     return value
@@ -89,6 +125,10 @@ class ProductionNamedPipeServer(NamedPipeServer):
             for key in _RUNTIME_COUNT_KEYS:
                 response[key] = _safe_runtime_metric(key, raw.get(key))
             for key in _RUNTIME_LATENCY_KEYS:
+                response[key] = _safe_runtime_metric(key, raw.get(key))
+            for key in _RUNTIME_BOOLEAN_KEYS:
+                response[key] = _safe_runtime_metric(key, raw.get(key))
+            for key in _RUNTIME_ENUM_KEYS:
                 response[key] = _safe_runtime_metric(key, raw.get(key))
             if request_id is not None:
                 response["request_id"] = request_id

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from neural_weasel.gguf_index import GgufPinyinIndexBuilder
 from neural_weasel.index import SCHEMA_VERSION, PinyinIndex
 from neural_weasel.pinyin import parse_raw_pinyin
@@ -24,6 +26,10 @@ class FakeGgufVocab:
         del skip_special_tokens, clean_up_tokenization_spaces
         return {0: "你", 1: "hello"}[token_ids[0]]
 
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        assert not add_special_tokens
+        return [0] if text == "你" else []
+
 
 def test_gguf_index_records_artifact_and_vocab_identity(tmp_path: Path) -> None:
     path = tmp_path / "gguf.sqlite3"
@@ -42,3 +48,41 @@ def test_gguf_index_records_artifact_and_vocab_identity(tmp_path: Path) -> None:
     assert index.metadata["gguf_sha256"] == "a" * 64
     assert index.metadata["vocab_fingerprint"] == "f" * 64
     assert index.compatible(parse_raw_pinyin("ni"))
+
+
+def test_gguf_index_persists_canonical_two_token_coverage_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pypinyin.constants
+
+    monkeypatch.setattr(pypinyin.constants, "PINYIN_DICT", {ord("敝"): "bi4"})
+
+    class SplitCharacterVocab:
+        all_special_ids = frozenset()
+        fingerprint = "e" * 64
+
+        def __len__(self) -> int:
+            return 2
+
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            skip_special_tokens: bool = False,
+            clean_up_tokenization_spaces: bool = False,
+        ) -> str:
+            del skip_special_tokens, clean_up_tokenization_spaces
+            return "敝" if token_ids == [0, 1] else "�"
+
+        def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+            assert not add_special_tokens
+            return [0, 1] if text == "敝" else []
+
+    path = GgufPinyinIndexBuilder(
+        SplitCharacterVocab(), model_id="test/gguf", gguf_sha256="a" * 64
+    ).build(tmp_path / "split.sqlite3")
+    entries = PinyinIndex(path).compatible(parse_raw_pinyin("bi"))
+
+    assert [
+        (entry.text, entry.token_id, entry.coverage, entry.token_path) for entry in entries
+    ] == [("敝", None, True, (0, 1))]

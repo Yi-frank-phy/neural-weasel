@@ -174,6 +174,11 @@ def test_active_page_preparation_does_not_make_published_page_replaceable(
     engine, runtime = _candidate_engine(make_index)
     engine.initialize_neural_baseline()
     manager = engine.candidate_pages
+    monkeypatch.setattr(manager, "_lexical_completion_fallback", lambda *args, **kwargs: [])
+    # Exercise the asynchronous preparer itself. Fixed Chinese sets that are
+    # already resident are now sliced synchronously and intentionally need no
+    # preparation thread.
+    monkeypatch.setattr(manager, "_uses_fixed_chinese_capacity", lambda session: False)
     entered = threading.Event()
     release_preparation = threading.Event()
     original_prepare = manager._prepare_page_search

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import math
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -22,8 +23,8 @@ from .gpu import (
 )
 from .llama_vocab import LlamaVocabAdapter
 
-DEFAULT_MAX_BEFORE_TOKENS = 3072
-DEFAULT_N_CTX = 4096
+DEFAULT_MAX_BEFORE_TOKENS = 23552
+DEFAULT_N_CTX = 24576
 DEFAULT_N_BATCH = 512
 DEFAULT_PARALLEL_SEQUENCES = 1
 CANDIDATE_WARMUP_MAX_PATH_TOKENS = 4
@@ -150,9 +151,13 @@ class LlamaCppBackend:
         self._continuation_state_token_ids: tuple[int, ...] | None = None
         self._continuation_state_buffer: Any | None = None
         self._continuation_state_size = 0
-        # Replaced atomically after a successful refresh. The immutable tuple
-        # contains only counts and elapsed time, never editor text or hashes.
-        self._last_refresh_diagnostics: tuple[int, int, float] | None = None
+        # Replaced atomically after each operation. These immutable tuples contain
+        # only counts, booleans, enum-like reasons, and elapsed time; never editor
+        # text, candidate text, token paths, or hashes.
+        self._last_refresh_diagnostics: tuple[int, int, float, float, float] | None = None
+        self._last_continuation_diagnostics: (
+            tuple[float, float, int, int, int, bool, str] | None
+        ) = None
 
         cuda_backend_probe = cuda_backend_probe or _default_cuda_backend_probe
         if not cuda_backend_probe():
@@ -208,7 +213,7 @@ class LlamaCppBackend:
             token_ids = (self._fallback_token(),)
         return token_ids[-self.max_before_tokens :]
 
-    def _copy_last_logits(self) -> np.ndarray:
+    def _copy_last_logits(self, *, require_finite: bool = True) -> np.ndarray:
         context = getattr(self.llama, "_ctx", None)
         get_logits = getattr(context, "get_logits", None)
         if not callable(get_logits):
@@ -225,7 +230,7 @@ class LlamaCppBackend:
                 f"llama.cpp logits size {logits.size} does not match vocabulary "
                 f"size {len(self.tokenizer)}"
             )
-        if not np.isfinite(logits).all():
+        if require_finite and not np.isfinite(logits).all():
             raise RuntimeError("llama.cpp returned non-finite logits")
         logits.flags.writeable = False
         return logits
@@ -308,6 +313,7 @@ class LlamaCppBackend:
 
     def create_snapshot(self, before: str, after: str = "") -> GgufLogitsSnapshot:
         token_ids = self._tokenize_context(before)
+        started = time.perf_counter()
         with self._context_waiters_lock:
             self._context_waiters += 1
         try:
@@ -316,7 +322,8 @@ class LlamaCppBackend:
             with self._context_waiters_lock:
                 self._context_waiters -= 1
         try:
-            started = time.perf_counter()
+            acquired = time.perf_counter()
+            queue_wait_ms = max(0.0, (acquired - started) * 1000.0)
             evaluated_tokens = 0
             if token_ids != self._cached_token_ids:
                 self._clear_cached_continuation_state()
@@ -347,11 +354,15 @@ class LlamaCppBackend:
                 self._cached_logits = logits
 
             continuation_root = self._capture_continuation_root(token_ids)
-            latency_ms = (time.perf_counter() - started) * 1000
+            finished = time.perf_counter()
+            compute_ms = max(0.0, (finished - acquired) * 1000.0)
+            latency_ms = queue_wait_ms + compute_ms
             self._last_refresh_diagnostics = (
                 len(token_ids),
                 evaluated_tokens,
                 latency_ms,
+                queue_wait_ms,
+                compute_ms,
             )
             self._epoch += 1
             return GgufLogitsSnapshot(
@@ -393,6 +404,98 @@ class LlamaCppBackend:
         *,
         deadline_ms: float,
     ) -> list[np.ndarray] | None:
+        return self._continue_values_from_root(
+            root,
+            token_paths,
+            allowed_token_sets,
+            deadline_ms=deadline_ms,
+            normalize_log_probs=False,
+        )
+
+    def continue_log_probs_from_root(
+        self,
+        root: LlamaContinuationRoot,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> list[np.ndarray] | None:
+        """Return legal-token log probabilities normalized over the full vocabulary."""
+
+        return self._continue_values_from_root(
+            root,
+            token_paths,
+            allowed_token_sets,
+            deadline_ms=deadline_ms,
+            normalize_log_probs=True,
+        )
+
+    @staticmethod
+    def _select_continuation_values(
+        logits: Sequence[float],
+        allowed: np.ndarray,
+        *,
+        normalize_log_probs: bool,
+    ) -> np.ndarray:
+        values = np.asarray(logits, dtype=np.float64).reshape(-1)
+        if not normalize_log_probs:
+            return np.asarray(values[allowed], dtype=np.float32).copy()
+        if values.size == 0:
+            return np.full(allowed.size, -math.inf, dtype=np.float32)
+        if np.isnan(values).any():
+            raise ValueError("model logits must not contain NaN")
+        positive_infinity = np.isposinf(values)
+        if positive_infinity.any():
+            output = np.full(allowed.size, -math.inf, dtype=np.float32)
+            output[positive_infinity[allowed]] = np.float32(
+                -math.log(int(positive_infinity.sum()))
+            )
+            return output
+        finite = np.isfinite(values)
+        if not finite.any():
+            return np.full(allowed.size, -math.inf, dtype=np.float32)
+        maximum = float(values[finite].max())
+        log_normalizer = maximum + math.log(
+            float(np.exp(values[finite] - maximum).sum())
+        )
+        return np.asarray(values[allowed] - log_normalizer, dtype=np.float32)
+
+    def _restore_live_continuation_root(self, root: LlamaContinuationRoot) -> bool:
+        context = getattr(self.llama, "_ctx", None)
+        raw_context = getattr(context, "ctx", None)
+        if raw_context is None:
+            self._restore_continuation_root(root)
+            return True
+        root_tokens = tuple(int(token_id) for token_id in root.replay_token_ids)
+        root_state = self._continuation_state_buffer
+        state_size = self._continuation_state_size
+        if self._continuation_state_token_ids != root_tokens or root_state is None:
+            return False
+        from llama_cpp import llama_cpp
+
+        self._clear_live_sequence()
+        restored = int(
+            llama_cpp.llama_state_seq_set_data(
+                raw_context,
+                root_state,
+                state_size,
+                0,
+            )
+        )
+        if restored != state_size:
+            return False
+        self.llama.n_tokens = len(root_tokens)
+        return True
+
+    def _continue_values_from_root(
+        self,
+        root: LlamaContinuationRoot,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+        normalize_log_probs: bool,
+    ) -> list[np.ndarray] | None:
         """Score branches from one exact root snapshot without context mixing.
 
         Lock acquisition is deadline bounded. Each branch restores the same
@@ -400,7 +503,18 @@ class LlamaCppBackend:
         root token score and every continuation score share one model context.
         """
 
+        requested_branches = len(token_paths)
+        operation_started = time.perf_counter()
         if deadline_ms <= 0:
+            self._last_continuation_diagnostics = (
+                0.0,
+                0.0,
+                requested_branches,
+                0,
+                0,
+                False,
+                "deadline",
+            )
             return None
         if not isinstance(root, LlamaContinuationRoot):
             raise TypeError("candidate continuation root has an unexpected runtime type")
@@ -409,8 +523,29 @@ class LlamaCppBackend:
         deadline = time.monotonic() + deadline_ms / 1000.0
         remaining = max(0.0, deadline - time.monotonic())
         if not self._lock.acquire(timeout=remaining):
+            elapsed_ms = max(0.0, (time.perf_counter() - operation_started) * 1000.0)
+            self._last_continuation_diagnostics = (
+                elapsed_ms,
+                elapsed_ms,
+                requested_branches,
+                0,
+                0,
+                False,
+                "lock_timeout",
+            )
             return None
+        queue_wait_ms = max(0.0, (time.perf_counter() - operation_started) * 1000.0)
 
+        cache_matches_root = (
+            tuple(root.replay_token_ids) == self._cached_token_ids
+            and self._cached_logits is not None
+        )
+        cached_logits = self._cached_logits if cache_matches_root else None
+        sequence_mutated = False
+        completed_branches = [0]
+        returned_tokens = 0
+        outcome = "error"
+        cache_preserved = False
         try:
             outputs: list[np.ndarray] = []
             paths: list[tuple[int, ...]] = []
@@ -445,34 +580,88 @@ class LlamaCppBackend:
             context = getattr(self.llama, "_ctx", None)
             raw_context = getattr(context, "ctx", None)
             if raw_context is not None and root.replay_token_ids:
-                return self._continue_single_sequence_restore(
+                sequence_mutated = True
+                result = self._continue_single_sequence_restore(
                     root.replay_token_ids,
                     paths,
                     allowed_sets,
                     deadline=deadline,
+                    normalize_log_probs=normalize_log_probs,
+                    completed_counter=completed_branches,
                 )
+                if result is None:
+                    outcome = (
+                        "preempted" if self._context_refresh_is_waiting() else "deadline"
+                    )
+                    return None
+                returned_tokens = sum(int(values.size) for values in result)
+                outcome = "completed"
+                return result
 
             for path, allowed in zip(paths, allowed_sets, strict=True):
                 if time.monotonic() >= deadline:
+                    outcome = "deadline"
                     return None
+                sequence_mutated = True
                 self._restore_continuation_root(root)
                 self.llama.eval(list(path))
-                logits = self._copy_last_logits()
-                outputs.append(np.asarray(logits[allowed], dtype=np.float32).copy())
+                logits = self._copy_last_logits(require_finite=not normalize_log_probs)
+                outputs.append(
+                    self._select_continuation_values(
+                        logits,
+                        allowed,
+                        normalize_log_probs=normalize_log_probs,
+                    )
+                )
+                completed_branches[0] = len(outputs)
                 if time.monotonic() >= deadline:
+                    outcome = "deadline"
                     return None
                 if len(outputs) < len(paths) and self._context_refresh_is_waiting():
+                    outcome = "preempted"
                     return None
+            returned_tokens = sum(int(values.size) for values in outputs)
+            outcome = "completed"
             return outputs
         finally:
             try:
-                self._clear_live_sequence()
-                # Branch evaluation deliberately invalidates the live incremental
-                # editor cache. The immutable published root remains usable.
-                self._cached_token_ids = None
-                self._cached_logits = None
+                restored = False
+                if cache_matches_root:
+                    try:
+                        restored = (
+                            not sequence_mutated
+                            or self._restore_live_continuation_root(root)
+                        )
+                    except Exception:
+                        restored = False
+                if restored:
+                    self._cached_token_ids = tuple(root.replay_token_ids)
+                    self._cached_logits = cached_logits
+                    cache_preserved = True
+                else:
+                    self._clear_live_sequence()
+                    self._cached_token_ids = None
+                    self._cached_logits = None
             finally:
                 self._lock.release()
+                if returned_tokens == 0 and completed_branches[0] > 0:
+                    returned_tokens = sum(
+                        int(values.size)
+                        for values in allowed_sets[: completed_branches[0]]
+                    )
+                elapsed_ms = max(
+                    queue_wait_ms,
+                    (time.perf_counter() - operation_started) * 1000.0,
+                )
+                self._last_continuation_diagnostics = (
+                    queue_wait_ms,
+                    elapsed_ms,
+                    requested_branches,
+                    completed_branches[0],
+                    returned_tokens,
+                    cache_preserved,
+                    outcome,
+                )
 
     def warm_candidate_continuation(
         self,
@@ -505,6 +694,8 @@ class LlamaCppBackend:
         allowed_token_sets: Sequence[np.ndarray],
         *,
         deadline: float,
+        normalize_log_probs: bool = False,
+        completed_counter: list[int] | None = None,
     ) -> list[np.ndarray] | None:
         """Replay one root once, then restore its single-sequence state per branch."""
 
@@ -556,11 +747,20 @@ class LlamaCppBackend:
             if time.monotonic() >= deadline:
                 return None
             self.llama.eval(list(path))
-            logits = self._copy_last_logits()
-            selected = np.asarray(logits[allowed], dtype=np.float32).copy()
-            if not np.isfinite(selected).all():
+            logits = self._copy_last_logits(require_finite=not normalize_log_probs)
+            selected = self._select_continuation_values(
+                logits,
+                allowed,
+                normalize_log_probs=normalize_log_probs,
+            )
+            if normalize_log_probs:
+                if np.isnan(selected).any():
+                    raise RuntimeError("llama.cpp returned NaN continuation log probabilities")
+            elif not np.isfinite(selected).all():
                 raise RuntimeError("llama.cpp returned non-finite continuation logits")
             outputs.append(selected)
+            if completed_counter is not None:
+                completed_counter[0] = len(outputs)
             if len(outputs) == len(token_paths):
                 break
             if time.monotonic() >= deadline or self._context_refresh_is_waiting():
@@ -642,11 +842,13 @@ class LlamaCppBackend:
             self._cached_logits = None
             self._clear_cached_continuation_state()
             self._last_refresh_diagnostics = None
+            self._last_continuation_diagnostics = None
 
     def performance_diagnostics(self) -> dict[str, object]:
         """Return cached timing/count metadata without probing GPU or model state."""
 
         refresh = self._last_refresh_diagnostics
+        continuation = self._last_continuation_diagnostics
         return {
             "max_before_tokens": self.max_before_tokens,
             "n_ctx": self.n_ctx,
@@ -654,6 +856,29 @@ class LlamaCppBackend:
             "last_refresh_context_tokens": None if refresh is None else refresh[0],
             "last_refresh_evaluated_tokens": None if refresh is None else refresh[1],
             "last_refresh_latency_ms": None if refresh is None else refresh[2],
+            "last_refresh_queue_wait_ms": None if refresh is None else refresh[3],
+            "last_refresh_compute_ms": None if refresh is None else refresh[4],
+            "last_continuation_queue_wait_ms": (
+                None if continuation is None else continuation[0]
+            ),
+            "last_continuation_elapsed_ms": (
+                None if continuation is None else continuation[1]
+            ),
+            "last_continuation_requested_branches": (
+                None if continuation is None else continuation[2]
+            ),
+            "last_continuation_completed_branches": (
+                None if continuation is None else continuation[3]
+            ),
+            "last_continuation_returned_tokens": (
+                None if continuation is None else continuation[4]
+            ),
+            "last_continuation_cache_preserved": (
+                None if continuation is None else continuation[5]
+            ),
+            "last_continuation_outcome": (
+                None if continuation is None else continuation[6]
+            ),
         }
 
     def diagnostics(self) -> dict[str, object]:

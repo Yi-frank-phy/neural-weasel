@@ -16,7 +16,7 @@ from .paths import indexes_root
 from .pinyin import ParsedPinyinInput, concatenate_path, is_all_han, pronunciation_paths
 from .simplified_chinese import is_simplified_han
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,10 +27,21 @@ class IndexedPronunciation:
     syllable_path: tuple[str, ...]
     syllables: int
     coverage: bool
+    token_path: tuple[int, ...] = ()
     display_pinyin: str = field(init=False)
     normalized_text: str = field(init=False)
 
     def __post_init__(self) -> None:
+        # Keep direct single-token constructions compatible with older callers.
+        if not self.token_path and self.token_id is not None:
+            object.__setattr__(self, "token_path", (self.token_id,))
+        if not isinstance(self.token_path, tuple) or not self.token_path or any(
+            isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
+            for token_id in self.token_path
+        ):
+            raise ValueError("indexed pronunciation requires a nonempty token path")
+        if self.token_id is not None and self.token_path != (self.token_id,):
+            raise ValueError("single-token pronunciation requires its token id as the path")
         object.__setattr__(self, "display_pinyin", "'".join(self.syllable_path))
         object.__setattr__(self, "normalized_text", unicodedata.normalize("NFKC", self.text))
 
@@ -170,12 +181,13 @@ class PinyinIndexBuilder:
             CREATE TABLE pronunciations (
                 id INTEGER PRIMARY KEY,
                 token_id INTEGER,
+                token_path TEXT NOT NULL CHECK (token_path != '[]'),
                 text TEXT NOT NULL,
                 pinyin TEXT NOT NULL,
                 syllable_path TEXT NOT NULL,
                 syllables INTEGER NOT NULL,
                 coverage INTEGER NOT NULL,
-                UNIQUE(token_id, text, pinyin, syllable_path, coverage)
+                UNIQUE(token_id, token_path, text, pinyin, syllable_path, coverage)
             );
             CREATE INDEX idx_pronunciations_pinyin ON pronunciations(pinyin);
             CREATE INDEX idx_pronunciations_token ON pronunciations(token_id);
@@ -183,7 +195,7 @@ class PinyinIndexBuilder:
         )
 
     def _insert_tokens(self, connection: sqlite3.Connection) -> None:
-        rows: list[tuple[int, str, str, str, int, int]] = []
+        rows: list[tuple[int, str, str, str, str, int, int]] = []
         special_ids = set(self.tokenizer.all_special_ids)
         for token_id in range(len(self.tokenizer)):
             if token_id in special_ids:
@@ -196,13 +208,23 @@ class PinyinIndexBuilder:
             if not is_all_han(text) or not is_simplified_han(text):
                 continue
             for path in pronunciation_paths(text):
-                rows.append((token_id, text, concatenate_path(path), "'".join(path), len(path), 0))
+                rows.append(
+                    (
+                        token_id,
+                        json.dumps([token_id]),
+                        text,
+                        concatenate_path(path),
+                        "'".join(path),
+                        len(path),
+                        0,
+                    )
+                )
             if len(rows) >= 10_000:
                 connection.executemany(
                     """
                     INSERT OR IGNORE INTO pronunciations
-                    (token_id, text, pinyin, syllable_path, syllables, coverage)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (token_id, token_path, text, pinyin, syllable_path, syllables, coverage)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows,
                 )
@@ -211,14 +233,13 @@ class PinyinIndexBuilder:
             connection.executemany(
                 """
                 INSERT OR IGNORE INTO pronunciations
-                (token_id, text, pinyin, syllable_path, syllables, coverage)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (token_id, token_path, text, pinyin, syllable_path, syllables, coverage)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
 
-    @staticmethod
-    def _insert_character_coverage(connection: sqlite3.Connection) -> None:
+    def _insert_character_coverage(self, connection: sqlite3.Connection) -> None:
         from pypinyin.constants import PINYIN_DICT
 
         direct_characters = {
@@ -227,18 +248,42 @@ class PinyinIndexBuilder:
                 "SELECT DISTINCT text FROM pronunciations WHERE length(text) = 1"
             )
         }
-        rows: list[tuple[None, str, str, str, int, int]] = []
+        rows: list[tuple[None, str, str, str, str, int, int]] = []
+        special_ids = set(self.tokenizer.all_special_ids)
+        vocab_size = len(self.tokenizer)
         for codepoint in PINYIN_DICT:
             char = chr(codepoint)
             if char in direct_characters or not is_all_han(char) or not is_simplified_han(char):
                 continue
+            token_path = self.tokenizer.encode(char, add_special_tokens=False)
+            if not token_path or any(
+                isinstance(token_id, bool)
+                or not isinstance(token_id, int)
+                or token_id < 0
+                or token_id >= vocab_size
+                or token_id in special_ids
+                for token_id in token_path
+            ):
+                continue
+            if (
+                self.tokenizer.decode(
+                    token_path,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+                != char
+            ):
+                continue
+            serialized_path = json.dumps(token_path, separators=(",", ":"))
             for path in pronunciation_paths(char):
-                rows.append((None, char, concatenate_path(path), "'".join(path), 1, 1))
+                rows.append(
+                    (None, serialized_path, char, concatenate_path(path), "'".join(path), 1, 1)
+                )
         connection.executemany(
             """
             INSERT OR IGNORE INTO pronunciations
-            (token_id, text, pinyin, syllable_path, syllables, coverage)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (token_id, token_path, text, pinyin, syllable_path, syllables, coverage)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -286,6 +331,7 @@ class PinyinIndex:
                 raise RuntimeError("pinyin index schema is incompatible; rebuild it")
             for (
                 token_id,
+                token_path,
                 text,
                 pinyin_value,
                 syllable_path,
@@ -293,7 +339,7 @@ class PinyinIndex:
                 coverage,
             ) in connection.execute(
                 """
-                SELECT token_id, text, pinyin, syllable_path, syllables, coverage
+                SELECT token_id, token_path, text, pinyin, syllable_path, syllables, coverage
                 FROM pronunciations
                 ORDER BY pinyin, coverage, token_id
                 """
@@ -303,8 +349,12 @@ class PinyinIndex:
                 # depend on mutating or rebuilding a user's cached index first.
                 if not is_simplified_han(text):
                     continue
+                stored_path = json.loads(token_path)
+                if not isinstance(stored_path, list) or not stored_path:
+                    raise ValueError("pinyin index contains an empty or invalid token path")
                 entry = IndexedPronunciation(
                     token_id=token_id,
+                    token_path=tuple(stored_path),
                     text=text,
                     pinyin=pinyin_value,
                     syllable_path=tuple(syllable_path.split("'")),

@@ -61,7 +61,8 @@ and then publishes `EditorContextEpoch`. See
 [context-bridge.md](context-bridge.md). It has no Weasel/librime header
 dependency and does not register a profile.
 
-Fast reads use `{8192, 4096}` UTF-16 code units. An idle timer may issue a
+Fast reads use `{27648, 4096}` UTF-16 code units. The Python service clips that
+snapshot to the active model's 23552-token before-context budget. An idle timer may issue a
 second request with `{32768, 32768}`. `ShiftStart`/`ShiftEnd` report the actual
 movement; moving fewer units than requested marks that side as reaching the
 current TSF region boundary. This is a region-completeness signal, not proof

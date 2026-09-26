@@ -82,7 +82,7 @@ Metadata-only `ai-translator.log` evidence from the real TSF session:
 Relevant defaults:
 
 - `native/rime/ai_translator.h`: `query_timeout_{50}`;
-- `LlamaCppBackend`: `max_before_tokens=3072`, `n_ctx=4096`, `n_batch=512`;
+- `LlamaCppBackend`: `max_before_tokens=23552`, `n_ctx=24576`, `n_batch=512`;
 - the Q4 launcher currently does not expose overrides for those values;
 - `create_snapshot()` performs `llama.eval()` while holding the backend lock;
 - there is no ordinary pinyin dictionary fallback in the deployed schema, so epoch 0 cannot produce Chinese candidates.
@@ -92,7 +92,7 @@ A synthetic, non-private benchmark against the running Q4 service measured refre
 ### Cloud-safe next work
 
 - Add latency/refresh diagnostics that record durations and token counts only, never raw editor context.
-- Make the production context-window/runtime parameters explicit and testable instead of silently relying on 3072/4096/512.
+- Keep the production context-window/runtime parameters explicit and testable at 23552/24576/512.
 - Reproduce query starvation with a controlled blocking backend and prove that immutable previous snapshots remain queryable while a new snapshot is computed.
 - Evaluate a bounded target profile (for example a smaller retained left context) with tests, but do not claim a parameter value is fixed until target-hardware measurement.
 - Keep all model work outside the TSF DLL.

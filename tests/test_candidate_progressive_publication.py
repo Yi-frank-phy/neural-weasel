@@ -19,6 +19,7 @@ def test_published_page_zero_cancels_progressive_background_search(
     def batch(session, deadline, *, max_parents):
         nonlocal calls
         calls += 1
+        manager._full_page_zero_targets.add(session.candidate_set_id)
         if calls > 1:
             started.set()
             manager._state_lock.release()
@@ -27,18 +28,20 @@ def test_published_page_zero_cancels_progressive_background_search(
             finally:
                 manager._state_lock.acquire()
         template = session.pending[0]
-        session.pending.append(
-            replace(
-                template,
-                text="你好" + "啊" * calls,
-                script="han",
-                token_path=(calls, 2),
-                completes_input=True,
-                consumed_keys=5,
-                model_score=float(calls),
+        generated = range(1, 8) if calls == 1 else (8,)
+        for suffix in generated:
+            session.pending.append(
+                replace(
+                    template,
+                    text="你好" + "啊" * suffix,
+                    script="han",
+                    token_path=(suffix, 2),
+                    completes_input=True,
+                    consumed_keys=5,
+                    model_score=float(suffix),
+                )
             )
-        )
-        return 1
+        return len(tuple(generated))
 
     monkeypatch.setattr(manager, "_expand_background_frontier_batch", batch)
     # Later-page ownership is covered separately. Keep this regression focused
@@ -93,7 +96,7 @@ def test_published_page_zero_cancels_progressive_background_search(
                 candidate.text
                 for candidate in manager._sessions[first.candidate_set_id].pending
             }
-        assert "你好啊啊" in pending_text
+        assert "你好" + "啊" * 8 in pending_text
         assert calls == 2
     finally:
         gate.set()

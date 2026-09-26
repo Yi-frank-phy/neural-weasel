@@ -20,7 +20,7 @@ constexpr wchar_t kLowSurrogate = static_cast<wchar_t>(0xDE00);
 
 void TestDefaultCaptureBounds() {
   const SurroundingTextLimits limits;
-  assert(limits.before_code_units == 8192);
+  assert(limits.before_code_units == 27648);
   assert(limits.after_code_units == 4096);
 }
 

@@ -254,7 +254,7 @@ class ContextCaptureSession final : public ITfEditSession {
       }
 
       SurroundingTextSnapshot snapshot = CaptureSurroundingText(
-          context_, edit_cookie, {8192, 4096},
+          context_, edit_cookie, {27648, 4096},
           {true, CaptureDenyReason::kNone});
       neural_weasel::context::TraceContextPipeline(
           L"tsf-capture",

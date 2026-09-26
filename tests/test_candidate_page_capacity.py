@@ -6,7 +6,12 @@ import pytest
 
 from neural_weasel.candidate import Candidate
 from neural_weasel.neural_candidate_pages import NeuralCandidatePageManager
-from neural_weasel.neural_candidates import CandidatePageError
+from neural_weasel.neural_candidates import (
+    CHINESE_CANDIDATE_COUNT,
+    CHINESE_PAGE_SIZE,
+    CandidatePageError,
+    NeuralLanguageMode,
+)
 
 
 def _candidate(index: int) -> Candidate:
@@ -32,61 +37,92 @@ def _manager():
     return SimpleNamespace(
         _ensure_freezable=lambda session, page_size, deadline: None,
         _freezable_candidates=lambda session: list(session.pending),
+        _uses_fixed_chinese_capacity=lambda session: (
+            session.identity.mode is NeuralLanguageMode.CHINESE_FIRST
+            and 0 in session.frozen_pages
+        ),
     )
 
 
-def test_capacity_zero_rejects_before_search_or_pending_mutation() -> None:
-    pending = [_candidate(index) for index in range(9)]
-    session = SimpleNamespace(
-        candidate_set_id="capacity-zero",
+def _chinese_session(*, pending, frozen_pages, exhausted=False):
+    return SimpleNamespace(
+        candidate_set_id="fixed-chinese-capacity",
+        identity=SimpleNamespace(mode=NeuralLanguageMode.CHINESE_FIRST),
         pending=list(pending),
-        exhausted=False,
-        frozen_pages={
-            page_index: SimpleNamespace(candidates=tuple(range(9))) for page_index in range(20)
-        },
+        exhausted=exhausted,
+        frozen_pages=dict(frozen_pages),
         score_source="baseline",
         search_depth=1,
         timeout_count=0,
+    )
+
+
+def test_chinese_capacity_rejects_sixth_page_before_search_or_mutation() -> None:
+    pending = [_candidate(index) for index in range(9)]
+    session = _chinese_session(
+        pending=pending,
+        frozen_pages={
+            page_index: SimpleNamespace(candidates=tuple(range(CHINESE_PAGE_SIZE)))
+            for page_index in range(CHINESE_CANDIDATE_COUNT // CHINESE_PAGE_SIZE)
+        },
     )
 
     with pytest.raises(CandidatePageError, match="frozen-candidate safety limit"):
         NeuralCandidatePageManager._freeze_next_page(
             _manager(),
             session,
-            page_index=20,
-            page_size=9,
+            page_index=5,
+            page_size=CHINESE_PAGE_SIZE,
             absolute_deadline=10.0,
         )
 
     assert session.pending == pending
-    assert 20 not in session.frozen_pages
+    assert 5 not in session.frozen_pages
 
 
-def test_last_capacity_slot_freezes_only_one_candidate_and_ends_paging() -> None:
-    pending = [_candidate(index) for index in range(9)]
-    frozen_pages = {
-        page_index: SimpleNamespace(candidates=tuple(range(9))) for page_index in range(19)
-    }
-    frozen_pages[19] = SimpleNamespace(candidates=tuple(range(8)))
-    session = SimpleNamespace(
-        candidate_set_id="capacity-one",
-        pending=list(pending),
-        exhausted=False,
-        frozen_pages=frozen_pages,
-        score_source="baseline",
-        search_depth=1,
-        timeout_count=0,
+def test_chinese_fifth_page_is_full_and_ends_at_exactly_35_candidates() -> None:
+    pending = [_candidate(index) for index in range(20)]
+    session = _chinese_session(
+        pending=pending,
+        frozen_pages={
+            page_index: SimpleNamespace(candidates=tuple(range(CHINESE_PAGE_SIZE)))
+            for page_index in range(4)
+        },
     )
 
     page = NeuralCandidatePageManager._freeze_next_page(
         _manager(),
         session,
-        page_index=20,
-        page_size=9,
+        page_index=4,
+        page_size=CHINESE_PAGE_SIZE,
         absolute_deadline=10.0,
     )
 
-    assert page.candidates == (pending[0],)
+    assert page.candidates == tuple(pending[:CHINESE_PAGE_SIZE])
     assert page.has_more is False
-    assert session.pending == pending[1:]
-    assert len(page.candidate_ids) == 1
+    assert session.pending == pending[CHINESE_PAGE_SIZE:]
+    assert len(page.candidate_ids) == CHINESE_PAGE_SIZE
+    assert sum(len(item.candidates) for item in session.frozen_pages.values()) == 35
+
+
+def test_chinese_intermediate_page_advertises_fixed_next_page_when_exhausted() -> None:
+    pending = [_candidate(index) for index in range(CHINESE_PAGE_SIZE)]
+    session = _chinese_session(
+        pending=pending,
+        frozen_pages={
+            page_index: SimpleNamespace(candidates=tuple(range(CHINESE_PAGE_SIZE)))
+            for page_index in range(3)
+        },
+        exhausted=True,
+    )
+
+    page = NeuralCandidatePageManager._freeze_next_page(
+        _manager(),
+        session,
+        page_index=3,
+        page_size=CHINESE_PAGE_SIZE,
+        absolute_deadline=10.0,
+    )
+
+    assert len(page.candidates) == CHINESE_PAGE_SIZE
+    assert page.has_more is True

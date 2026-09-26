@@ -391,7 +391,8 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         absolute_deadline: float,
     ) -> int:
         order = np.argsort(-values, kind="stable")
-        progressed = 0
+        emitted_candidates = 0
+        enqueued_frontier = 0
         bucket_counts: dict[int, int] = {}
         for position in order:
             token_id = token_ids[int(position)]
@@ -431,7 +432,7 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
                             predicted_syllables=predicted,
                         )
                     )
-                    progressed += 1
+                    emitted_candidates += 1
                 if len(token_path) < MAX_MODEL_TOKENS and len(text) < MAX_HAN_CHARACTERS:
                     session.frontier.append(
                         _SearchPath(
@@ -443,12 +444,13 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
                             script="han",
                         )
                     )
-                    progressed += 1
-            if progressed >= MAX_FRONTIER_PER_BUCKET:
+                    enqueued_frontier += 1
+            if emitted_candidates >= MAX_FRONTIER_PER_BUCKET:
                 break
             if self.clock() >= absolute_deadline:
                 break
-        return progressed
+        work_done = emitted_candidates + enqueued_frontier
+        return work_done
 
     def _expand_latin(
         self,
