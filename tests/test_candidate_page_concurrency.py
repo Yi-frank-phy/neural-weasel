@@ -304,7 +304,9 @@ def test_pending_later_page_retry_keeps_candidate_set_in_active_lru(make_index) 
         assert pages[1].candidate_set_id not in manager._sessions
 
 
-def test_exact_single_syllable_page_preparation_never_enters_continuation(make_index) -> None:
+def test_exact_single_syllable_page_preparation_never_enters_continuation(
+    make_index, monkeypatch: pytest.MonkeyPatch
+) -> None:
     index = make_index(
         [
             (1, "啊", "a", "a", 1, 0),
@@ -327,13 +329,31 @@ def test_exact_single_syllable_page_preparation_never_enters_continuation(make_i
         latin_prefix_constraint=LatinPrefixConstraint(()),
     )
     engine.initialize_neural_baseline()
+    manager = engine.candidate_pages
+    lexical_called = threading.Event()
+    prepare_called = threading.Event()
+
+    def track_lexical(*_args, **_kwargs):
+        lexical_called.set()
+        return []
+
+    def track_prepare(*_args, **_kwargs):
+        prepare_called.set()
+        return True
+
+    monkeypatch.setattr(manager, "_lexical_completion_fallback", track_lexical)
+    monkeypatch.setattr(manager, "_prepare_page_search", track_prepare)
 
     first = _page(engine, client="single-a", revision=1, raw="a")
     assert len(first.candidates) == 7
     assert any(candidate.text == "啊" for candidate in first.candidates)
 
     try:
-        assert not runtime.started.wait(0.3), (
+        assert not lexical_called.wait(0.3), (
+            "exact one-syllable paging entered lexical completion work"
+        )
+        assert not prepare_called.is_set(), "exact one-syllable paging expanded deferred roots"
+        assert not runtime.started.is_set(), (
             "later-page preparation for an exact one-syllable input entered neural continuation"
         )
         started = time.monotonic()
