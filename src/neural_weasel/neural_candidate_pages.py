@@ -901,75 +901,80 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             if cancel.wait(_PAGE_PREPARATION_GRACE_SECONDS):
                 return
 
-            # Page zero may have consumed most of its 35 ms budget before the
-            # lexical walk started.  If it froze a coherent first page but not
-            # the full fixed set, finish the same bounded, model-free trie walk
-            # here before asking the serial conditional scorer for later pages.
-            # This keeps PageDown responsive without extending the foreground
-            # deadline or changing the immutable page-zero snapshot.
-            if session.identity.mode is NeuralLanguageMode.CHINESE_FIRST:
-                with self._state_lock:
-                    if self._sessions.get(candidate_set_id) is not session:
-                        return
-                    total_frozen = sum(
-                        len(page.candidates) for page in session.frozen_pages.values()
-                    )
-                    freezable_count = len(self._freezable_candidates(session))
-                    lexical_limit = max(
-                        0,
-                        CHINESE_CANDIDATE_COUNT - total_frozen - freezable_count,
-                    )
-                    if self._may_have_exact_spelling_tail(session):
-                        lexical_limit = max(
-                            lexical_limit,
-                            min(CHINESE_PAGE_SIZE, CHINESE_CANDIDATE_COUNT - total_frozen),
-                        )
-                supplement = getattr(self, "_lexical_completion_fallback", None)
-                if lexical_limit and callable(supplement) and not cancel.is_set():
-                    candidates = supplement(
-                        session,
-                        limit=lexical_limit,
-                        absolute_deadline=(self.clock() + _BACKGROUND_PAGE_DEADLINE_MS / 1000.0),
-                    )
-                    with self._state_lock:
-                        if self._sessions.get(candidate_set_id) is not session:
-                            return
-                        for candidate in candidates:
-                            key = (candidate.text, candidate.consumed_keys)
-                            if key in session.seen_candidates:
-                                continue
-                            session.seen_candidates.add(key)
-                            session.pending.append(candidate)
-                        self._sort_pending(session)
-
-            with self._state_lock:
-                if self._sessions.get(candidate_set_id) is not session:
-                    return
-                total_ready = sum(
-                    len(page.candidates) for page in session.frozen_pages.values()
-                ) + len(self._freezable_candidates(session))
-                lexical_capacity_ready = (
-                    self._uses_fixed_chinese_capacity(session)
-                    and total_ready >= CHINESE_CANDIDATE_COUNT
-                )
-            if not lexical_capacity_ready:
-                prepare = getattr(self, "_prepare_page_search", None)
-                if callable(prepare) and not prepare(session, cancel):
-                    return
-
-            # A complete single pinyin syllable already has its useful root
-            # candidates in memory.  Do not spend the serial continuation lane
-            # manufacturing phrase continuations merely to fill the fixed
-            # 35-candidate pagination capacity: that work can block the next
-            # keypress for seconds on a cold GGUF runtime.  Any deferred root
-            # seeds were materialized above, so the remaining pages can be
-            # frozen from root/lexical candidates only.
-            if self._is_exact_single_syllable_input(session.identity.raw_keys):
+            # Single-key complete syllables (currently the vowel
+            # syllables a/e/o) are fully covered by the permanent startup
+            # prewarm.  Their later pages must remain a slicing operation over
+            # those resident candidates: even model-free lexical/root expansion
+            # can build thousands of Python frontier objects and steal the GIL
+            # from the next keypress for seconds.
+            single_key_syllable = self._is_exact_single_syllable_input(session.identity.raw_keys)
+            if single_key_syllable:
                 with self._state_lock:
                     if self._sessions.get(candidate_set_id) is not session:
                         return
                     session.frontier.clear()
                     session.exhausted = True
+                lexical_capacity_ready = True
+            else:
+                # Page zero may have consumed most of its 35 ms budget before
+                # the lexical walk started.  If it froze a coherent first page
+                # but not the full fixed set, finish the same bounded,
+                # model-free trie walk here before asking the serial conditional
+                # scorer for later pages.
+                if session.identity.mode is NeuralLanguageMode.CHINESE_FIRST:
+                    with self._state_lock:
+                        if self._sessions.get(candidate_set_id) is not session:
+                            return
+                        total_frozen = sum(
+                            len(page.candidates) for page in session.frozen_pages.values()
+                        )
+                        freezable_count = len(self._freezable_candidates(session))
+                        lexical_limit = max(
+                            0,
+                            CHINESE_CANDIDATE_COUNT - total_frozen - freezable_count,
+                        )
+                        if self._may_have_exact_spelling_tail(session):
+                            lexical_limit = max(
+                                lexical_limit,
+                                min(
+                                    CHINESE_PAGE_SIZE,
+                                    CHINESE_CANDIDATE_COUNT - total_frozen,
+                                ),
+                            )
+                    supplement = getattr(self, "_lexical_completion_fallback", None)
+                    if lexical_limit and callable(supplement) and not cancel.is_set():
+                        candidates = supplement(
+                            session,
+                            limit=lexical_limit,
+                            absolute_deadline=(
+                                self.clock() + _BACKGROUND_PAGE_DEADLINE_MS / 1000.0
+                            ),
+                        )
+                        with self._state_lock:
+                            if self._sessions.get(candidate_set_id) is not session:
+                                return
+                            for candidate in candidates:
+                                key = (candidate.text, candidate.consumed_keys)
+                                if key in session.seen_candidates:
+                                    continue
+                                session.seen_candidates.add(key)
+                                session.pending.append(candidate)
+                            self._sort_pending(session)
+
+                with self._state_lock:
+                    if self._sessions.get(candidate_set_id) is not session:
+                        return
+                    total_ready = sum(
+                        len(page.candidates) for page in session.frozen_pages.values()
+                    ) + len(self._freezable_candidates(session))
+                    lexical_capacity_ready = (
+                        self._uses_fixed_chinese_capacity(session)
+                        and total_ready >= CHINESE_CANDIDATE_COUNT
+                    )
+                if not lexical_capacity_ready:
+                    prepare = getattr(self, "_prepare_page_search", None)
+                    if callable(prepare) and not prepare(session, cancel):
+                        return
 
             while not cancel.is_set():
                 retiring_search_event: threading.Event | None = None
