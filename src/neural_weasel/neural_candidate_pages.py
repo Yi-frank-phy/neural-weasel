@@ -809,10 +809,10 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         )
 
     def _is_exact_single_syllable_input(self, raw_keys: str) -> bool:
-        if self.matcher is None or not raw_keys or "'" in raw_keys or "-" in raw_keys:
+        if self.matcher is None or len(raw_keys) != 1 or not raw_keys.isascii():
             return False
         compact = raw_keys.casefold()
-        return compact in self.matcher.by_initial.get(compact[0], ())
+        return compact in self.matcher.by_initial.get(compact, ())
 
     def _start_background_continuation(self, session: _SearchSession) -> None:
         # The scored layer asks again *after* page-zero publication. The
