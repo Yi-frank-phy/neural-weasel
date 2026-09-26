@@ -447,17 +447,13 @@ class LlamaCppBackend:
         positive_infinity = np.isposinf(values)
         if positive_infinity.any():
             output = np.full(allowed.size, -math.inf, dtype=np.float32)
-            output[positive_infinity[allowed]] = np.float32(
-                -math.log(int(positive_infinity.sum()))
-            )
+            output[positive_infinity[allowed]] = np.float32(-math.log(int(positive_infinity.sum())))
             return output
         finite = np.isfinite(values)
         if not finite.any():
             return np.full(allowed.size, -math.inf, dtype=np.float32)
         maximum = float(values[finite].max())
-        log_normalizer = maximum + math.log(
-            float(np.exp(values[finite] - maximum).sum())
-        )
+        log_normalizer = maximum + math.log(float(np.exp(values[finite] - maximum).sum()))
         return np.asarray(values[allowed] - log_normalizer, dtype=np.float32)
 
     def _restore_live_continuation_root(self, root: LlamaContinuationRoot) -> bool:
@@ -590,9 +586,7 @@ class LlamaCppBackend:
                     completed_counter=completed_branches,
                 )
                 if result is None:
-                    outcome = (
-                        "preempted" if self._context_refresh_is_waiting() else "deadline"
-                    )
+                    outcome = "preempted" if self._context_refresh_is_waiting() else "deadline"
                     return None
                 returned_tokens = sum(int(values.size) for values in result)
                 outcome = "completed"
@@ -628,9 +622,8 @@ class LlamaCppBackend:
                 restored = False
                 if cache_matches_root:
                     try:
-                        restored = (
-                            not sequence_mutated
-                            or self._restore_live_continuation_root(root)
+                        restored = not sequence_mutated or self._restore_live_continuation_root(
+                            root
                         )
                     except Exception:
                         restored = False
@@ -646,8 +639,7 @@ class LlamaCppBackend:
                 self._lock.release()
                 if returned_tokens == 0 and completed_branches[0] > 0:
                     returned_tokens = sum(
-                        int(values.size)
-                        for values in allowed_sets[: completed_branches[0]]
+                        int(values.size) for values in allowed_sets[: completed_branches[0]]
                     )
                 elapsed_ms = max(
                     queue_wait_ms,
@@ -858,12 +850,8 @@ class LlamaCppBackend:
             "last_refresh_latency_ms": None if refresh is None else refresh[2],
             "last_refresh_queue_wait_ms": None if refresh is None else refresh[3],
             "last_refresh_compute_ms": None if refresh is None else refresh[4],
-            "last_continuation_queue_wait_ms": (
-                None if continuation is None else continuation[0]
-            ),
-            "last_continuation_elapsed_ms": (
-                None if continuation is None else continuation[1]
-            ),
+            "last_continuation_queue_wait_ms": (None if continuation is None else continuation[0]),
+            "last_continuation_elapsed_ms": (None if continuation is None else continuation[1]),
             "last_continuation_requested_branches": (
                 None if continuation is None else continuation[2]
             ),
@@ -876,9 +864,7 @@ class LlamaCppBackend:
             "last_continuation_cache_preserved": (
                 None if continuation is None else continuation[5]
             ),
-            "last_continuation_outcome": (
-                None if continuation is None else continuation[6]
-            ),
+            "last_continuation_outcome": (None if continuation is None else continuation[6]),
         }
 
     def diagnostics(self) -> dict[str, object]:

@@ -31,9 +31,7 @@ def test_baseline_normalizes_once_and_replacement_invalidates(make_index, monkey
     assert len(calls) == 2
 
 
-def test_context_normalizer_is_precomputed_off_the_page_zero_path(
-    make_index, monkeypatch
-) -> None:
+def test_context_normalizer_is_precomputed_off_the_page_zero_path(make_index, monkeypatch) -> None:
     logits = np.array([0.25, -0.5, 1.0, 0.75], dtype=np.float32)
 
     class Runtime:

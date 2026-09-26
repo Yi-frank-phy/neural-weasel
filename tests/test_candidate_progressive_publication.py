@@ -7,9 +7,7 @@ from test_candidate_page_concurrency import _engine, _page
 from neural_weasel.neural_candidates import CandidatePageTimeout
 
 
-def test_published_page_zero_cancels_progressive_background_search(
-    make_index, monkeypatch
-):
+def test_published_page_zero_cancels_progressive_background_search(make_index, monkeypatch):
     engine, _ = _engine(make_index)
     manager = engine.candidate_pages
     gate = threading.Event()
@@ -56,9 +54,7 @@ def test_published_page_zero_cancels_progressive_background_search(
 
     first = _page(engine, client="progressive", revision=1, raw="nihao")
     assert all(
-        candidate.completes_input
-        for candidate in first.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in first.candidates if candidate.script == "han"
     )
     assert first.has_more is True
     completion = manager._background_search_events[first.candidate_set_id]
@@ -93,8 +89,7 @@ def test_published_page_zero_cancels_progressive_background_search(
         assert final.candidates == first.candidates
         with manager._state_lock:
             pending_text = {
-                candidate.text
-                for candidate in manager._sessions[first.candidate_set_id].pending
+                candidate.text for candidate in manager._sessions[first.candidate_set_id].pending
             }
         assert "你好" + "啊" * 8 in pending_text
         assert calls == 2

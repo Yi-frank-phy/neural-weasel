@@ -89,8 +89,4 @@ def test_chinese_page_one_prepares_without_replacing_frozen_page_zero(make_index
     assert preparation is not None, "frozen page zero must not starve page-one preparation"
     assert preparation.wait(1.0)
 
-    assert all(
-        item["completes_input"]
-        for item in first["candidates"]
-        if item["script"] == "han"
-    )
+    assert all(item["completes_input"] for item in first["candidates"] if item["script"] == "han")

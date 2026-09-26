@@ -296,9 +296,7 @@ def test_latest_revision_retries_after_old_provider_releases(make_index, monkeyp
     assert refreshed.candidate_set_id == revision_two_id
     assert refreshed.candidates == replay.candidates
     assert all(
-        candidate.completes_input
-        for candidate in replay.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in replay.candidates if candidate.script == "han"
     )
 
 
@@ -365,8 +363,7 @@ def test_later_page_retries_after_provider_returns_no_result(make_index, monkeyp
         nonlocal injected_empty
         with engine.candidate_pages._state_lock:
             page_zero_is_frozen = any(
-                0 in session.frozen_pages
-                for session in engine.candidate_pages._sessions.values()
+                0 in session.frozen_pages for session in engine.candidate_pages._sessions.values()
             )
         if page_zero_is_frozen and not injected_empty:
             injected_empty = True
@@ -497,12 +494,12 @@ def test_incomplete_final_syllable_fills_zhuyid_pages_from_legal_paths(make_inde
         (40, "注意的", "zhuyide", "zhu'yi'de", 3, 0),
         (41, "注意到", "zhuyidao", "zhu'yi'dao", 3, 0),
         (42, "注意点", "zhuyidian", "zhu'yi'dian", 3, 0),
-        *[(token_id, text, "zhu", "zhu", 1, 0)
-          for token_id, text in enumerate("朱主煮住", start=1)],
-        *[(token_id, text, "yi", "yi", 1, 0)
-          for token_id, text in enumerate("一以已义", start=10)],
-        *[(token_id, text, "de", "de", 1, 0)
-          for token_id, text in enumerate("的地得德", start=20)],
+        *[
+            (token_id, text, "zhu", "zhu", 1, 0)
+            for token_id, text in enumerate("朱主煮住", start=1)
+        ],
+        *[(token_id, text, "yi", "yi", 1, 0) for token_id, text in enumerate("一以已义", start=10)],
+        *[(token_id, text, "de", "de", 1, 0) for token_id, text in enumerate("的地得德", start=20)],
     ]
     engine = BilingualImeEngine(
         backend=FullLogitsSnapshotBackend(runtime),
@@ -564,12 +561,12 @@ def test_underfilled_page_zero_waits_for_late_lexical_tail(make_index, monkeypat
         (40, "注意的", "zhuyide", "zhu'yi'de", 3, 0),
         (41, "注意到", "zhuyidao", "zhu'yi'dao", 3, 0),
         (42, "注意点", "zhuyidian", "zhu'yi'dian", 3, 0),
-        *[(token_id, text, "zhu", "zhu", 1, 0)
-          for token_id, text in enumerate("朱主煮住", start=1)],
-        *[(token_id, text, "yi", "yi", 1, 0)
-          for token_id, text in enumerate("一以已义", start=10)],
-        *[(token_id, text, "de", "de", 1, 0)
-          for token_id, text in enumerate("的地得德", start=20)],
+        *[
+            (token_id, text, "zhu", "zhu", 1, 0)
+            for token_id, text in enumerate("朱主煮住", start=1)
+        ],
+        *[(token_id, text, "yi", "yi", 1, 0) for token_id, text in enumerate("一以已义", start=10)],
+        *[(token_id, text, "de", "de", 1, 0) for token_id, text in enumerate("的地得德", start=20)],
     ]
     engine = BilingualImeEngine(
         backend=FullLogitsSnapshotBackend(runtime),
@@ -1108,9 +1105,7 @@ def test_other_session_continuation_retirement_wakes_deferred_pages(
     manager._maybe_start_page_preparation(second)
     assert second.candidate_set_id not in manager._page_preparations
     monkeypatch.setattr(manager, "_expand_background_frontier_batch", lambda *a, **kw: 0)
-    manager._run_background_continuation(
-        first, manager._async_identity_key(first_identity), active
-    )
+    manager._run_background_continuation(first, manager._async_identity_key(first_identity), active)
 
     completion = manager._page_preparation_events.get(second.candidate_set_id)
     assert completion is not None, "the other scorer left page preparation unscheduled"
@@ -1229,18 +1224,14 @@ def test_lexical_tail_finds_exact_path_before_abbreviation_flood(make_index) -> 
             break
 
     assert len(found) == 35
-    assert ("注意的", (1, 3)) in {
-        (candidate.text, candidate.token_path) for candidate in found
-    }
+    assert ("注意的", (1, 3)) in {(candidate.text, candidate.token_path) for candidate in found}
 
 
 def test_exact_spelling_survives_full_model_extension_bucket(make_index) -> None:
     """A complete typed spelling must not vanish behind 35 longer readings."""
 
     engine = BilingualImeEngine(
-        backend=FullLogitsSnapshotBackend(
-            StagedPageZeroRuntime(np.zeros(3, dtype=np.float32))
-        ),
+        backend=FullLogitsSnapshotBackend(StagedPageZeroRuntime(np.zeros(3, dtype=np.float32))),
         pinyin_constraint=PinyinConstraint(
             make_index(
                 [
@@ -1329,9 +1320,7 @@ def test_exact_spelling_survives_full_model_extension_bucket(make_index) -> None
         discovery, threading.Event(), threading.Event(), threading.Event()
     )
     frozen = [
-        candidate
-        for page in discovery.frozen_pages.values()
-        for candidate in page.candidates
+        candidate for page in discovery.frozen_pages.values() for candidate in page.candidates
     ]
     assert len(frozen) == 35
     assert "注意的" in {candidate.text for candidate in frozen}
@@ -1505,8 +1494,7 @@ def test_incomplete_lexical_tail_reaches_eighth_root_within_capacity(make_index)
         for token_id, text in enumerate(root_texts, start=1)
     ]
     rows.extend(
-        (token_id, text, "de", "de", 1, 0)
-        for token_id, text in enumerate(suffixes, start=9)
+        (token_id, text, "de", "de", 1, 0) for token_id, text in enumerate(suffixes, start=9)
     )
     logits = np.zeros(16, dtype=np.float32)
     for token_id in range(1, 9):
@@ -1616,10 +1604,7 @@ def test_lexical_hint_matching_avoids_pending_root_cartesian_scan(make_index) ->
 def test_lexical_hint_matching_yields_with_duplicate_root_text(make_index) -> None:
     """A large same-text bucket must not monopolize one cursor advance."""
 
-    rows = [
-        (token_id, "注意", "zhuyi", "zhu'yi", 2, 0)
-        for token_id in range(1, 129)
-    ]
+    rows = [(token_id, "注意", "zhuyi", "zhu'yi", 2, 0) for token_id in range(1, 129)]
     engine = BilingualImeEngine(
         backend=FullLogitsSnapshotBackend(StagedPageZeroRuntime(np.zeros(129))),
         pinyin_constraint=PinyinConstraint(make_index(rows)),
@@ -1845,9 +1830,11 @@ def test_lexical_tail_prefers_fewer_syllables_for_same_spelling(make_index) -> N
         (2, "明显", "mingxian", "ming'xian", 2, 0),
     ]
     token_id = 3
-    for text, pinyin in zip("牛年内你乃您浓嫩能宁", (
-        "niu", "nian", "nei", "ni", "nai", "nin", "nong", "nen", "neng", "ning"
-    ), strict=True):
+    for text, pinyin in zip(
+        "牛年内你乃您浓嫩能宁",
+        ("niu", "nian", "nei", "ni", "nai", "nin", "nong", "nen", "neng", "ning"),
+        strict=True,
+    ):
         rows.append((token_id, text, pinyin, pinyin, 1, 0))
         token_id += 1
     for text in "对堆兑队碓怼镦祋濧譵":
@@ -1920,7 +1907,5 @@ def test_latin_fallback_does_not_freeze_chinese_page_before_han_is_ready(
     page = _page(engine, revision=1)
     assert any(candidate.script == "han" for candidate in page.candidates)
     assert all(
-        candidate.completes_input
-        for candidate in page.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in page.candidates if candidate.script == "han"
     )

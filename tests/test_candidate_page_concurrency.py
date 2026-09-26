@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -285,10 +286,7 @@ def test_pending_later_page_retry_keeps_candidate_set_in_active_lru(make_index) 
     manager = engine.candidate_pages
     manager._maybe_start_page_preparation = lambda session: None
 
-    pages = [
-        _page(engine, client=f"client-{index}", revision=1, raw="ni")
-        for index in range(4)
-    ]
+    pages = [_page(engine, client=f"client-{index}", revision=1, raw="ni") for index in range(4)]
     with pytest.raises(CandidatePageTimeout):
         _page(
             engine,
@@ -304,3 +302,63 @@ def test_pending_later_page_retry_keeps_candidate_set_in_active_lru(make_index) 
     with manager._state_lock:
         assert pages[0].candidate_set_id in manager._sessions
         assert pages[1].candidate_set_id not in manager._sessions
+
+
+def test_exact_single_syllable_page_preparation_never_enters_continuation(
+    make_index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = make_index(
+        [
+            (1, "啊", "a", "a", 1, 0),
+            (2, "阿", "a", "a", 1, 0),
+            (3, "呵", "a", "a", 1, 0),
+            (4, "吖", "a", "a", 1, 0),
+            (5, "锕", "a", "a", 1, 0),
+            (6, "腌", "a", "a", 1, 0),
+            (7, "嗄", "a", "a", 1, 0),
+            (8, "安", "an", "an", 1, 0),
+            (9, "爱", "ai", "ai", 1, 0),
+        ]
+    )
+    logits = np.full(16, -20.0, dtype=np.float32)
+    logits[1:10] = np.arange(20.0, 11.0, -1.0, dtype=np.float32)
+    runtime = BlockingContinuationRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+    manager = engine.candidate_pages
+    lexical_called = threading.Event()
+    prepare_called = threading.Event()
+
+    def track_lexical(*_args, **_kwargs):
+        lexical_called.set()
+        return []
+
+    def track_prepare(*_args, **_kwargs):
+        prepare_called.set()
+        return True
+
+    monkeypatch.setattr(manager, "_lexical_completion_fallback", track_lexical)
+    monkeypatch.setattr(manager, "_prepare_page_search", track_prepare)
+
+    first = _page(engine, client="single-a", revision=1, raw="a")
+    assert len(first.candidates) == 7
+    assert any(candidate.text == "啊" for candidate in first.candidates)
+
+    try:
+        assert not lexical_called.wait(0.3), (
+            "exact one-syllable paging entered lexical completion work"
+        )
+        assert not prepare_called.is_set(), "exact one-syllable paging expanded deferred roots"
+        assert not runtime.started.is_set(), (
+            "later-page preparation for an exact one-syllable input entered neural continuation"
+        )
+        started = time.monotonic()
+        second = _page(engine, client="single-a", revision=2, raw="a")
+        assert time.monotonic() - started < 0.1
+        assert len(second.candidates) == 7
+    finally:
+        runtime.release.set()

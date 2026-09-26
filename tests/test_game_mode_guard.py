@@ -8,9 +8,7 @@ from pathlib import Path
 def test_suspended_fullscreen_state_schema(tmp_path: Path) -> None:
     """Verify that suspended-fullscreen state file conforms to the model service schema."""
     state_file = tmp_path / "model-service.json"
-    dummy_gguf = (
-        r"C:\Users\zhaoy\AppData\Local\NeuralWeasel\gguf-poc\models\Qwen3.5-4B-Q4_K_M.gguf"
-    )
+    dummy_gguf = r"C:\Users\zhaoy\AppData\Local\NeuralWeasel\gguf-poc\models\Qwen3.5-4B-Q4_K_M.gguf"
     state_payload = {
         "state": "suspended-fullscreen",
         "transport": "pipe",

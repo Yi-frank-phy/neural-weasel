@@ -547,16 +547,15 @@ def test_empty_context_baseline_is_ready_before_editor_context(make_index) -> No
     diagnostics = engine.runtime_performance_diagnostics()
     assert diagnostics["last_candidate_target_count"] == 35
     assert diagnostics["last_candidate_published_count"] == len(page.candidates)
-    assert diagnostics["last_candidate_frozen_count"] >= diagnostics[
-        "last_candidate_published_count"
-    ]
-    assert diagnostics["last_candidate_generated_count"] >= (
-        diagnostics["last_candidate_frozen_count"]
-        + diagnostics["last_candidate_pending_count"]
+    assert (
+        diagnostics["last_candidate_frozen_count"] >= diagnostics["last_candidate_published_count"]
     )
-    assert diagnostics["last_candidate_freezable_count"] <= diagnostics[
-        "last_candidate_pending_count"
-    ]
+    assert diagnostics["last_candidate_generated_count"] >= (
+        diagnostics["last_candidate_frozen_count"] + diagnostics["last_candidate_pending_count"]
+    )
+    assert (
+        diagnostics["last_candidate_freezable_count"] <= diagnostics["last_candidate_pending_count"]
+    )
     assert "PRIVATE" not in repr(diagnostics)
 
 
@@ -824,11 +823,12 @@ def test_constrained_han_expansion_counts_candidates_and_frontier_independently(
     )
 
     assert len(session.pending) == 32
-    assert sum(
-        isinstance(path, candidate_pages_v3._HanSearchPath) for path in session.frontier
-    ) == 32
+    assert (
+        sum(isinstance(path, candidate_pages_v3._HanSearchPath) for path in session.frontier) == 32
+    )
     work_index = next(
-        index for index, path in enumerate(session.frontier)
+        index
+        for index, path in enumerate(session.frontier)
         if getattr(path, "scored_han_resume", False)
     )
     work = session.frontier.pop(work_index)
@@ -1146,9 +1146,7 @@ def test_background_continuation_builds_coherent_immutable_page_zero(
     first = _page(engine, "mingxian")
     assert "明显" in {candidate.text for candidate in first.candidates}
     assert all(
-        candidate.completes_input
-        for candidate in first.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in first.candidates if candidate.script == "han"
     )
     refreshed = _page(engine, "mingxian", presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
@@ -1245,11 +1243,7 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
         cached = tuple(engine.candidate_pages._async_han_cache.values())
-        if any(
-            candidate.text == "明显不对"
-            for batch in cached
-            for candidate in batch
-        ):
+        if any(candidate.text == "明显不对" for batch in cached for candidate in batch):
             break
         time.sleep(0.01)
     else:
@@ -1275,11 +1269,7 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
                 candidate_set_id=refreshed.candidate_set_id,
             )
         )
-    assert any(
-        candidate.text == "明显不对"
-        for page in published
-        for candidate in page.candidates
-    )
+    assert any(candidate.text == "明显不对" for page in published for candidate in page.candidates)
     assert all(
         candidate.completes_input
         for page in published

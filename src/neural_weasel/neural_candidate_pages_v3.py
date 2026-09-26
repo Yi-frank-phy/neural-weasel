@@ -227,9 +227,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             key=_latin_key,
         )
         other = [
-            candidate
-            for candidate in session.pending
-            if candidate.script not in {"han", "latin"}
+            candidate for candidate in session.pending if candidate.script not in {"han", "latin"}
         ]
         session.pending = [*self._merge_chinese_first(han, latin), *other]
 
@@ -624,10 +622,14 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         selected = sorted(best.values(), key=lambda record: record[0])
         self._raise_if_query_expired()
         records: tuple[tuple[object, ...], ...] = (
-            *(('ordinary', entry, value, matched_letters, pinyin_path)
-              for _, _, entry, value, matched_letters, pinyin_path in selected),
-            *(('pending', token_id, pending_scores[token_id], tuple(options))
-              for token_id, options in pending_groups.items()),
+            *(
+                ("ordinary", entry, value, matched_letters, pinyin_path)
+                for _, _, entry, value, matched_letters, pinyin_path in selected
+            ),
+            *(
+                ("pending", token_id, pending_scores[token_id], tuple(options))
+                for token_id, options in pending_groups.items()
+            ),
         )
         frontier = self._materialize_root_seed_records(records[:MAX_FRONTIER_PER_BUCKET])
         if len(records) > MAX_FRONTIER_PER_BUCKET:
@@ -673,7 +675,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         work: _DeferredRootSeeds,
     ) -> int:
         end = min(len(work.records), work.cursor + MAX_FRONTIER_PER_BUCKET)
-        materialized = self._materialize_root_seed_records(work.records[work.cursor:end])
+        materialized = self._materialize_root_seed_records(work.records[work.cursor : end])
         session.frontier.extend(materialized)
         if end < len(work.records):
             session.frontier.append(_DeferredRootSeeds(work.records, end))
@@ -848,8 +850,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             for path in session.frontier
             if path.script in {"han", "han_resume", "han_root_resume"}
             and (
-                not isinstance(path, _DeferredHanFrontier)
-                or session.continuation_root is not None
+                not isinstance(path, _DeferredHanFrontier) or session.continuation_root is not None
             )
             and self._path_key(path) not in session.expanded_paths
         ]
@@ -1047,9 +1048,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             if position in memo:
                 return memo[position]
             count = 0
-            for match in self.matcher.neural_matches(
-                compact, position, parsed.explicit_boundaries
-            ):
+            for match in self.matcher.neural_matches(compact, position, parsed.explicit_boundaries):
                 if match.next_position <= position or not match.entry.token_path:
                     continue
                 count += count_from(match.next_position)
@@ -1164,7 +1163,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 # With an unfinished final syllable (e.g. ``zhuyid``), every
                 # legal completed path extends the input, so this tier would
                 # otherwise exhaust all unfinished prefixes first.
-                exact_spelling_possible and spelling != compact[:path.matched_letters],
+                exact_spelling_possible and spelling != compact[: path.matched_letters],
                 # Drive the immutable trie walk toward whole-input paths
                 # before widening across thousands of shallow roots.  The
                 # previous syllable-first ordering could spend the entire UI
@@ -1297,8 +1296,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 and (
                     priority[0]
                     != emitted_by_group.get(root_groups[root_id], 0) // CHINESE_PAGE_SIZE
-                    or priority[2]
-                    != emitted_by_root.get(root_id, 0) // CHINESE_PAGE_SIZE
+                    or priority[2] != emitted_by_root.get(root_id, 0) // CHINESE_PAGE_SIZE
                 )
             ):
                 stale_steps += 1
@@ -1406,12 +1404,9 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                     edge_count += 1
                     if edge_count % 64 == 0:
                         yield None
-                    if (
-                        edge.matched_letters < path.matched_letters
-                        or (
-                            edge.matched_letters == path.matched_letters
-                            and edge.predicted_syllables <= path.predicted_syllables
-                        )
+                    if edge.matched_letters < path.matched_letters or (
+                        edge.matched_letters == path.matched_letters
+                        and edge.predicted_syllables <= path.predicted_syllables
                     ):
                         continue
                     token_path = (*path.token_path, token_id)
@@ -1458,9 +1453,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 if len(token_path) > MAX_MODEL_TOKENS:
                     continue
                 consumed_in_entry = (
-                    len(parent.token_path) - parent.pending_start
-                    if parent.pending_options
-                    else 0
+                    len(parent.token_path) - parent.pending_start if parent.pending_options else 0
                 )
                 if consumed_in_entry + 1 < len(entry.token_path):
                     incomplete.append(edge)
@@ -1548,10 +1541,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 enqueued_frontier += 1
             next_cursor += 1
             processed_positions += 1
-            if (
-                processed_positions >= MAX_FRONTIER_PER_BUCKET
-                or self.clock() >= absolute_deadline
-            ):
+            if processed_positions >= MAX_FRONTIER_PER_BUCKET or self.clock() >= absolute_deadline:
                 break
         if next_cursor < len(positions):
             session.frontier.append(

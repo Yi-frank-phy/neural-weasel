@@ -161,15 +161,6 @@ def test_index_load_rejects_empty_stored_token_path(make_index) -> None:
         index_module.PinyinIndex(index.path)
 
 
-def test_index_load_rejects_empty_stored_token_path(make_index) -> None:
-    index = make_index([(1, "你", "ni", 1, 0)])
-    with sqlite3.connect(index.path) as connection:
-        connection.execute("UPDATE pronunciations SET token_path = '[ ]'")
-
-    with pytest.raises(ValueError, match="empty or invalid token path"):
-        index_module.PinyinIndex(index.path)
-
-
 def test_builder_replaces_existing_index_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

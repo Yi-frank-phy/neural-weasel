@@ -72,12 +72,8 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                     "last_page_zero_lexical_freezable_count": (
                         self._last_page_zero_lexical_freezable_count
                     ),
-                    "last_page_zero_lexical_elapsed_ms": (
-                        self._last_page_zero_lexical_elapsed_ms
-                    ),
-                    "last_page_zero_lexical_budget_ms": (
-                        self._last_page_zero_lexical_budget_ms
-                    ),
+                    "last_page_zero_lexical_elapsed_ms": (self._last_page_zero_lexical_elapsed_ms),
+                    "last_page_zero_lexical_budget_ms": (self._last_page_zero_lexical_budget_ms),
                 }
             )
             result.update(self._last_candidate_stage_metrics)
@@ -107,9 +103,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             }
         )
 
-    def _note_page_published_locked(
-        self, session: _SearchSession, page: CandidatePage
-    ) -> None:
+    def _note_page_published_locked(self, session: _SearchSession, page: CandidatePage) -> None:
         self._published_page_indices.setdefault(session.candidate_set_id, set()).add(
             page.page_index
         )
@@ -361,9 +355,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         if page_index == 0:
             if session.identity.mode is NeuralLanguageMode.CHINESE_FIRST:
                 freezable = self._freezable_candidates(session)
-                han_count = sum(
-                    candidate.script == "han" for candidate in freezable
-                )
+                han_count = sum(candidate.script == "han" for candidate in freezable)
                 has_incomplete_frontier = any(
                     path.script == "han"
                     and (
@@ -438,17 +430,12 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                                 session.pending.append(candidate)
                             self._sort_pending(session)
                             freezable = self._freezable_candidates(session)
-                            han_count = sum(
-                                candidate.script == "han" for candidate in freezable
-                            )
+                            han_count = sum(candidate.script == "han" for candidate in freezable)
                         self._last_page_zero_lexical_freezable_count = len(freezable)
                     # Only wait for a full page when the legal-path count can
                     # reach one. A narrow but genuinely small index keeps its
                     # immediate partial-page behavior.
-                    if (
-                        len(freezable) < page_size
-                        and lexical_may_fill
-                    ):
+                    if len(freezable) < page_size and lexical_may_fill:
                         self._start_page_zero_lexical_preparation(session)
                     should_search = (
                         has_incomplete_frontier
@@ -498,13 +485,14 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 # A full model bucket can consist mostly of longer readings.
                 # Publish page zero promptly, but leave later pages mutable
                 # until the background lexical walk can find exact spellings.
-                while not self._may_have_exact_spelling_tail(session) and sum(
-                    len(frozen.candidates) for frozen in session.frozen_pages.values()
-                ) < CHINESE_CANDIDATE_COUNT:
+                while (
+                    not self._may_have_exact_spelling_tail(session)
+                    and sum(len(frozen.candidates) for frozen in session.frozen_pages.values())
+                    < CHINESE_CANDIDATE_COUNT
+                ):
                     next_page_index = max(session.frozen_pages) + 1
                     remaining = CHINESE_CANDIDATE_COUNT - sum(
-                        len(frozen.candidates)
-                        for frozen in session.frozen_pages.values()
+                        len(frozen.candidates) for frozen in session.frozen_pages.values()
                     )
                     target = min(page_size, remaining)
                     if len(self._freezable_candidates(session)) < target:
@@ -597,8 +585,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             return
 
         possible = sum(
-            candidate.script == "han" and candidate.completes_input
-            for candidate in session.pending
+            candidate.script == "han" and candidate.completes_input for candidate in session.pending
         )
         possible += int(any(candidate.script == "latin" for candidate in session.pending))
         possible += sum(len(item[3]) for item in selected)
@@ -821,6 +808,12 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             for candidate in session.pending
         )
 
+    def _is_exact_single_syllable_input(self, raw_keys: str) -> bool:
+        if self.matcher is None or len(raw_keys) != 1 or not raw_keys.isascii():
+            return False
+        compact = raw_keys.casefold()
+        return compact in self.matcher.by_initial.get(compact, ())
+
     def _start_background_continuation(self, session: _SearchSession) -> None:
         # The scored layer asks again *after* page-zero publication. The
         # page-zero freeze cancelled any first-publication scorer, but this
@@ -908,63 +901,83 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             if cancel.wait(_PAGE_PREPARATION_GRACE_SECONDS):
                 return
 
-            # Page zero may have consumed most of its 35 ms budget before the
-            # lexical walk started.  If it froze a coherent first page but not
-            # the full fixed set, finish the same bounded, model-free trie walk
-            # here before asking the serial conditional scorer for later pages.
-            # This keeps PageDown responsive without extending the foreground
-            # deadline or changing the immutable page-zero snapshot.
-            if session.identity.mode is NeuralLanguageMode.CHINESE_FIRST:
+            # Single-key complete syllables (currently the vowel
+            # syllables a/e/o) are fully covered by the permanent startup
+            # prewarm.  Their later pages must remain a slicing operation over
+            # those resident candidates: even model-free lexical/root expansion
+            # can build thousands of Python frontier objects and steal the GIL
+            # from the next keypress for seconds.
+            single_key_syllable = self._uses_fixed_chinese_capacity(
+                session
+            ) and self._is_exact_single_syllable_input(session.identity.raw_keys)
+            if single_key_syllable:
                 with self._state_lock:
                     if self._sessions.get(candidate_set_id) is not session:
                         return
-                    total_frozen = sum(
-                        len(page.candidates) for page in session.frozen_pages.values()
-                    )
-                    freezable_count = len(self._freezable_candidates(session))
-                    lexical_limit = max(
-                        0,
-                        CHINESE_CANDIDATE_COUNT - total_frozen - freezable_count,
-                    )
-                    if self._may_have_exact_spelling_tail(session):
-                        lexical_limit = max(
-                            lexical_limit,
-                            min(CHINESE_PAGE_SIZE, CHINESE_CANDIDATE_COUNT - total_frozen),
-                        )
-                supplement = getattr(self, "_lexical_completion_fallback", None)
-                if lexical_limit and callable(supplement) and not cancel.is_set():
-                    candidates = supplement(
-                        session,
-                        limit=lexical_limit,
-                        absolute_deadline=(
-                            self.clock() + _BACKGROUND_PAGE_DEADLINE_MS / 1000.0
-                        ),
-                    )
+                    session.frontier.clear()
+                    session.exhausted = True
+                lexical_capacity_ready = True
+            else:
+                # Page zero may have consumed most of its 35 ms budget before
+                # the lexical walk started.  If it froze a coherent first page
+                # but not the full fixed set, finish the same bounded,
+                # model-free trie walk here before asking the serial conditional
+                # scorer for later pages.
+                if session.identity.mode is NeuralLanguageMode.CHINESE_FIRST:
                     with self._state_lock:
                         if self._sessions.get(candidate_set_id) is not session:
                             return
-                        for candidate in candidates:
-                            key = (candidate.text, candidate.consumed_keys)
-                            if key in session.seen_candidates:
-                                continue
-                            session.seen_candidates.add(key)
-                            session.pending.append(candidate)
-                        self._sort_pending(session)
+                        total_frozen = sum(
+                            len(page.candidates) for page in session.frozen_pages.values()
+                        )
+                        freezable_count = len(self._freezable_candidates(session))
+                        lexical_limit = max(
+                            0,
+                            CHINESE_CANDIDATE_COUNT - total_frozen - freezable_count,
+                        )
+                        if self._may_have_exact_spelling_tail(session):
+                            lexical_limit = max(
+                                lexical_limit,
+                                min(
+                                    CHINESE_PAGE_SIZE,
+                                    CHINESE_CANDIDATE_COUNT - total_frozen,
+                                ),
+                            )
+                    supplement = getattr(self, "_lexical_completion_fallback", None)
+                    if lexical_limit and callable(supplement) and not cancel.is_set():
+                        candidates = supplement(
+                            session,
+                            limit=lexical_limit,
+                            absolute_deadline=(
+                                self.clock() + _BACKGROUND_PAGE_DEADLINE_MS / 1000.0
+                            ),
+                        )
+                        with self._state_lock:
+                            if self._sessions.get(candidate_set_id) is not session:
+                                return
+                            for candidate in candidates:
+                                key = (candidate.text, candidate.consumed_keys)
+                                if key in session.seen_candidates:
+                                    continue
+                                session.seen_candidates.add(key)
+                                session.pending.append(candidate)
+                            self._sort_pending(session)
 
-            with self._state_lock:
-                if self._sessions.get(candidate_set_id) is not session:
-                    return
-                total_ready = sum(
-                    len(page.candidates) for page in session.frozen_pages.values()
-                ) + len(self._freezable_candidates(session))
-                lexical_capacity_ready = (
-                    self._uses_fixed_chinese_capacity(session)
-                    and total_ready >= CHINESE_CANDIDATE_COUNT
-                )
-            if not lexical_capacity_ready:
-                prepare = getattr(self, "_prepare_page_search", None)
-                if callable(prepare) and not prepare(session, cancel):
-                    return
+                with self._state_lock:
+                    if self._sessions.get(candidate_set_id) is not session:
+                        return
+                    total_ready = sum(
+                        len(page.candidates) for page in session.frozen_pages.values()
+                    ) + len(self._freezable_candidates(session))
+                    lexical_capacity_ready = (
+                        self._uses_fixed_chinese_capacity(session)
+                        and total_ready >= CHINESE_CANDIDATE_COUNT
+                    )
+                if not lexical_capacity_ready:
+                    prepare = getattr(self, "_prepare_page_search", None)
+                    if callable(prepare) and not prepare(session, cancel):
+                        return
+
             while not cancel.is_set():
                 retiring_search_event: threading.Event | None = None
                 freeze_ready_without_scorer = False
@@ -972,9 +985,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                     if self._sessions.get(candidate_set_id) is not session:
                         return
                     if candidate_set_id in self._background_searches:
-                        background_cancel = self._background_cancel_events.get(
-                            candidate_set_id
-                        )
+                        background_cancel = self._background_cancel_events.get(candidate_set_id)
                         if background_cancel is None or not background_cancel.is_set():
                             return
                         if not lexical_capacity_ready:
@@ -1051,9 +1062,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                         if cancel.wait(_PAGE_PREPARATION_RETRY_BACKOFF_SECONDS):
                             return
                         continue
-                    if not self._wait_for_continuation_idle(
-                        cancel, wake, retry_generation
-                    ):
+                    if not self._wait_for_continuation_idle(cancel, wake, retry_generation):
                         return
                     continue
                 except CandidatePageError:
@@ -1063,12 +1072,12 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                     return
         finally:
             with self._state_lock:
-                self._last_candidate_stage_metrics[
-                    "last_candidate_background_elapsed_ms"
-                ] = max(0.0, (self.clock() - preparation_started) * 1000.0)
-                self._last_candidate_stage_metrics[
-                    "last_candidate_background_timed_out"
-                ] = timed_out
+                self._last_candidate_stage_metrics["last_candidate_background_elapsed_ms"] = max(
+                    0.0, (self.clock() - preparation_started) * 1000.0
+                )
+                self._last_candidate_stage_metrics["last_candidate_background_timed_out"] = (
+                    timed_out
+                )
                 if self._sessions.get(candidate_set_id) is session:
                     self._snapshot_candidate_stages_locked(session)
                 self._page_preparations.discard(candidate_set_id)

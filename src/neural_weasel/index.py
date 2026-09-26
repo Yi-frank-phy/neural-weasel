@@ -35,9 +35,13 @@ class IndexedPronunciation:
         # Keep direct single-token constructions compatible with older callers.
         if not self.token_path and self.token_id is not None:
             object.__setattr__(self, "token_path", (self.token_id,))
-        if not isinstance(self.token_path, tuple) or not self.token_path or any(
-            isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
-            for token_id in self.token_path
+        if (
+            not isinstance(self.token_path, tuple)
+            or not self.token_path
+            or any(
+                isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
+                for token_id in self.token_path
+            )
         ):
             raise ValueError("indexed pronunciation requires a nonempty token path")
         if self.token_id is not None and self.token_path != (self.token_id,):
