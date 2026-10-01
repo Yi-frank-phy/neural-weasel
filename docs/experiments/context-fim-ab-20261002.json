@@ -1,0 +1,333 @@
+{
+  "scope": "six public synthetic fixtures; model-only joint-logprob comparison",
+  "model_filename": "Qwen3.5-4B-Base.Q8_0.gguf",
+  "model_sha256": "2a5266475777daf23e21991592a006f6dbc0be4620ac6a12d7d57240b0027711",
+  "llama_cpp_python": "0.3.23",
+  "n_gpu_layers": 0,
+  "n_ctx": 256,
+  "threads": 2,
+  "elapsed_seconds": 10.847312969999962,
+  "markers": [
+    248060,
+    248062,
+    248061
+  ],
+  "bos_required": false,
+  "correct": {
+    "continuation": 2,
+    "fim": 6
+  },
+  "cases": [
+    {
+      "case": "policy",
+      "language": "zh",
+      "raw_keys": "shishi",
+      "expected": "实施",
+      "continuation": {
+        "root_tokens": 2,
+        "ranking": [
+          {
+            "candidate": "实施",
+            "tokens": 1,
+            "joint_logprob": -7.676798343658447
+          },
+          {
+            "candidate": "试试",
+            "tokens": 1,
+            "joint_logprob": -12.695001602172852
+          },
+          {
+            "candidate": "事实",
+            "tokens": 1,
+            "joint_logprob": -13.545653343200684
+          }
+        ],
+        "correct": true
+      },
+      "fim": {
+        "root_tokens": 13,
+        "ranking": [
+          {
+            "candidate": "实施",
+            "tokens": 1,
+            "joint_logprob": -4.505125999450684
+          },
+          {
+            "candidate": "试试",
+            "tokens": 1,
+            "joint_logprob": -11.819128036499023
+          },
+          {
+            "candidate": "事实",
+            "tokens": 1,
+            "joint_logprob": -12.127758979797363
+          }
+        ],
+        "correct": true
+      }
+    },
+    {
+      "case": "facts",
+      "language": "zh",
+      "raw_keys": "shishi",
+      "expected": "事实",
+      "continuation": {
+        "root_tokens": 2,
+        "ranking": [
+          {
+            "candidate": "实施",
+            "tokens": 1,
+            "joint_logprob": -7.676798343658447
+          },
+          {
+            "candidate": "试试",
+            "tokens": 1,
+            "joint_logprob": -12.695001602172852
+          },
+          {
+            "candidate": "事实",
+            "tokens": 1,
+            "joint_logprob": -13.545653343200684
+          }
+        ],
+        "correct": false
+      },
+      "fim": {
+        "root_tokens": 12,
+        "ranking": [
+          {
+            "candidate": "事实",
+            "tokens": 1,
+            "joint_logprob": -5.565059661865234
+          },
+          {
+            "candidate": "实施",
+            "tokens": 1,
+            "joint_logprob": -8.639945030212402
+          },
+          {
+            "candidate": "试试",
+            "tokens": 1,
+            "joint_logprob": -12.540863037109375
+          }
+        ],
+        "correct": true
+      }
+    },
+    {
+      "case": "archive",
+      "language": "en",
+      "raw_keys": "comp",
+      "expected": "compress",
+      "continuation": {
+        "root_tokens": 3,
+        "ranking": [
+          {
+            "candidate": "compare",
+            "tokens": 1,
+            "joint_logprob": -14.198407173156738
+          },
+          {
+            "candidate": "compile",
+            "tokens": 1,
+            "joint_logprob": -15.089935302734375
+          },
+          {
+            "candidate": "complete",
+            "tokens": 1,
+            "joint_logprob": -16.30756187438965
+          },
+          {
+            "candidate": "compress",
+            "tokens": 1,
+            "joint_logprob": -18.481355667114258
+          }
+        ],
+        "correct": false
+      },
+      "fim": {
+        "root_tokens": 14,
+        "ranking": [
+          {
+            "candidate": "compress",
+            "tokens": 1,
+            "joint_logprob": -1.9949289560317993
+          },
+          {
+            "candidate": "compare",
+            "tokens": 1,
+            "joint_logprob": -7.6069207191467285
+          },
+          {
+            "candidate": "compile",
+            "tokens": 1,
+            "joint_logprob": -7.804653644561768
+          },
+          {
+            "candidate": "complete",
+            "tokens": 1,
+            "joint_logprob": -9.113058090209961
+          }
+        ],
+        "correct": true
+      }
+    },
+    {
+      "case": "executable",
+      "language": "en",
+      "raw_keys": "comp",
+      "expected": "compile",
+      "continuation": {
+        "root_tokens": 3,
+        "ranking": [
+          {
+            "candidate": "compare",
+            "tokens": 1,
+            "joint_logprob": -14.198407173156738
+          },
+          {
+            "candidate": "compile",
+            "tokens": 1,
+            "joint_logprob": -15.089935302734375
+          },
+          {
+            "candidate": "complete",
+            "tokens": 1,
+            "joint_logprob": -16.30756187438965
+          },
+          {
+            "candidate": "compress",
+            "tokens": 1,
+            "joint_logprob": -18.481355667114258
+          }
+        ],
+        "correct": false
+      },
+      "fim": {
+        "root_tokens": 13,
+        "ranking": [
+          {
+            "candidate": "compile",
+            "tokens": 1,
+            "joint_logprob": -2.5065712928771973
+          },
+          {
+            "candidate": "compress",
+            "tokens": 1,
+            "joint_logprob": -6.717623233795166
+          },
+          {
+            "candidate": "compare",
+            "tokens": 1,
+            "joint_logprob": -7.1643853187561035
+          },
+          {
+            "candidate": "complete",
+            "tokens": 1,
+            "joint_logprob": -8.791617393493652
+          }
+        ],
+        "correct": true
+      }
+    },
+    {
+      "case": "append",
+      "language": "code",
+      "raw_keys": "app",
+      "expected": "append",
+      "continuation": {
+        "root_tokens": 2,
+        "ranking": [
+          {
+            "candidate": "apply",
+            "tokens": 1,
+            "joint_logprob": -16.9819393157959
+          },
+          {
+            "candidate": "append",
+            "tokens": 1,
+            "joint_logprob": -17.249828338623047
+          },
+          {
+            "candidate": "approve",
+            "tokens": 1,
+            "joint_logprob": -17.64607810974121
+          }
+        ],
+        "correct": false
+      },
+      "fim": {
+        "root_tokens": 9,
+        "ranking": [
+          {
+            "candidate": "append",
+            "tokens": 1,
+            "joint_logprob": -6.968600273132324
+          },
+          {
+            "candidate": "apply",
+            "tokens": 1,
+            "joint_logprob": -11.487092971801758
+          },
+          {
+            "candidate": "approve",
+            "tokens": 1,
+            "joint_logprob": -14.823145866394043
+          }
+        ],
+        "correct": true
+      }
+    },
+    {
+      "case": "replace",
+      "language": "code",
+      "raw_keys": "rep",
+      "expected": "replace",
+      "continuation": {
+        "root_tokens": 4,
+        "ranking": [
+          {
+            "candidate": "replace",
+            "tokens": 1,
+            "joint_logprob": -8.191872596740723
+          },
+          {
+            "candidate": "repeat",
+            "tokens": 1,
+            "joint_logprob": -11.850730895996094
+          },
+          {
+            "candidate": "repr",
+            "tokens": 1,
+            "joint_logprob": -16.273595809936523
+          }
+        ],
+        "correct": true
+      },
+      "fim": {
+        "root_tokens": 14,
+        "ranking": [
+          {
+            "candidate": "replace",
+            "tokens": 1,
+            "joint_logprob": -0.4236099123954773
+          },
+          {
+            "candidate": "repeat",
+            "tokens": 1,
+            "joint_logprob": -8.343235969543457
+          },
+          {
+            "candidate": "repr",
+            "tokens": 1,
+            "joint_logprob": -11.20181941986084
+          }
+        ],
+        "correct": true
+      }
+    }
+  ],
+  "source_commit": "e88f2326d191dfe3a272646a2d0530e850af99e0",
+  "model_hub_revision": "d1238424e1efe0c4389935d7bd03853378d5c9e1",
+  "transport_note": "Windows CLI emitted GBK labels decoded as UTF-8; only fixed public fixture labels restored by exact matching to their GBK-to-UTF8 image. Numerical results unchanged. Future stdout uses ASCII JSON."
+}

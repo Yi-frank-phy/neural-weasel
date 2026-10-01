@@ -90,7 +90,8 @@ def main() -> None:
     result = json.loads(output.read_text(encoding="utf-8"))
     result["source_commit"] = args.source_commit
     result["model_hub_revision"] = PRODUCTION_GGUF.revision
-    print("FIM_CONTEXT_AB_RESULT=" + json.dumps(result, ensure_ascii=False), flush=True)
+    # Keep the cross-platform stdout transport ASCII; the JSON artifact is UTF-8.
+    print("FIM_CONTEXT_AB_RESULT=" + json.dumps(result, ensure_ascii=True), flush=True)
 
 
 if __name__ == "__main__":

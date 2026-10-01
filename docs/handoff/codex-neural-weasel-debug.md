@@ -167,3 +167,7 @@ Release 说明：`docs/releases/v0.1.0-experimental.20261001.md`。真实编辑�
 设计与重现入口：`docs/architecture/context-prompt.md`。下一步记录真实原生 A/B 结果，仍不部署、不切换前台、不改生产默认。UIA high-context 是后续阶段；真实编辑器可见候选/选择/提交/保护字段/延迟验收仍待人工完成。
 
 首次临时 Colab 任务从 `a66be7a47717c95c07cae56fa095b33ba5f64a0d` 启动，正常退出并释放运行时，但 Colab 只转发父 Python 的 kernel stdout，子进程的排名输出未返回本地，故无法据此报告质量结果。驱动改为要求子进程写 JSON、父进程读取并输出结果，失败则明确返回子进程错误；公开模型下载显式 `token=False`，避免无意义的 Colab secret 查询。需用新 immutable commit 重跑一次来取得可读回证据。
+
+第二次从 `e88f2326d191dfe3a272646a2d0530e850af99e0` 重跑，成功读回原生 Q8 排名后释放运行时。模型 SHA-256 `2a5266475777daf23e21991592a006f6dbc0be4620ac6a12d7d57240b0027711`，llama-cpp-python 0.3.23，CPU 两线程、n_ctx=256；六个预设合成样例 top-1 从 continuation 2/6 到 FIM 6/6。相同左侧和 raw_keys 时，右侧变化分别使 `实施 → 事实`、`compress → compile`，证明该模型能利用 suffix。候选均为单 token；这不是代表性质量或多 token 原生验收，10.847 秒整轮耗时也不是按键延迟。完整概率、来源和限制保存于 `docs/experiments/context-fim-ab-20261002.json`。
+
+Windows CLI 的 GBK stdout 被按 UTF-8 解码，损坏了中文标签；仅对固定公开样例的标签，先验证源候选经过此精确变换后的唯一对应，再恢复标签并交叉检查排名及正确标记。数值不变，报告注明修复过程；驱动今后使用 ASCII JSON，避免重现此传输问题。当前仍默认 continuation，已运行的输入法服务未部署 FIM。后续需要代表性中文/英文约束候选集、原生多 token 评分、真实 TSF smoke 与延迟测量，再评估默认切换；UIA high-context 后置。

@@ -45,8 +45,13 @@ alternatives satisfy their typed prefix. It compares full-vocabulary joint
 log probabilities with and without the suffix. It is not a production search,
 TSF display/commit, GPU latency or representative quality benchmark.
 
-For an isolated high-RAM run, use `colab-job highram
-scripts/benchmark-fim-colab.py --source-commit <full pushed commit>`. This
+For an isolated high-RAM run, use:
+
+```powershell
+colab-job highram scripts/benchmark-fim-colab.py --source-commit <full pushed commit>
+```
+
+This
 fetches that immutable source commit and the pinned production Q8 artifact,
 uses llama-cpp-python 0.3.23 and prints a JSON result with model digest, runtime
 version and per-case rankings. The wrapper must release the ephemeral runtime.
@@ -56,3 +61,36 @@ Do not switch the production default based on marker support or six fixtures.
 Representative constrained-candidate A/B and real Windows editor smoke tests
 remain required. Generic out-of-process UIA high-context capture is a later
 phase and is not implemented by this change.
+
+## Native Q8 pilot result (2026-10-02)
+
+The ephemeral Colab CPU run used source
+`e88f2326d191dfe3a272646a2d0530e850af99e0`, the pinned production Q8 Hub
+revision, llama-cpp-python 0.3.23, 256 context tokens and two CPU threads.
+The downloaded GGUF SHA-256 was
+`2a5266475777daf23e21991592a006f6dbc0be4620ac6a12d7d57240b0027711`.
+The runtime was released after result retrieval.
+
+| Public fixture | Continuation top candidate | FIM top candidate | Expected |
+| --- | --- | --- | --- |
+| Policy, `shishi` | 实施 | 实施 | 实施 |
+| Facts, same left text and `shishi` | 实施 | 事实 | 事实 |
+| Archive, `comp` | compare | compress | compress |
+| Executable, same left text and `comp` | compare | compile | compile |
+| List method, `app` | apply | append | append |
+| String method, `rep` | replace | replace | replace |
+
+Top-1 matches were 2/6 for continuation and 6/6 for FIM. The paired fixtures
+demonstrate a suffix-conditioned ranking change, not population accuracy.
+The 10.847 second run duration includes CPU model initialization and multiple
+isolated prompts; it is not per-keypress latency. All candidate paths in this
+pilot tokenized to one token, so native multi-token behavior is not established
+by this pilot; root replay regressions cover multi-token paths using fakes.
+
+Full probabilities and provenance are in
+`docs/experiments/context-fim-ab-20261002.json`. Windows CLI transport damaged
+Chinese labels by decoding GBK bytes as UTF-8. Those fixed public fixture labels
+were restored only after exact matching against that transformation; numerical
+results and correctness flags were preserved and checked against the rankings.
+The drivers now emit ASCII JSON to avoid this transport issue. The earlier
+run completed without forwarding child stdout and provided no usable rankings.

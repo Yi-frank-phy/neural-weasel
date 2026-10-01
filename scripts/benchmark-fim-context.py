@@ -189,7 +189,7 @@ def main() -> None:
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(encoded + "\n", encoding="utf-8")
-        print("FIM_CONTEXT_AB_RESULT=" + json.dumps(result, ensure_ascii=False), flush=True)
+        print("FIM_CONTEXT_AB_RESULT=" + json.dumps(result, ensure_ascii=True), flush=True)
     finally:
         model.close()
 
