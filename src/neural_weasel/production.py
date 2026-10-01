@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .acquire_model import AcquiredGguf, ensure_production_gguf
+from .context_prompt import ContextPromptConfig
 from .gguf_artifact import PRODUCTION_GGUF, ProductionGgufArtifact
 from .gguf_index import GgufPinyinIndexBuilder, default_gguf_index_path
 from .index import PinyinIndex
@@ -20,6 +21,7 @@ class ProductionRuntimeConfig:
     max_before_tokens: int = DEFAULT_MAX_BEFORE_TOKENS
     n_ctx: int = DEFAULT_N_CTX
     n_batch: int = DEFAULT_N_BATCH
+    prompt_config: ContextPromptConfig = ContextPromptConfig()
 
     def __post_init__(self) -> None:
         if self.max_before_tokens < 1:
@@ -30,6 +32,7 @@ class ProductionRuntimeConfig:
             raise ValueError("n_batch must be positive")
         if self.max_before_tokens > self.n_ctx:
             raise ValueError("max_before_tokens must not exceed n_ctx")
+        self.prompt_config.validate_window(self.n_ctx)
 
 
 DEFAULT_PRODUCTION_RUNTIME_CONFIG = ProductionRuntimeConfig()
@@ -75,6 +78,7 @@ def build_production_runtime(
         max_before_tokens=config.max_before_tokens,
         n_ctx=config.n_ctx,
         n_batch=config.n_batch,
+        prompt_config=config.prompt_config,
     )
     index = ensure_production_index(runtime, index_path)
     return ProductionRuntime(

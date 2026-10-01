@@ -14,6 +14,7 @@ import numpy as np
 
 from .acquire_model import AcquiredGguf
 from .backends import RuntimeSnapshot
+from .context_prompt import ContextPromptConfig, ContextPromptEncoder
 from .gpu import (
     GpuBindingError,
     NvidiaGpu,
@@ -117,6 +118,7 @@ class LlamaCppBackend:
         max_before_tokens: int = DEFAULT_MAX_BEFORE_TOKENS,
         n_ctx: int = DEFAULT_N_CTX,
         n_batch: int = DEFAULT_N_BATCH,
+        prompt_config: ContextPromptConfig | None = None,
         llama_factory: Callable[..., Any] | None = None,
         cuda_backend_probe: Callable[[], bool] | None = None,
         gpu_before_probe: Callable[[], NvidiaGpu] | None = None,
@@ -130,6 +132,8 @@ class LlamaCppBackend:
             raise ValueError("n_batch must be positive")
         if max_before_tokens > n_ctx:
             raise ValueError("max_before_tokens must not exceed n_ctx")
+        self.prompt_config = prompt_config or ContextPromptConfig()
+        self.prompt_config.validate_window(n_ctx)
 
         artifact = acquired.artifact
         self.model_id = artifact.model_id
@@ -193,6 +197,7 @@ class LlamaCppBackend:
         self.target_gpu = after_gpu
         self.tokenizer = LlamaVocabAdapter(self.llama)
         self.vocab_fingerprint = self.tokenizer.fingerprint
+        self._prompt_encoder = ContextPromptEncoder(self.llama, self.prompt_config)
         self._smoke_forward()
 
     def load(self) -> None:
@@ -312,7 +317,13 @@ class LlamaCppBackend:
         self._cached_logits = None
 
     def create_snapshot(self, before: str, after: str = "") -> GgufLogitsSnapshot:
-        token_ids = self._tokenize_context(before)
+        token_ids = (
+            self._prompt_encoder.encode(
+                before, after, max_before_tokens=self.max_before_tokens, n_ctx=self.n_ctx
+            )
+            if self.prompt_config.mode == "fim"
+            else self._tokenize_context(before)
+        )
         started = time.perf_counter()
         with self._context_waiters_lock:
             self._context_waiters += 1
@@ -842,6 +853,9 @@ class LlamaCppBackend:
         refresh = self._last_refresh_diagnostics
         continuation = self._last_continuation_diagnostics
         return {
+            "context_mode": self.prompt_config.mode,
+            "max_after_tokens": self.prompt_config.max_after_tokens,
+            "continuation_reserve_tokens": self.prompt_config.continuation_reserve_tokens,
             "max_before_tokens": self.max_before_tokens,
             "n_ctx": self.n_ctx,
             "n_batch": self.n_batch,

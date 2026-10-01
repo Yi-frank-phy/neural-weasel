@@ -156,3 +156,12 @@ The default input method was not changed. The experimental model and server proc
 - 新发布 job 等待 Python 与 Windows 原生构建/CTest、安装和启动 dry run 全部通过，验证清单 commit 后打包；先上传 ZIP、SHA256SUMS.txt、build-manifest.json，再公开实验性 prerelease。待 Actions 和已发布附件读回后才算 Release 完成。
 
 Release 说明：`docs/releases/v0.1.0-experimental.20261001.md`。真实编辑器候选/提交/保护字段/延迟验收仍待完成；此次发布不改变当前安装，也不操作前台。
+
+## 2026-10-02：Release 完成，独立分支实现上下文引擎 phase1
+
+- `v0.1.0-experimental.20261001` 已公开为 prerelease，指向 `db73b703e0de71241c14e8691eb67d488adf7492`；GitHub Actions 36937692781 的 Python、Windows 和发布三项 job 均通过。Windows 9/9 CTest、资源隔离、安装/卸载及启动 dry run 通过。Release API 已读回 ZIP、SHA256SUMS.txt、build-manifest.json 三个附件；未将附件本地解包核验冒充已完成。
+- 从此基线创建 `codex/context-engine-fim-phase1`。FIM 是明确 opt-in 的后台候选评分配置，默认 continuation；正文不解释特殊标记，native marker/BOS 能力验证、左右裁剪、至少 16 token 候选余量、完整 root/cache 身份与重放均实现。按键仍只读 immutable logits，安全与 session/revision 发布边界保留。
+- Python 3.12 全套 569 项测试通过，ruff 0.16.0 check/format 和 diff whitespace 检查通过；只读独立审阅未发现本轮 FIM 正确性或安全阻断。真实本机 Q4 GGUF 的 vocab-only 原生探针确认 FIM IDs `248060/248062/248061`、CONTROL `8/8/8`、`add_bos=False`，没有加载权重或推理上下文。
+- 本机空闲内存约 2.5 GB，GPU 自由显存不足以并载另一模型，因此不停止当前服务来获取 A/B。新增六组公开合成样例的 CPU 原生对照工具及临时 Colab highram 驱动，使用已推送 immutable source commit 和 pinned Q8；此时真实推理对照尚未执行。六样例模型联合概率比较不能代表完整候选搜索、TSF 或 GPU 延迟。
+
+设计与重现入口：`docs/architecture/context-prompt.md`。下一步记录真实原生 A/B 结果，仍不部署、不切换前台、不改生产默认。UIA high-context 是后续阶段；真实编辑器可见候选/选择/提交/保护字段/延迟验收仍待人工完成。

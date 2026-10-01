@@ -68,6 +68,14 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--pinyin", required=True)
     benchmark.add_argument("--iterations", type=int, default=1000)
 
+    for command in (predict, serve, serve_http, simulate, benchmark):
+        command.add_argument(
+            "--context-mode",
+            choices=("continuation", "fim"),
+            default="continuation",
+            help="experimental native FIM uses both caret sides; release default is continuation",
+        )
+
     coverage = subparsers.add_parser(
         "coverage-check",
         help="verify all 3,755 GB2312 level-1 characters are inputtable",
@@ -100,13 +108,19 @@ def _build_production(
     index_path: Path | None,
     quantization: str = "Q8_0",
     gguf_path: Path | None = None,
+    *,
+    context_mode: str = "continuation",
 ):
-    from .production import build_production_runtime
+    from .context_prompt import ContextPromptConfig
+    from .production import ProductionRuntimeConfig, build_production_runtime
+
+    config = ProductionRuntimeConfig(prompt_config=ContextPromptConfig(mode=context_mode))
 
     return build_production_runtime(
         index_path,
         artifact=resolve_quantization_artifact(quantization),
         gguf_path=gguf_path,
+        runtime_config=config,
     )
 
 
@@ -314,6 +328,7 @@ def main() -> int:
             args.index,
             getattr(args, "quantization", "Q8_0"),
             getattr(args, "gguf_path", None),
+            context_mode=args.context_mode,
         )
         runtime = bundle.runtime
 
