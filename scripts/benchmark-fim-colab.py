@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -61,15 +62,35 @@ def main() -> None:
         repo_id=PRODUCTION_GGUF.repo_id,
         filename=PRODUCTION_GGUF.filename,
         revision=PRODUCTION_GGUF.revision,
+        token=False,
     )
     environment = dict(os.environ, PYTHONPATH=str(root / "src"))
     print(f"FIM_CONTEXT_AB_SOURCE={args.source_commit}", flush=True)
-    subprocess.run(
-        [sys.executable, str(root / "scripts" / "benchmark-fim-context.py"), "--gguf", model],
-        check=True,
+    output = root / "benchmark-result.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts" / "benchmark-fim-context.py"),
+            "--gguf",
+            model,
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
         env=environment,
         timeout=600,
     )
+    if completed.returncode:
+        print(completed.stdout, flush=True)
+        print(completed.stderr, flush=True)
+        completed.check_returncode()
+    # Colab forwards kernel stdout, but does not reliably forward child FDs.
+    # Read the completed artifact in the parent before releasing the runtime.
+    result = json.loads(output.read_text(encoding="utf-8"))
+    result["source_commit"] = args.source_commit
+    result["model_hub_revision"] = PRODUCTION_GGUF.revision
+    print("FIM_CONTEXT_AB_RESULT=" + json.dumps(result, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

@@ -165,3 +165,5 @@ Release 说明：`docs/releases/v0.1.0-experimental.20261001.md`。真实编辑�
 - 本机空闲内存约 2.5 GB，GPU 自由显存不足以并载另一模型，因此不停止当前服务来获取 A/B。新增六组公开合成样例的 CPU 原生对照工具及临时 Colab highram 驱动，使用已推送 immutable source commit 和 pinned Q8；此时真实推理对照尚未执行。六样例模型联合概率比较不能代表完整候选搜索、TSF 或 GPU 延迟。
 
 设计与重现入口：`docs/architecture/context-prompt.md`。下一步记录真实原生 A/B 结果，仍不部署、不切换前台、不改生产默认。UIA high-context 是后续阶段；真实编辑器可见候选/选择/提交/保护字段/延迟验收仍待人工完成。
+
+首次临时 Colab 任务从 `a66be7a47717c95c07cae56fa095b33ba5f64a0d` 启动，正常退出并释放运行时，但 Colab 只转发父 Python 的 kernel stdout，子进程的排名输出未返回本地，故无法据此报告质量结果。驱动改为要求子进程写 JSON、父进程读取并输出结果，失败则明确返回子进程错误；公开模型下载显式 `token=False`，避免无意义的 Colab secret 查询。需用新 immutable commit 重跑一次来取得可读回证据。
