@@ -21,9 +21,7 @@ def test_continuation_waits_for_response_before_building_page_zero(make_index):
             assert not runtime.started.is_set()
         assert runtime.started.wait(1)
         runtime.release.set()
-        completion = engine.candidate_pages._background_search_events[
-            session.candidate_set_id
-        ]
+        completion = engine.candidate_pages._background_search_events[session.candidate_set_id]
         assert completion.wait(1)
         page = _page(engine, client="test", revision=1, raw="nihao")
         assert "你好" in {candidate.text for candidate in page.candidates}

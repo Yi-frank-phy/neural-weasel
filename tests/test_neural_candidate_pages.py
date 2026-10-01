@@ -4,6 +4,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -25,6 +26,28 @@ from neural_weasel.simplified_chinese import is_simplified_han
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
 MODERN_TEST_CHARACTERS = sorted(char for char in MODERN_READINGS if is_simplified_han(char))
+
+
+def test_stable_bounded_score_positions_matches_full_stable_sort() -> None:
+    values = np.array(
+        [
+            *([3.0] * 40),
+            *([2.0] * 35),
+            np.nan,
+            np.inf,
+            -np.inf,
+            *np.linspace(1.0, -1.0, 90),
+        ],
+        dtype=np.float64,
+    )
+    expected = sorted(
+        (index for index, value in enumerate(values) if np.isfinite(value)),
+        key=lambda index: (-float(values[index]), index),
+    )
+
+    actual = list(candidate_pages_v3._stable_bounded_score_positions(values))
+
+    assert actual == expected
 
 
 @dataclass
@@ -368,15 +391,20 @@ def _wait_for_page_preparation(
 
 
 def _await_coherent_page(engine, raw: str, **kwargs):
-    try:
-        return _page(engine, raw, **kwargs)
-    except CandidatePageTimeout:
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            return _page(engine, raw, **kwargs)
+        except CandidatePageTimeout:
+            assert time.monotonic() < deadline
         manager = engine.candidate_pages
         with manager._state_lock:
             candidate_set_id = next(iter(manager._sessions))
-            event = manager._background_search_events[candidate_set_id]
-        assert event.wait(1.0)
-        return _page(engine, raw, **kwargs)
+            event = manager._background_search_events.get(candidate_set_id)
+        if event is not None:
+            event.wait(0.1)
+        else:
+            time.sleep(0.01)
 
 
 def test_page_zero_preserves_handler_deadline_and_skips_root_when_already_expired(
@@ -516,6 +544,19 @@ def test_empty_context_baseline_is_ready_before_editor_context(make_index) -> No
     assert page.candidates[0].script == "han"
     assert any(candidate.script == "latin" for candidate in page.candidates)
     assert all(candidate.constraint_kind != "literal" for candidate in page.candidates)
+    diagnostics = engine.runtime_performance_diagnostics()
+    assert diagnostics["last_candidate_target_count"] == 35
+    assert diagnostics["last_candidate_published_count"] == len(page.candidates)
+    assert (
+        diagnostics["last_candidate_frozen_count"] >= diagnostics["last_candidate_published_count"]
+    )
+    assert diagnostics["last_candidate_generated_count"] >= (
+        diagnostics["last_candidate_frozen_count"] + diagnostics["last_candidate_pending_count"]
+    )
+    assert (
+        diagnostics["last_candidate_freezable_count"] <= diagnostics["last_candidate_pending_count"]
+    )
+    assert "PRIVATE" not in repr(diagnostics)
 
 
 def test_chinese_page_zero_reserves_six_han_slots_and_one_latin_slot(make_index) -> None:
@@ -675,7 +716,11 @@ def test_wide_root_scores_once_and_allocates_only_top_k_frontier(
     )
     pages._prune_frontier(session)
 
-    assert len(session.frontier) == path_allocations == 32
+    assert path_allocations == 32
+    assert sum(isinstance(path, original_path) for path in session.frontier) == 32
+    deferred = next(path for path in session.frontier if getattr(path, "root_seed_resume", False))
+    assert deferred.cursor == 32
+    assert len(deferred.records) == 250
 
 
 def test_deferred_root_materialization_does_not_hold_state_lock(
@@ -707,6 +752,89 @@ def test_deferred_root_materialization_does_not_hold_state_lock(
         release.set()
 
     _wait_for_page_preparation(engine, first.candidate_set_id)
+
+
+def test_constrained_han_expansion_counts_candidates_and_frontier_independently(
+    make_index,
+) -> None:
+    characters = MODERN_TEST_CHARACTERS[:40]
+    index = make_index(
+        [
+            (token_id, character, "a", "a", 1, 0)
+            for token_id, character in enumerate(characters, start=1)
+        ]
+    )
+    logits = np.full(64, -20.0, dtype=np.float32)
+    logits[1 : len(characters) + 1] = np.arange(
+        len(characters),
+        0,
+        -1,
+        dtype=np.float32,
+    )
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(FakeRuntime(logits)),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+    pages = engine.candidate_pages
+    session = _SearchSession(
+        candidate_set_id="independent-expansion-limits",
+        identity=_SearchIdentity(
+            client_session_id="ime-session",
+            composition_revision=1,
+            context_epoch=0,
+            context_session=None,
+            source_revision=None,
+            mode=NeuralLanguageMode.CHINESE_FIRST,
+            raw_keys="a",
+        ),
+        score_source="baseline",
+        continuation_root=None,
+        pending=[],
+        frontier=[],
+        frozen_pages={},
+        seen_candidates=set(),
+        expanded_paths=set(),
+        last_used=0.0,
+    )
+    parent = candidate_pages_v3._HanSearchPath(
+        text="根",
+        pinyin_path=("gen",),
+        token_path=(63,),
+        score=0.0,
+        predicted_syllables=0,
+        matched_letters=1,
+    )
+    edges_by_token = pages._han_edges_for(session, parent)
+    token_ids = tuple(edges_by_token)
+    values = np.asarray(
+        [logits[token_id] for token_id in token_ids],
+        dtype=np.float32,
+    )
+
+    pages._expand_han_constrained(
+        session,
+        parent,
+        token_ids,
+        values,
+        edges_by_token,
+        absolute_deadline=time.monotonic() + 1.0,
+    )
+
+    assert len(session.pending) == 32
+    assert (
+        sum(isinstance(path, candidate_pages_v3._HanSearchPath) for path in session.frontier) == 32
+    )
+    work_index = next(
+        index
+        for index, path in enumerate(session.frontier)
+        if getattr(path, "scored_han_resume", False)
+    )
+    work = session.frontier.pop(work_index)
+    pages._resume_han_expansion(session, work, time.monotonic() + 1.0)
+    assert len(session.pending) == 40
+    assert len(session.frontier) == 40
 
 
 def test_next_key_cancels_later_page_work_during_grace(make_index, monkeypatch) -> None:
@@ -746,7 +874,7 @@ def test_half_pinyin_and_initial_shorthand_stay_on_legal_model_paths(
 ) -> None:
     engine, _ = _engine(make_index)
 
-    page = _page(engine, raw)
+    page = _await_coherent_page(engine, raw)
     matches = [candidate for candidate in page.candidates if candidate.text == expected]
 
     assert matches
@@ -771,7 +899,7 @@ def test_initial_shorthand_survives_a_competing_exact_short_syllable(make_index)
     )
     engine.initialize_neural_baseline()
 
-    page = _page(engine, "nh")
+    page = _await_coherent_page(engine, "nh")
 
     by_text = {candidate.text: candidate for candidate in page.candidates}
     assert "你好" in by_text
@@ -782,7 +910,7 @@ def test_initial_shorthand_survives_a_competing_exact_short_syllable(make_index)
 def test_full_input_never_publishes_prefix_only_han_candidates(make_index) -> None:
     engine, _ = _engine(make_index)
 
-    page = _page(engine, "nihao")
+    page = _await_coherent_page(engine, "nihao")
     han = [candidate for candidate in page.candidates if candidate.script == "han"]
     full = next(candidate for candidate in han if candidate.text == "你好")
 
@@ -962,7 +1090,17 @@ def test_search_frontier_retains_partial_root_beyond_visible_180(make_index) -> 
     engine.initialize_neural_baseline()
 
     retained = engine.candidate_pages._root_han_search_frontier("mingxian", None)
-    assert any(path.token_path == (parent_token,) for path in retained)
+    assert not any(path.token_path == (parent_token,) for path in retained)
+    frontier_state = SimpleNamespace(frontier=retained)
+    while not any(path.token_path == (parent_token,) for path in frontier_state.frontier):
+        deferred_index = next(
+            index
+            for index, path in enumerate(frontier_state.frontier)
+            if getattr(path, "root_seed_resume", False)
+        )
+        deferred = frontier_state.frontier.pop(deferred_index)
+        assert engine.candidate_pages._resume_root_han_frontier(frontier_state, deferred) <= 32
+    assert any(path.token_path == (parent_token,) for path in frontier_state.frontier)
 
     first = _page(engine, "mingxian")
 
@@ -1008,9 +1146,7 @@ def test_background_continuation_builds_coherent_immutable_page_zero(
     first = _page(engine, "mingxian")
     assert "明显" in {candidate.text for candidate in first.candidates}
     assert all(
-        candidate.completes_input
-        for candidate in first.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in first.candidates if candidate.script == "han"
     )
     refreshed = _page(engine, "mingxian", presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
@@ -1107,11 +1243,7 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
         cached = tuple(engine.candidate_pages._async_han_cache.values())
-        if any(
-            candidate.text == "明显不对"
-            for batch in cached
-            for candidate in batch
-        ):
+        if any(candidate.text == "明显不对" for batch in cached for candidate in batch):
             break
         time.sleep(0.01)
     else:
@@ -1137,11 +1269,7 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
                 candidate_set_id=refreshed.candidate_set_id,
             )
         )
-    assert any(
-        candidate.text == "明显不对"
-        for page in published
-        for candidate in page.candidates
-    )
+    assert any(candidate.text == "明显不对" for page in published for candidate in page.candidates)
     assert all(
         candidate.completes_input
         for page in published
@@ -1211,10 +1339,13 @@ def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> Non
     refreshed = _page(engine, "n", presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id
 
-    # C2 prepares page 1 in the background. Let the blocked first attempt finish,
-    # then verify that navigation itself does not retry the model.
-    _wait_for_page_preparation(engine, first.candidate_set_id)
-    assert runtime.continuation_calls == 1
+    # C2 prepares page 1 in the background. A bounded provider miss keeps that
+    # sole preparer alive instead of requiring PageDown or a page-zero replay
+    # to restart model work.
+    deadline = time.monotonic() + 1.0
+    while runtime.continuation_calls < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runtime.continuation_calls >= 1
     with pytest.raises(CandidatePageTimeout):
         _page(
             engine,
@@ -1223,12 +1354,10 @@ def test_next_page_timeout_keeps_same_candidate_set_retryable(make_index) -> Non
             candidate_set_id=first.candidate_set_id,
             deadline_ms=120.0,
         )
-    assert runtime.continuation_calls == 1
 
     runtime.blocked = False
-    replay = _page(engine, "n")
-    assert replay.candidate_set_id == first.candidate_set_id
     _wait_for_page_preparation(engine, first.candidate_set_id)
+    assert runtime.continuation_calls >= 2
     second = _page(
         engine,
         "n",

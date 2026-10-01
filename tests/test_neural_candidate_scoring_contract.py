@@ -196,9 +196,7 @@ def test_baseline_multitoken_han_path_waits_for_coherent_immutable_page_zero(
     assert phrase.model_score is not None
     assert phrase.model_score <= 0.0
     assert all(
-        candidate.completes_input
-        for candidate in first.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in first.candidates if candidate.script == "han"
     )
     assert not any(candidate.text == "你" for candidate in first.candidates)
 

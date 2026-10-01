@@ -22,6 +22,7 @@ from .pinyin_partial import PartialPinyinMatcher
 from .unified import LatinPrefixConstraint, detect_script
 
 CHINESE_PAGE_SIZE = 7
+CHINESE_CANDIDATE_COUNT = 35
 LATIN_PAGE_SIZE = 5
 MAX_ACTIVE_SEARCH_SESSIONS = 4
 SEARCH_SESSION_IDLE_SECONDS = 15.0
@@ -96,6 +97,7 @@ class _RootHanPlanEntry:
     ranking_tier: int
     static_rank: int
     predicted_syllables: int
+    token_path: tuple[int, ...] = ()
 
 
 @dataclass(slots=True)
@@ -601,6 +603,8 @@ class NeuralCandidatePageManager:
         for index, (entry, score) in enumerate(zip(plan, scores, strict=True)):
             if index % 64 == 0:
                 self._raise_if_query_expired()
+            if len(entry.token_path or (entry.token_id,)) != 1:
+                continue
             if not math.isfinite(float(score)):
                 continue
             value = float(score)

@@ -8,6 +8,7 @@ import pytest
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
 from neural_weasel.neural_candidates import CandidatePageTimeout
+from neural_weasel.simplified_chinese import is_simplified_han
 from neural_weasel.unified import LatinPrefixConstraint, PinyinConstraint
 
 
@@ -62,6 +63,58 @@ class MultiTokenRuntime:
 
     def invalidate_private_state(self) -> None:
         pass
+
+
+class LateRootRuntime(MultiTokenRuntime):
+    def continue_from_root(
+        self,
+        root,
+        token_paths,
+        allowed_token_sets,
+        *,
+        deadline_ms: float,
+    ):
+        assert root[0] == "root"
+        assert deadline_ms > 0
+        outputs = []
+        for raw_path, raw_allowed in zip(token_paths, allowed_token_sets, strict=True):
+            path = tuple(int(token_id) for token_id in raw_path)
+            allowed = tuple(int(token_id) for token_id in raw_allowed)
+            self.continuation_calls.append((path, allowed))
+            values = np.full(len(allowed), -120.0, dtype=np.float32)
+            values[allowed.index(35)] = 0.0
+            if path == (33,):
+                values[allowed.index(34)] = 30.0
+            outputs.append(values)
+        return outputs
+
+
+class LateEdgeRuntime(MultiTokenRuntime):
+    def continue_from_root(
+        self,
+        root,
+        token_paths,
+        allowed_token_sets,
+        *,
+        deadline_ms: float,
+    ):
+        assert root[0] == "root"
+        assert deadline_ms > 0
+        outputs = []
+        for raw_path, raw_allowed in zip(token_paths, allowed_token_sets, strict=True):
+            path = tuple(int(token_id) for token_id in raw_path)
+            allowed = tuple(int(token_id) for token_id in raw_allowed)
+            self.continuation_calls.append((path, allowed))
+            values = np.full(len(allowed), -120.0, dtype=np.float32)
+            values[allowed.index(39)] = 0.0
+            if path == (1,):
+                for token_id in range(2, 34):
+                    values[allowed.index(token_id)] = 10.0 - token_id
+                values[allowed.index(34)] = -30.0
+            elif path == (1, 34):
+                values[allowed.index(35)] = 20.0
+            outputs.append(values)
+        return outputs
 
 
 def _engine(make_index):
@@ -141,6 +194,156 @@ def _later_candidates(engine: BilingualImeEngine, candidate_set_id: str):
         )
 
 
+def test_byte_fragment_han_is_hidden_until_complete_and_remains_reachable(make_index) -> None:
+    index = make_index(
+        [
+            (1, "比", "bi", "bi", 1, 0),
+            (None, "敝", "bi", "bi", 1, 1, (4, 5)),
+        ]
+    )
+    logits = np.full(8, -20.0, dtype=np.float32)
+    logits[1] = 9.0
+    logits[4] = 8.0
+    runtime = MultiTokenRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    first = _coherent_page(engine, "bi")
+    assert all("\ufffd" not in candidate.text for candidate in first.candidates)
+    later = _later_candidates(engine, first.candidate_set_id)
+    target = next(candidate for candidate in (*first.candidates, *later) if candidate.text == "敝")
+    assert target.token_path == (4, 5)
+    assert target.consumed_keys == 2
+    assert target.completes_input
+    assert target.ranking_tier == 0
+    assert target.model_score is not None and target.model_score < -900
+    assert ((4,), tuple(range(8))) in runtime.continuation_calls
+
+
+@pytest.mark.parametrize(
+    ("expected_text", "expected_path"),
+    [
+        ("比敝", (1, 4, 5)),
+        ("敝比", (4, 5, 1)),
+        ("敝敝", (4, 5, 4, 5)),
+    ],
+)
+def test_multitoken_han_is_selectable_inside_a_phrase(
+    make_index,
+    expected_text: str,
+    expected_path: tuple[int, ...],
+) -> None:
+    index = make_index(
+        [
+            (1, "比", "bi", "bi", 1, 0),
+            (None, "敝", "bi", "bi", 1, 1, (4, 5)),
+        ]
+    )
+    logits = np.full(8, -20.0, dtype=np.float32)
+    logits[1] = 9.0
+    logits[4] = 8.0
+    runtime = MultiTokenRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    first = _coherent_page(engine, "bibi")
+    later = _later_candidates(engine, first.candidate_set_id)
+    target = next(
+        candidate for candidate in (*first.candidates, *later) if candidate.text == expected_text
+    )
+    assert target.token_path == expected_path
+    assert target.consumed_keys == 4
+    assert target.completes_input
+    assert target.ranking_tier == 0
+
+
+def test_thirty_third_root_can_recover_and_win_after_continuation(make_index) -> None:
+    heads = [
+        character
+        for codepoint in range(0x4E00, 0x5000)
+        if is_simplified_han(character := chr(codepoint))
+    ][:33]
+    assert len(heads) == 33
+    index = make_index(
+        [(token_id, head, "bi", "bi", 1, 0) for token_id, head in enumerate(heads, start=1)]
+        + [(34, "好", "hao", "hao", 1, 0)]
+    )
+    logits = np.full(40, -100.0, dtype=np.float32)
+    logits[1:33] = np.linspace(20.0, 1.0, 32, dtype=np.float32)
+    logits[33] = -10.0
+    runtime = LateRootRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+
+    first = _coherent_page(engine, "bih")
+    later = _later_candidates(engine, first.candidate_set_id)
+    assert any(path == (33,) for path, _allowed in runtime.continuation_calls)
+    target = next(
+        candidate for candidate in (*first.candidates, *later) if candidate.text == heads[32] + "好"
+    )
+    assert target.token_path == (33, 34)
+    assert target.ranking_tier == 0
+    assert target.completes_input
+    assert (33,) in {path for path, _ in runtime.continuation_calls}
+
+
+def test_thirty_third_child_can_recover_and_win_after_continuation(
+    make_index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suffixes = [
+        character
+        for codepoint in range(0x4E00, 0x5000)
+        if is_simplified_han(character := chr(codepoint))
+    ][:33]
+    assert len(suffixes) == 33
+    index = make_index(
+        [(1, "比", "bi", "bi", 1, 0)]
+        + [
+            (token_id, character, "hao", "hao", 1, 0)
+            for token_id, character in enumerate(suffixes, start=2)
+        ]
+        + [(35, "你", "ni", "ni", 1, 0)]
+    )
+    logits = np.full(40, -100.0, dtype=np.float32)
+    logits[1] = 20.0
+    runtime = LateEdgeRuntime(logits)
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        pinyin_constraint=PinyinConstraint(index),
+        latin_prefix_constraint=LatinPrefixConstraint(()),
+    )
+    engine.initialize_neural_baseline()
+    monkeypatch.setattr(
+        engine.candidate_pages,
+        "_lexical_completion_fallback",
+        lambda *_args, **_kwargs: [],
+    )
+
+    first = _coherent_page(engine, "bihaoni")
+    later = _later_candidates(engine, first.candidate_set_id)
+    assert any(path == (1, 34) for path, _allowed in runtime.continuation_calls)
+    target = next(
+        candidate
+        for candidate in (*first.candidates, *later)
+        if candidate.text == "比" + suffixes[32] + "你"
+    )
+    assert target.token_path == (1, 34, 35)
+    assert target.ranking_tier == 0
+    assert target.completes_input
+
+
 @pytest.mark.parametrize(
     ("raw", "expected_text", "expected_path"),
     [
@@ -159,9 +362,7 @@ def test_exact_han_cover_can_span_multiple_base_tokens(
 
     first = _coherent_page(engine, raw)
     assert all(
-        candidate.completes_input
-        for candidate in first.candidates
-        if candidate.script == "han"
+        candidate.completes_input for candidate in first.candidates if candidate.script == "han"
     )
     refreshed = _page(engine, raw, presentation_refresh=True)
     assert refreshed.candidate_set_id == first.candidate_set_id

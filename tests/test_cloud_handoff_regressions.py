@@ -43,8 +43,8 @@ def test_identical_bundle_path_also_repairs_the_runtime_schema() -> None:
 def test_production_runtime_defaults_are_explicit_and_testable() -> None:
     config = production.ProductionRuntimeConfig()
 
-    assert config.max_before_tokens == 3072
-    assert config.n_ctx == 4096
+    assert config.max_before_tokens == 23552
+    assert config.n_ctx == 24576
     assert config.n_batch == 512
     assert config == production.DEFAULT_PRODUCTION_RUNTIME_CONFIG
 

@@ -84,7 +84,8 @@ Additional explicit protected signals may be added when they are reliable and ch
 
 The reusable surrounding-text read logic remains bounded:
 
-- up to 8192 UTF-16 code units before the caret;
+- up to 27648 UTF-16 code units before the caret on the fast path, with a
+  32768-unit protocol ceiling for idle capture;
 - up to 4096 UTF-16 code units after the caret.
 
 Capture occurs only for the currently focused TSF context through a read-only edit session. The capture code must not traverse unrelated documents, processes, workspaces, browser tabs, or filesystem content.

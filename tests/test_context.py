@@ -15,7 +15,7 @@ def test_secure_context_never_keeps_text() -> None:
 
 def test_utf16_clipping_does_not_split_non_bmp_character() -> None:
     context = EditorContext(
-        before="a" * 8191 + "😀",
+        before="a" * 27647 + "😀",
         after="😀" + "b" * 4096,
         app_id="editor.exe",
         partial=False,
@@ -25,8 +25,8 @@ def test_utf16_clipping_does_not_split_non_bmp_character() -> None:
 
     clipped = context.clipped_fast()
 
-    assert clipped.before == "a" * 8190 + "😀"
-    assert len(clipped.before.encode("utf-16-le")) // 2 == 8192
+    assert clipped.before == "a" * 23550 + "😀"
+    assert len(clipped.before.encode("utf-16-le")) // 2 == 23552
     assert clipped.after.startswith("😀")
     assert len(clipped.after.encode("utf-16-le")) // 2 == 4096
 

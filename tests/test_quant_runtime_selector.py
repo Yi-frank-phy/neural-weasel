@@ -38,6 +38,9 @@ class FakeGgufVocab:
     def decode(self, token_ids: list[int], **_: object) -> str:
         return {0: "你", 1: "hello"}[token_ids[0]]
 
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        return {"你": [0], "hello": [1]}.get(text, [])
+
 
 def _write_payload(directory: Path, payload: bytes = b"GGUF-q4-payload") -> tuple[Path, str]:
     path = directory / "Qwen3.5-4B-Q4_K_M.gguf"

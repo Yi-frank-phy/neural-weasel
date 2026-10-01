@@ -257,11 +257,28 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
         *,
         deadline_ms: float,
     ) -> ContinuationAttempt:
+        return self._continue_provider_attempt(
+            "continue_from_root",
+            root,
+            token_paths,
+            allowed_token_sets,
+            deadline_ms=deadline_ms,
+        )
+
+    def _continue_provider_attempt(
+        self,
+        provider_name: str,
+        root: Any,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> ContinuationAttempt:
         """Run one continuation and identify retryable single-flight misses."""
 
         if deadline_ms <= 0:
             return ContinuationAttempt()
-        provider = getattr(self.runtime, "continue_from_root", None)
+        provider = getattr(self.runtime, provider_name, None)
         if not callable(provider):
             return ContinuationAttempt()
 
@@ -327,6 +344,22 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
             raise error
         return ContinuationAttempt(result=box.get("result"))
 
+    def _continue_log_probs_from_root_attempt(
+        self,
+        root: Any,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> ContinuationAttempt:
+        return self._continue_provider_attempt(
+            "continue_log_probs_from_root",
+            root,
+            token_paths,
+            allowed_token_sets,
+            deadline_ms=deadline_ms,
+        )
+
     def _continue_from_root_bounded(
         self,
         root: Any,
@@ -341,6 +374,18 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
             root, token_paths, allowed_token_sets, deadline_ms=deadline_ms
         ).result
 
+    def _continue_log_probs_from_root_bounded(
+        self,
+        root: Any,
+        token_paths: Sequence[Sequence[int]],
+        allowed_token_sets: Sequence[Sequence[int]],
+        *,
+        deadline_ms: float,
+    ) -> Any:
+        return self._continue_log_probs_from_root_attempt(
+            root, token_paths, allowed_token_sets, deadline_ms=deadline_ms
+        ).result
+
     @property
     def continue_from_root_attempt(self) -> Any:
         provider = getattr(self.runtime, "continue_from_root", None)
@@ -352,6 +397,16 @@ class FullLogitsSnapshotBackend(_SnapshotBackend):
 
         provider = getattr(self.runtime, "continue_from_root", None)
         return self._continue_from_root_bounded if callable(provider) else None
+
+    @property
+    def continue_log_probs_from_root_attempt(self) -> Any:
+        provider = getattr(self.runtime, "continue_log_probs_from_root", None)
+        return self._continue_log_probs_from_root_attempt if callable(provider) else None
+
+    @property
+    def continue_log_probs_from_root(self) -> Any:
+        provider = getattr(self.runtime, "continue_log_probs_from_root", None)
+        return self._continue_log_probs_from_root_bounded if callable(provider) else None
 
     @property
     def continue_from_empty(self) -> Any:

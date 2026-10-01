@@ -24,7 +24,7 @@ struct CapturePolicyDecision {
 };
 
 struct SurroundingTextLimits {
-  LONG before_code_units = 8192;
+  LONG before_code_units = 27648;
   LONG after_code_units = 4096;
 };
 

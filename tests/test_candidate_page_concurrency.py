@@ -285,10 +285,7 @@ def test_pending_later_page_retry_keeps_candidate_set_in_active_lru(make_index) 
     manager = engine.candidate_pages
     manager._maybe_start_page_preparation = lambda session: None
 
-    pages = [
-        _page(engine, client=f"client-{index}", revision=1, raw="ni")
-        for index in range(4)
-    ]
+    pages = [_page(engine, client=f"client-{index}", revision=1, raw="ni") for index in range(4)]
     with pytest.raises(CandidatePageTimeout):
         _page(
             engine,

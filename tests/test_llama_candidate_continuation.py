@@ -265,7 +265,8 @@ def test_production_context_replays_root_once_and_restores_candidate_branches(
     assert scores is not None
     assert len(scores) == 3
     assert backend.llama.eval_calls[eval_before:] == [[1], [1], [2], [3]]
-    assert restores == [(backend.llama._ctx.ctx, 4, 0)] * 2
+    # Two branch-to-branch restores plus the final editor-root restore.
+    assert restores == [(backend.llama._ctx.ctx, 4, 0)] * 3
     assert backend.llama.restored_states == restored_before
 
 
@@ -290,9 +291,7 @@ def test_continuation_never_queues_past_model_lock_budget(tmp_path: Path) -> Non
     assert elapsed_ms < 50.0
 
 
-def test_context_refresh_preempts_remaining_candidate_branches(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_context_refresh_preempts_remaining_candidate_branches(tmp_path: Path, monkeypatch) -> None:
     backend = _backend(tmp_path)
     root = backend.create_snapshot("你").continuation_root
     assert root is not None
@@ -323,7 +322,14 @@ def test_context_refresh_preempts_remaining_candidate_branches(
 
     assert scores is None
     assert backend.llama.eval_calls[eval_before:] == [[1], [1]]
-    assert restores == []
+    # Preemption still restores the editor root before releasing the model lock.
+    assert restores == [4]
+    diagnostics = backend.performance_diagnostics()
+    assert diagnostics["last_continuation_requested_branches"] == 3
+    assert diagnostics["last_continuation_completed_branches"] == 1
+    assert diagnostics["last_continuation_returned_tokens"] == 1
+    assert diagnostics["last_continuation_cache_preserved"] is True
+    assert diagnostics["last_continuation_outcome"] == "preempted"
 
 
 def test_production_continuation_reuses_cached_root_state_across_batches(
@@ -353,8 +359,9 @@ def test_production_continuation_reuses_cached_root_state_across_batches(
     assert first is not None and second is not None
     assert captures == [4]
     assert backend.llama.eval_calls[eval_after_first:] == [[2], [3]]
-    # One restore installs the cached root at batch start; one separates branches.
-    assert restores == [4, 4]
+    # Each batch restores the editor root on exit; the second also installs the
+    # cached root at entry and restores once between its two branches.
+    assert restores == [4, 4, 4, 4]
 
 
 def test_private_state_invalidation_discards_cached_continuation_root(
@@ -380,7 +387,7 @@ def test_private_state_invalidation_discards_cached_continuation_root(
     assert backend._continuation_state_size == 0
 
 
-def test_candidate_branch_invalidates_editor_incremental_cache(tmp_path: Path) -> None:
+def test_candidate_branch_restores_matching_editor_incremental_cache(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
     snapshot = backend.create_snapshot("你")
     assert snapshot.continuation_root is not None
@@ -396,8 +403,85 @@ def test_candidate_branch_invalidates_editor_incremental_cache(tmp_path: Path) -
         is not None
     )
 
-    assert backend._cached_token_ids is None
-    assert backend._cached_logits is None
+    assert backend._cached_token_ids == (1,)
+    assert backend._cached_logits is not None
+    diagnostics = backend.performance_diagnostics()
+    assert diagnostics["last_continuation_requested_branches"] == 1
+    assert diagnostics["last_continuation_completed_branches"] == 1
+    assert diagnostics["last_continuation_returned_tokens"] == 1
+    assert diagnostics["last_continuation_cache_preserved"] is True
+    assert diagnostics["last_continuation_outcome"] == "completed"
+    assert (
+        diagnostics["last_continuation_elapsed_ms"]
+        >= diagnostics["last_continuation_queue_wait_ms"]
+    )
     before = len(backend.llama.eval_calls)
     backend.create_snapshot("你")
-    assert backend.llama.eval_calls[before:] == [[1]]
+    assert backend.llama.eval_calls[before:] == []
+
+
+def test_candidate_branch_from_stale_root_invalidates_editor_cache(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    stale_root = backend.create_snapshot("你").continuation_root
+    assert stale_root is not None
+    backend.create_snapshot("n")
+    assert backend._cached_token_ids == (3,)
+
+    assert (
+        backend.continue_from_root(
+            stale_root,
+            [(1,)],
+            [(2,)],
+            deadline_ms=1000.0,
+        )
+        is not None
+    )
+
+    assert backend._cached_token_ids is None
+    assert backend._cached_logits is None
+    diagnostics = backend.performance_diagnostics()
+    assert diagnostics["last_continuation_cache_preserved"] is False
+    assert diagnostics["last_continuation_outcome"] == "completed"
+
+
+def test_log_prob_continuation_normalizes_over_full_vocabulary(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+
+    scores = backend.continue_log_probs_from_root(
+        root,
+        [(2,)],
+        [(1, 3)],
+        deadline_ms=1000.0,
+    )
+
+    assert scores is not None
+    full_logits = np.arange(5, dtype=np.float64) + 10.0
+    expected = full_logits[[1, 3]] - np.log(np.exp(full_logits).sum())
+    assert np.allclose(scores[0], expected.astype(np.float32))
+
+
+def test_log_prob_selection_preserves_nonfinite_semantics() -> None:
+    allowed = np.array([0, 1, 2], dtype=np.int64)
+    positive_infinity = LlamaCppBackend._select_continuation_values(
+        [np.inf, np.inf, -np.inf],
+        allowed,
+        normalize_log_probs=True,
+    )
+    assert np.array_equal(
+        positive_infinity,
+        np.array([-np.log(2.0), -np.log(2.0), -np.inf], dtype=np.float32),
+    )
+    all_nonfinite = LlamaCppBackend._select_continuation_values(
+        [-np.inf, -np.inf, -np.inf],
+        allowed,
+        normalize_log_probs=True,
+    )
+    assert np.array_equal(all_nonfinite, np.full(3, -np.inf, dtype=np.float32))
+    with np.testing.assert_raises_regex(ValueError, "must not contain NaN"):
+        LlamaCppBackend._select_continuation_values(
+            [0.0, np.nan, 1.0],
+            allowed,
+            normalize_log_probs=True,
+        )

@@ -104,11 +104,7 @@ def test_published_page_zero_stays_frozen_while_background_prepares_later_pages(
     first = server.handle_message(request)
     assert first["ok"] is True
     assert "你好" in {item["text"] for item in first["candidates"]}
-    assert all(
-        item["completes_input"]
-        for item in first["candidates"]
-        if item["script"] == "han"
-    )
+    assert all(item["completes_input"] for item in first["candidates"] if item["script"] == "han")
     assert first["background_pending"] is False
 
     refreshed_request = dict(

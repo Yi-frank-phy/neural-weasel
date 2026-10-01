@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-FAST_BEFORE_UTF16 = 8192
+FAST_BEFORE_UTF16 = 23552
 FAST_AFTER_UTF16 = 4096
 IDLE_BEFORE_UTF16 = 32768
 IDLE_AFTER_UTF16 = 32768

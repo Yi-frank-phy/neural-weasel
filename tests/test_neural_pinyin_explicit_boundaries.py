@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -107,15 +108,20 @@ def _page(
 
 
 def _coherent_page(engine):
-    try:
-        return _page(engine)
-    except CandidatePageTimeout:
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            return _page(engine)
+        except CandidatePageTimeout:
+            assert time.monotonic() < deadline
         manager = engine.candidate_pages
         with manager._state_lock:
             candidate_set_id = next(iter(manager._sessions))
-            completion = manager._background_search_events[candidate_set_id]
-        assert completion.wait(1.0)
-        return _page(engine)
+            completion = manager._background_search_events.get(candidate_set_id)
+        if completion is not None:
+            completion.wait(0.1)
+        else:
+            time.sleep(0.01)
 
 
 def _wait_for_async_han(engine: BilingualImeEngine, candidate_set_id: str) -> None:
@@ -149,7 +155,7 @@ def _later_candidates(engine: BilingualImeEngine, candidate_set_id: str):
 def test_explicit_apostrophe_blocks_one_syllable_path_that_crosses_it(make_index) -> None:
     engine, _ = _engine(make_index, include_phrase_token=True)
 
-    page = _page(engine)
+    page = _coherent_page(engine)
     full_cover = [
         candidate
         for candidate in page.candidates

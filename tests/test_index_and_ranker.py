@@ -34,6 +34,10 @@ class FakeTokenizer:
         del skip_special_tokens, clean_up_tokenization_spaces
         return self._tokens[token_ids[0]]
 
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        assert not add_special_tokens
+        return [self._tokens.index(text)] if text in self._tokens else []
+
 
 def test_tokenizer_fingerprint_is_stable_and_sensitive_to_vocabulary() -> None:
     tokenizer = FakeTokenizer()
@@ -57,7 +61,7 @@ def test_default_index_path_changes_with_revision_and_pypinyin_version(
     assert base != new_pinyin
     assert "commit-a" in base.name
     assert "pypinyin-0.55" in base.name
-    assert base.name.endswith("-v4.sqlite3")
+    assert base.name.endswith("-v5.sqlite3")
 
 
 def test_builder_persists_tokens_polyphones_coverage_and_metadata(
@@ -97,6 +101,64 @@ def test_builder_persists_tokens_polyphones_coverage_and_metadata(
     assert all(entry.text != "妳" for entry in ni_entries)
     parsed_hang = index_module.ParsedPinyinInput("hang", "hang", frozenset())
     assert {entry.pinyin for entry in loaded.compatible(parsed_hang)} == {"hang"}
+
+
+@pytest.mark.parametrize(
+    ("encoded_path", "expected_path"),
+    [
+        ([1, 2], (1, 2)),
+        ([], None),
+        ([0, 1], None),
+        ([1, 3], None),
+        ([1], None),
+    ],
+)
+def test_character_coverage_requires_exact_valid_runtime_token_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    encoded_path: list[int],
+    expected_path: tuple[int, ...] | None,
+) -> None:
+    import pypinyin.constants
+
+    monkeypatch.setattr(pypinyin.constants, "PINYIN_DICT", {ord("敝"): "bi4"})
+
+    class SplitCharacterTokenizer(FakeTokenizer):
+        def __init__(self) -> None:
+            self._tokens = ["<special>", "�", "�"]
+
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            skip_special_tokens: bool,
+            clean_up_tokenization_spaces: bool,
+        ) -> str:
+            del skip_special_tokens, clean_up_tokenization_spaces
+            return "敝" if token_ids == [1, 2] else "�"
+
+        def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+            assert not add_special_tokens
+            return encoded_path if text == "敝" else []
+
+    path = PinyinIndexBuilder(SplitCharacterTokenizer(), "test/base-model").build(
+        tmp_path / "coverage.sqlite3"
+    )
+    entries = index_module.PinyinIndex(path).compatible(
+        index_module.ParsedPinyinInput("bi", "bi", frozenset())
+    )
+    assert [entry.token_path for entry in entries] == (
+        [expected_path] if expected_path is not None else []
+    )
+
+
+def test_index_load_rejects_empty_stored_token_path(make_index) -> None:
+    index = make_index([(1, "你", "ni", 1, 0)])
+    with sqlite3.connect(index.path) as connection:
+        connection.execute("UPDATE pronunciations SET token_path = '[ ]'")
+
+    with pytest.raises(ValueError, match="empty or invalid token path"):
+        index_module.PinyinIndex(index.path)
 
 
 def test_builder_replaces_existing_index_atomically(
