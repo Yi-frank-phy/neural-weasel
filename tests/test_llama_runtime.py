@@ -189,6 +189,9 @@ def test_runtime_exposes_only_refresh_metadata_and_explicit_limits(tmp_path: Pat
     assert diagnostics["last_refresh_latency_ms"] is None
 
     expected = {
+        "context_mode": "continuation",
+        "max_after_tokens": 4096,
+        "continuation_reserve_tokens": 16,
         "max_before_tokens": 2,
         "n_ctx": 8,
         "n_batch": 4,

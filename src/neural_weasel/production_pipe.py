@@ -22,6 +22,8 @@ from .pipe_server import (
 from .protocol import ProtocolError
 
 _RUNTIME_COUNT_KEYS = (
+    "max_after_tokens",
+    "continuation_reserve_tokens",
     "max_before_tokens",
     "n_ctx",
     "n_batch",
@@ -61,7 +63,7 @@ _RUNTIME_BOOLEAN_KEYS = (
     "last_continuation_cache_preserved",
     "last_candidate_background_timed_out",
 )
-_RUNTIME_ENUM_KEYS = ("last_continuation_outcome",)
+_RUNTIME_ENUM_KEYS = ("last_continuation_outcome", "context_mode")
 _CONTINUATION_OUTCOMES = frozenset({"completed", "deadline", "lock_timeout", "preempted", "error"})
 
 
@@ -77,7 +79,8 @@ def _safe_runtime_metric(key: str, value: object) -> int | float | bool | str | 
             raise RuntimeError("invalid cached runtime boolean metric")
         return value
     if key in _RUNTIME_ENUM_KEYS:
-        if not isinstance(value, str) or value not in _CONTINUATION_OUTCOMES:
+        allowed = {"continuation", "fim"} if key == "context_mode" else _CONTINUATION_OUTCOMES
+        if not isinstance(value, str) or value not in allowed:
             raise RuntimeError("invalid cached runtime enum metric")
         return value
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:

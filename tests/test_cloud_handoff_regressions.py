@@ -84,6 +84,7 @@ def test_build_production_runtime_forwards_explicit_context_config(
     result = production.build_production_runtime(runtime_config=config)
 
     assert captured == {
+        "prompt_config": config.prompt_config,
         "max_before_tokens": 1536,
         "n_ctx": 2048,
         "n_batch": 256,
