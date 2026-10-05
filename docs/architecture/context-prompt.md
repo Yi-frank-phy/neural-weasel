@@ -94,3 +94,11 @@ were restored only after exact matching against that transformation; numerical
 results and correctness flags were preserved and checked against the rankings.
 The drivers now emit ASCII JSON to avoid this transport issue. The earlier
 run completed without forwarding child stdout and provided no usable rankings.
+
+## Deferred Windows context acquisition
+
+- [ ] Evaluate direct Windows editor-context acquisition (including UIA high-context)
+  after the current TSF installation passes target-machine smoke and latency tests.
+  This is a separate future task, not part of the 2026-10-02 deployment.
+  Preserve zero capture in protected/password fields, ephemeral PRIVATE context,
+  no raw-text persistence, bounded nonblocking transport, and stale-focus rejection.

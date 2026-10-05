@@ -1,0 +1,132 @@
+{
+  "status": "passed",
+  "llama_cpp_version": "0.3.23",
+  "model_sha256": "2a5266475777daf23e21991592a006f6dbc0be4620ac6a12d7d57240b0027711",
+  "cpu_threads": 2,
+  "n_ctx": 256,
+  "native_evaluations": 102,
+  "rows": [
+    {
+      "mode": "continuation",
+      "fixture": "zh",
+      "candidate_token_counts": [
+        2,
+        2
+      ],
+      "continuation_branches": 2,
+      "max_logprob_error": 5.373273381792387e-9,
+      "max_combined_vs_segmented_logprob_delta": 0,
+      "cache_hit": true,
+      "keypress_100_calls_zero_eval": true,
+      "root_restore_cache_preserved": true,
+      "suffix_update": true,
+      "private_cleanup_and_stale_rejection": true
+    },
+    {
+      "mode": "continuation",
+      "fixture": "en",
+      "candidate_token_counts": [
+        3,
+        3
+      ],
+      "continuation_branches": 4,
+      "max_logprob_error": 8.831282087840009e-7,
+      "max_combined_vs_segmented_logprob_delta": 0.0454512805769447,
+      "cache_hit": true,
+      "keypress_100_calls_zero_eval": true,
+      "root_restore_cache_preserved": true,
+      "suffix_update": true,
+      "private_cleanup_and_stale_rejection": true
+    },
+    {
+      "mode": "continuation",
+      "fixture": "code",
+      "candidate_token_counts": [
+        2,
+        2
+      ],
+      "continuation_branches": 2,
+      "max_logprob_error": 2.6139900199950716e-7,
+      "max_combined_vs_segmented_logprob_delta": 0.004272420980139913,
+      "cache_hit": true,
+      "keypress_100_calls_zero_eval": true,
+      "root_restore_cache_preserved": true,
+      "suffix_update": true,
+      "private_cleanup_and_stale_rejection": true
+    },
+    {
+      "mode": "fim",
+      "fixture": "zh",
+      "candidate_token_counts": [
+        2,
+        2
+      ],
+      "continuation_branches": 2,
+      "max_logprob_error": 1.5168135192311638e-7,
+      "max_combined_vs_segmented_logprob_delta": 0,
+      "cache_hit": true,
+      "keypress_100_calls_zero_eval": true,
+      "root_restore_cache_preserved": true,
+      "suffix_update": true,
+      "private_cleanup_and_stale_rejection": true
+    },
+    {
+      "mode": "fim",
+      "fixture": "en",
+      "candidate_token_counts": [
+        3,
+        3
+      ],
+      "continuation_branches": 4,
+      "max_logprob_error": 4.540152751530968e-7,
+      "max_combined_vs_segmented_logprob_delta": 0,
+      "cache_hit": true,
+      "keypress_100_calls_zero_eval": true,
+      "root_restore_cache_preserved": true,
+      "suffix_update": true,
+      "private_cleanup_and_stale_rejection": true
+    },
+    {
+      "mode": "fim",
+      "fixture": "code",
+      "candidate_token_counts": [
+        2,
+        2
+      ],
+      "continuation_branches": 2,
+      "max_logprob_error": 4.188825730722101e-7,
+      "max_combined_vs_segmented_logprob_delta": 0.003218674451481718,
+      "cache_hit": true,
+      "keypress_100_calls_zero_eval": true,
+      "root_restore_cache_preserved": true,
+      "suffix_update": true,
+      "private_cleanup_and_stale_rejection": true
+    }
+  ],
+  "scope": "CPU native runtime correctness; not GPU admission, quality, latency or TSF",
+  "source_commit": "ff8cfcf6d614a61ad240a2932f5069f0f2881857",
+  "model_hub_revision": "d1238424e1efe0c4389935d7bd03853378d5c9e1",
+  "verification_worker_sha256": "0608da0ab0212a21893b301ce737cb31d5b109a7ccbfa62756b845096fe950e5",
+  "test_date": "2026-10-02",
+  "sessions_released": [
+    "agent-ephemeral-20261002-105523-20168",
+    "agent-ephemeral-20261002-105759-11060",
+    "agent-ephemeral-20261002-110013-38820"
+  ],
+  "reference_tolerance_absolute": 0.0002,
+  "reference_tolerance_relative": 0,
+  "driver_attempts": [
+    {
+      "outcome": "driver_error",
+      "reason": "Colab notebook does not define __file__; no model checks executed"
+    },
+    {
+      "outcome": "reference_mismatch",
+      "reason": "Combined prefill differs from split prefill; maximum observed difference 0.0454514"
+    },
+    {
+      "outcome": "passed",
+      "reason": "Matched independent cold reference with same root/path batching; combined-vs-segmented differences retained separately"
+    }
+  ]
+}

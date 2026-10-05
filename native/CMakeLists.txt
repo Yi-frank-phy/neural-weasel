@@ -285,6 +285,18 @@ if(NEURAL_WEASEL_BUILD_NATIVE_TESTS)
   add_test(NAME neural_weasel_context_bridge_test
            COMMAND neural_weasel_context_bridge_test)
 
+  add_executable(neural_weasel_context_recovery_test
+    context/context_update_recovery_test.cc
+  )
+  target_compile_definitions(neural_weasel_context_recovery_test PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+  )
+  target_link_libraries(neural_weasel_context_recovery_test PRIVATE
+    neural_weasel_context_bridge
+  )
+  add_test(NAME neural_weasel_context_recovery_test
+           COMMAND neural_weasel_context_recovery_test)
+
   add_executable(neural_weasel_fallback_state_machine_test
     tsf/backend_fallback_state_machine_test.cc
   )

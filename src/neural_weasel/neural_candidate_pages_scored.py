@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import math
 import threading
-import time
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
 
@@ -13,7 +13,7 @@ import numpy as np
 
 from .backends import BackendState
 from .candidate import Candidate
-from .neural_candidate_pages_v2 import _MAX_BASELINE_LATIN_CACHE
+from .neural_candidate_pages_v2 import _MAX_BASELINE_LATIN_CACHE, _LatinRootDisplayIdentities
 from .neural_candidate_pages_v3 import (
     NeuralCandidatePageManager as _V3CandidatePageManager,
 )
@@ -44,6 +44,7 @@ _MAX_ASYNC_HAN_CACHE = 128
 _BACKGROUND_CONTINUATION_DEADLINE_MS = 2500.0
 _BACKGROUND_ROOT_BATCH_SIZE = 2
 _BACKGROUND_MAX_RETRY_WAKES = 4
+_BACKGROUND_STATE_LOCK_SLICE_MS = 5.0
 
 
 def _merge_async_han_candidates(
@@ -178,6 +179,19 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             int(self._last_page_metrics["candidate_page_timeout_count"] or 0) + 1
         )
 
+    @contextmanager
+    def _state_lock_until(self, deadline: float) -> Iterator[None]:
+        """Charge foreground lock contention to the existing request budget."""
+        self._raise_if_query_expired(deadline)
+        remaining = max(0.0, deadline - self.clock())
+        if not self._state_lock.acquire(timeout=remaining):
+            raise CandidatePageTimeout("candidate search state is busy")
+        try:
+            self._raise_if_query_expired(deadline)
+            yield
+        finally:
+            self._state_lock.release()
+
     def query_page(
         self,
         *,
@@ -208,14 +222,14 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         )
         wait_event: threading.Event | None = None
         wait_budget_ms = NEXT_PAGE_DEADLINE_MS if deadline_ms is None else float(deadline_ms)
-        wait_started = time.monotonic()
+        wait_started = self.clock()
         absolute_deadline = self._candidate_deadline_at(
             page_index=page_index,
             deadline_ms=deadline_ms,
             deadline_started=deadline_started,
         )
         self._raise_if_query_expired(absolute_deadline)
-        with self._state_lock:
+        with self._state_lock_until(absolute_deadline):
             self._raise_if_query_expired(absolute_deadline)
             if page_index == 0:
                 self._expire_sessions()
@@ -278,12 +292,12 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         if wait_event is None:
             raise CandidatePageTimeout("candidate page search coordination failed")
         if wait_budget_ms <= 0 or not wait_event.wait(wait_budget_ms / 1000.0):
-            with self._state_lock:
+            with self._state_lock_until(absolute_deadline):
                 session = self._sessions.get(candidate_set_id or "")
                 if session is not None:
                     self._record_retryable_timeout(session)
             raise CandidatePageTimeout("candidate page search is already in progress")
-        remaining_ms = wait_budget_ms - (time.monotonic() - wait_started) * 1000.0
+        remaining_ms = wait_budget_ms - (self.clock() - wait_started) * 1000.0
         if remaining_ms <= 0:
             raise CandidatePageTimeout("candidate page deadline expired")
         return self.query_page(
@@ -298,7 +312,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             candidate_set_id=candidate_set_id,
             state=state,
             deadline_ms=remaining_ms,
-            deadline_started=time.monotonic(),
+            deadline_started=self.clock(),
         )
 
     def _candidate_deadline_at(
@@ -401,7 +415,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             return
         self._background_searches.add(candidate_set_id)
         self._background_search_events[candidate_set_id] = threading.Event()
-        cancel_event = threading.Event()
+        cancel_event = self._new_search_cancel_event(session)
         self._background_cancel_events[candidate_set_id] = cancel_event
         worker = threading.Thread(
             target=self._run_background_continuation,
@@ -410,6 +424,12 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             daemon=True,
         )
         start_worker(worker)
+
+    def _new_search_cancel_event(self, session: _SearchSession) -> threading.Event:
+        return threading.Event()
+
+    def _background_publication_ready(self, session: _SearchSession) -> bool:
+        return False
 
     def _run_background_continuation(
         self,
@@ -428,8 +448,10 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     for candidate in session.pending
                 }
                 deadline = self.clock() + _BACKGROUND_CONTINUATION_DEADLINE_MS / 1000.0
+                last_state_yield = self.clock()
 
                 def publish_completed() -> None:
+                    self._raise_if_query_expired()
                     completed = tuple(
                         candidate
                         for candidate in session.pending
@@ -456,6 +478,8 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 while self.clock() < deadline:
                     if cancel_event.is_set() or self._sessions.get(candidate_set_id) is not session:
                         return
+                    if self._background_publication_ready(session):
+                        break
                     progressed = self._expand_background_frontier_batch(
                         session,
                         deadline,
@@ -466,6 +490,19 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                         # records this exact immutable cache version, so future
                         # batches remain visible without altering frozen pages.
                         publish_completed()
+                        # Resumable CPU steps can make progress without ever
+                        # calling the provider (which releases this lock).
+                        # Yield between those steps so an unrelated foreground
+                        # request is not held behind the whole search window.
+                        if (
+                            self.clock() - last_state_yield
+                        ) * 1000 >= _BACKGROUND_STATE_LOCK_SLICE_MS:
+                            self._state_lock.release()
+                            try:
+                                cancel_event.wait(0.001)
+                            finally:
+                                self._state_lock.acquire()
+                            last_state_yield = self.clock()
                         continue
                     retry_generation = self._background_retry_generations.pop(
                         candidate_set_id, None
@@ -488,15 +525,16 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     register_wait(retry_generation, retry_wake)
                     self._state_lock.release()
                     try:
-                        while not cancel_event.is_set() and not retry_wake.wait(0.05):
-                            pass
+                        while not cancel_event.is_set():
+                            remaining = deadline - self.clock()
+                            if remaining <= 0 or retry_wake.wait(min(0.05, remaining)):
+                                break
                     finally:
                         self._state_lock.acquire()
                         cancel_wait(retry_wake)
                     if cancel_event.is_set() or self._sessions.get(candidate_set_id) is not session:
                         return
                     retry_wakes += 1
-                    deadline = self.clock() + _BACKGROUND_CONTINUATION_DEADLINE_MS / 1000.0
                 if self._sessions.get(candidate_set_id) is not session:
                     return
                 publish_completed()
@@ -576,7 +614,10 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         consumed = len(raw_keys)
         result = (
             [
-                replace(
+                candidate
+                if candidate.consumed_keys == consumed
+                and candidate.completes_input == (candidate.text.casefold() == raw_folded)
+                else replace(
                     candidate,
                     consumed_keys=consumed,
                     completes_input=candidate.text.casefold() == raw_folded,
@@ -737,6 +778,9 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             *other,
         ]
 
+        # This branch already clipped displays before initializing seen.
+        if frontier and isinstance(frontier[-1], _LatinRootDisplayIdentities):
+            frontier.pop()
         seen_paths = {self._path_key(path) for path in frontier}
         for index, path in enumerate(self._han_frontier_from_candidates(raw_keys, cached_han)):
             if index % 64 == 0:
@@ -822,6 +866,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         # set; computing it once avoids doing that work once per competing
         # shorthand root while the manager lock is held.
         edge_cache: dict[tuple[object, ...], dict[int, tuple[Any, ...]]] = {}
+        dead_path_keys: set[tuple[object, ...]] = set()
         for parent in eligible:
             edge_key = (
                 ("pending", self._path_key(parent))
@@ -840,16 +885,28 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     edges = self._han_edges_for(session, parent)
                 finally:
                     self._state_lock.acquire()
+                self._raise_if_query_expired()
                 if self._sessions.get(session.candidate_set_id) is not session:
                     raise CandidatePageError("candidate set was invalidated during search")
                 edge_cache[edge_key] = edges
             han_edges = edge_cache[edge_key]
             legal_token_ids = tuple(sorted(han_edges))
             if not legal_token_ids:
+                dead_path_keys.add(self._path_key(parent))
                 continue
             selected.append((parent, self._path_key(parent), legal_token_ids, han_edges))
             if len(selected) >= max_parents:
                 break
+        if dead_path_keys:
+            # Immutable phonetic constraints proved these paths impossible.
+            # Unlike an empty scorer attempt, another provider call cannot
+            # recover them. Retire them so first-page retries can terminate.
+            session.frontier = [
+                path for path in session.frontier if self._path_key(path) not in dead_path_keys
+            ]
+            session.expanded_paths.update(dead_path_keys)
+            if not session.frontier:
+                session.exhausted = True
         if not selected:
             return 0
 
@@ -866,6 +923,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
             session.expanded_paths.difference_update(selected_keys)
 
         remaining_ms = max(0.0, (absolute_deadline - self.clock()) * 1000.0)
+        self._raise_if_query_expired()
         if remaining_ms <= 0:
             rollback()
             return 0
@@ -933,6 +991,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         finally:
             self._state_lock.acquire()
             self._active_searches.discard(candidate_set_id)
+        self._raise_if_query_expired()
 
         if self._sessions.get(candidate_set_id) is not session:
             raise CandidatePageError("candidate set was invalidated during search")
@@ -970,6 +1029,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                 scratch.search_depth = max(scratch.search_depth, len(parent.token_path) + 1)
         finally:
             self._state_lock.acquire()
+        self._raise_if_query_expired()
         if self._sessions.get(candidate_set_id) is not session:
             raise CandidatePageError("candidate set was invalidated during search")
         for candidate in scratch.pending:
@@ -1047,6 +1107,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
         session: _SearchSession,
         absolute_deadline: float,
     ) -> int:
+        self._raise_if_query_expired()
         resumed = self._resume_scored_han_frontier(session, absolute_deadline)
         if resumed is not None:
             return resumed
@@ -1087,6 +1148,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
                     han_edges = self._han_edges_for(session, candidate)
                 finally:
                     self._state_lock.acquire()
+                self._raise_if_query_expired()
                 if self._sessions.get(session.candidate_set_id) is not session:
                     raise CandidatePageError("candidate set was invalidated during search")
                 allowed = tuple(sorted(han_edges))
@@ -1133,6 +1195,7 @@ class NeuralCandidatePageManager(_V3CandidatePageManager):
 
         # A new composition/focus may have removed this object while CUDA was
         # still executing. In that case the late result is stale by definition.
+        self._raise_if_query_expired()
         if self._sessions.get(candidate_set_id) is not session:
             raise CandidatePageError("candidate set was invalidated during search")
         if failure is not None:

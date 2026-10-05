@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import threading
-from contextlib import suppress
-from dataclasses import replace
+import time
+from collections import OrderedDict
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .backends import BackendState
 from .neural_candidate_pages_scored import NeuralCandidatePageManager as _ScoredPageManager
+from .neural_candidate_pages_v3 import _RootHanPlanEntry
 from .neural_candidates import (
     CHINESE_CANDIDATE_COUNT,
     CHINESE_PAGE_SIZE,
     LATIN_PAGE_SIZE,
+    MAX_ACTIVE_SEARCH_SESSIONS,
     MAX_FROZEN_CANDIDATES,
     CandidatePage,
     CandidatePageError,
@@ -23,17 +28,77 @@ from .neural_candidates import (
 from .response_workers import start_worker
 
 _BACKGROUND_PAGE_DEADLINE_MS = 2500.0
-_PAGE_ZERO_LEXICAL_DEADLINE_MS = 12.0
 _PAGE_ZERO_LEXICAL_BACKGROUND_SLICE_MS = 100.0
 _PAGE_PREPARATION_GRACE_SECONDS = 0.05
 _PAGE_PREPARATION_RETRY_BACKOFF_SECONDS = 0.05
+_BACKGROUND_PAGE_STATE_LOCK_SLICE_MS = 5.0
+
+
+class _SearchCancelEvent(threading.Event):
+    """A stage can stop independently; supersession permanently stops all stages."""
+
+    def __init__(self, superseded: threading.Event) -> None:
+        super().__init__()
+        self.superseded = superseded
+
+    def is_set(self) -> bool:
+        return super().is_set() or self.superseded.is_set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while not self.is_set():
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return self.is_set()
+            super().wait(0.005 if remaining is None else min(0.005, remaining))
+        return True
+
+
+@dataclass(eq=False)
+class _RootPlanPreparation:
+    cursor: Generator[None, None, tuple[_RootHanPlanEntry, ...]]
+    cancel: threading.Event
+    deadline: float
+
+
+class _RootPlanWorker(threading.Thread):
+    def __init__(self, manager: NeuralCandidatePageManager) -> None:
+        super().__init__(
+            target=manager._run_root_plan_preparations,
+            name="neural-cold-root-plan",
+            daemon=True,
+        )
+        self._manager = manager
+
+    def start(self) -> None:
+        try:
+            super().start()
+        except Exception:
+            # Pipe dispatch starts this thread after the response. Roll back
+            # the running flag there as well as at registration, so a retry
+            # can resume the preserved static cursor after a failed start.
+            with self._manager._state_lock:
+                self._manager._root_plan_worker_active = False
+            raise
 
 
 class NeuralCandidatePageManager(_ScoredPageManager):
+    _bound_latin_root_displays = True
+
     """Publish immutable snapshots and prepare all later pages off the request path."""
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        self._admission_lock = threading.Lock()
+        self._latest_searches: OrderedDict[str, tuple[_SearchIdentity, threading.Event]] = (
+            OrderedDict()
+        )
+        self._session_cancel_tokens: dict[str, threading.Event] = {}
+        self._search_cancellation = threading.local()
+        self._root_plan_preparations: OrderedDict[_SearchIdentity, _RootPlanPreparation] = (
+            OrderedDict()
+        )
+        self._root_plan_worker_active = False
         self._page_preparations: set[str] = set()
         self._page_preparation_events: dict[str, threading.Event] = {}
         self._page_preparation_cancel_events: dict[str, threading.Event] = {}
@@ -59,6 +124,74 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             "last_candidate_background_elapsed_ms": None,
             "last_candidate_background_timed_out": None,
         }
+
+    def _admit_search(self, identity: _SearchIdentity) -> threading.Event:
+        # Never wait for the search state lock to tell obsolete CPU/GPU work to
+        # stop. Equal-identity retries share one generation; A -> B -> A does not.
+        with self._admission_lock:
+            previous = self._latest_searches.get(identity.client_session_id)
+            if previous is not None and previous[0] == identity and not previous[1].is_set():
+                self._latest_searches.move_to_end(identity.client_session_id)
+                return previous[1]
+            if previous is not None:
+                previous[1].set()
+            token = threading.Event()
+            self._latest_searches[identity.client_session_id] = (identity, token)
+            self._latest_searches.move_to_end(identity.client_session_id)
+            while len(self._latest_searches) > MAX_ACTIVE_SEARCH_SESSIONS:
+                _, (_, evicted) = self._latest_searches.popitem(last=False)
+                evicted.set()
+            return token
+
+    @contextmanager
+    def _search_cancellation_scope(self, token: threading.Event) -> Iterator[None]:
+        previous = getattr(self._search_cancellation, "token", None)
+        self._search_cancellation.token = token
+        try:
+            yield
+        finally:
+            self._search_cancellation.token = previous
+
+    def _touch_admitted_session(self, session: _SearchSession) -> None:
+        # Navigation refreshes bounded LRU ownership without admitting an old
+        # generation or clearing its cancellation signal.
+        with self._admission_lock:
+            latest = self._latest_searches.get(session.identity.client_session_id)
+            if latest is not None and latest[1] is self._session_cancel_tokens.get(
+                session.candidate_set_id
+            ):
+                self._latest_searches.move_to_end(session.identity.client_session_id)
+
+    def _session_cancel_token(self, session: _SearchSession) -> threading.Event:
+        token = self._session_cancel_tokens.get(session.candidate_set_id)
+        if token is None:
+            token = threading.Event()
+            token.set()
+        return token
+
+    def _new_search_cancel_event(self, session: _SearchSession) -> threading.Event:
+        return _SearchCancelEvent(self._session_cancel_token(session))
+
+    def _raise_if_query_expired(self, absolute_deadline: float | None = None) -> None:
+        token = getattr(self._search_cancellation, "token", None)
+        if token is not None and token.is_set():
+            raise CandidatePageTimeout("candidate search was superseded")
+        super()._raise_if_query_expired(absolute_deadline)
+
+    def _background_publication_ready(self, session: _SearchSession) -> bool:
+        return session.identity.mode is NeuralLanguageMode.CHINESE_FIRST and (
+            0 in session.frozen_pages
+            or len(self._freezable_candidates(session)) >= CHINESE_PAGE_SIZE
+        )
+
+    def _run_background_continuation(
+        self,
+        session: _SearchSession,
+        identity_key: tuple[int, str | None, int | None, str, str],
+        cancel_event: threading.Event,
+    ) -> None:
+        with self._search_cancellation_scope(self._session_cancel_token(session)):
+            self._run_background_continuation_scoped(session, identity_key, cancel_event)
 
     def diagnostics(self) -> dict[str, int | float | bool | None]:
         with self._state_lock:
@@ -110,7 +243,16 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         self._snapshot_candidate_stages_locked(session)
 
     def clear_sessions(self) -> None:
+        with self._admission_lock:
+            for _, token in self._latest_searches.values():
+                token.set()
+            self._latest_searches.clear()
         with self._state_lock:
+            for token in self._session_cancel_tokens.values():
+                token.set()
+            self._session_cancel_tokens.clear()
+            for preparation in self._root_plan_preparations.values():
+                preparation.cancel.set()
             for cancel in self._page_zero_lexical_preparations.values():
                 cancel.set()
             self._page_zero_lexical_preparations.clear()
@@ -126,10 +268,134 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             self._published_page_indices.clear()
             super().clear_sessions()
 
+    def _prepare_cold_root_plan(self, identity: _SearchIdentity, deadline: float) -> None:
+        """Resume arbitrary cold phonetic work without retaining an editor snapshot."""
+        with self._state_lock_until(deadline):
+            self._raise_if_query_expired(deadline)
+            if (
+                identity.mode is not NeuralLanguageMode.CHINESE_FIRST
+                or self.matcher is None
+                or identity.raw_keys in self._root_han_plans
+                or identity.raw_keys in self._startup_letter_root_plans
+                or any(session.identity == identity for session in self._sessions.values())
+            ):
+                return
+            preparation = self._root_plan_preparations.get(identity)
+            if preparation is None:
+                # Include running cancelled work in the bound. A single worker
+                # drains it; new requests must not create an unbounded thread pool.
+                if len(self._root_plan_preparations) >= MAX_ACTIVE_SEARCH_SESSIONS:
+                    raise CandidatePageTimeout("cold root search queue is busy")
+                preparation = _RootPlanPreparation(
+                    self._iter_root_han_plan(identity.raw_keys),
+                    _SearchCancelEvent(
+                        getattr(self._search_cancellation, "token", None) or threading.Event()
+                    ),
+                    self.clock() + _BACKGROUND_PAGE_DEADLINE_MS / 1000.0,
+                )
+                self._root_plan_preparations[identity] = preparation
+                try:
+                    # Use the request's existing absolute budget. An extra
+                    # five-millisecond cutoff forced otherwise timely cold
+                    # scans to wait for another client request. Preserve the
+                    # same cursor for background recovery if this budget ends.
+                    while self.clock() < deadline:
+                        self._raise_if_query_expired(deadline)
+                        next(preparation.cursor)
+                except StopIteration as completed:
+                    self._store_root_plan_locked(identity.raw_keys, completed.value)
+                    del self._root_plan_preparations[identity]
+                    return
+                except Exception:
+                    del self._root_plan_preparations[identity]
+                    with suppress(Exception):
+                        preparation.cursor.close()
+                    raise
+            if not self._root_plan_worker_active:
+                self._root_plan_worker_active = True
+                try:
+                    start_worker(_RootPlanWorker(self))
+                except Exception:
+                    self._root_plan_worker_active = False
+                    del self._root_plan_preparations[identity]
+                    with suppress(Exception):
+                        preparation.cursor.close()
+                    raise
+            raise CandidatePageTimeout("cold root search is still being prepared")
+
+    def _store_root_plan_locked(self, raw_keys: str, plan: tuple[_RootHanPlanEntry, ...]) -> None:
+        self._remember_root_han_plan(self._root_han_plans, raw_keys, plan)
+
+    def _run_root_plan_preparations(self) -> None:
+        while True:
+            with self._state_lock:
+                if not self._root_plan_preparations:
+                    self._root_plan_worker_active = False
+                    return
+                identity, preparation = next(iter(self._root_plan_preparations.items()))
+            last_yield = self.clock()
+            try:
+                while not preparation.cancel.is_set() and self.clock() < preparation.deadline:
+                    try:
+                        next(preparation.cursor)
+                    except StopIteration as completed:
+                        with self._state_lock:
+                            if (
+                                self._root_plan_preparations.get(identity) is preparation
+                                and not preparation.cancel.is_set()
+                                and self.clock() < preparation.deadline
+                            ):
+                                self._store_root_plan_locked(identity.raw_keys, completed.value)
+                        break
+                    if (self.clock() - last_yield) * 1000.0 >= _BACKGROUND_PAGE_STATE_LOCK_SLICE_MS:
+                        preparation.cancel.wait(0.001)
+                        last_yield = self.clock()
+            except Exception:
+                # Discard this static cursor and continue draining the bounded
+                # queue. An unexpected iterator error must not wedge all input.
+                pass
+            finally:
+                try:
+                    with suppress(Exception):
+                        preparation.cursor.close()
+                finally:
+                    with self._state_lock:
+                        if self._root_plan_preparations.get(identity) is preparation:
+                            del self._root_plan_preparations[identity]
+
+    def _cancel_superseded_searches_locked(self, identity: _SearchIdentity) -> None:
+        self._raise_if_query_expired()
+        for old_identity, preparation in self._root_plan_preparations.items():
+            if (
+                old_identity.client_session_id == identity.client_session_id
+                and old_identity != identity
+            ):
+                preparation.cancel.set()
+        for candidate_set_id, old in self._sessions.items():
+            if (
+                old.identity.client_session_id != identity.client_session_id
+                or old.identity == identity
+            ):
+                continue
+            token = self._session_cancel_tokens.get(candidate_set_id)
+            if token is not None:
+                token.set()
+            for events in (self._background_cancel_events, self._page_zero_lexical_preparations):
+                cancel = events.get(candidate_set_id)
+                if cancel is not None:
+                    cancel.set()
+            self._cancel_page_preparation_locked(candidate_set_id)
+
     def _expire_sessions(self) -> None:
         before = set(self._sessions)
+        for candidate_set_id, token in tuple(self._session_cancel_tokens.items()):
+            if token.is_set():
+                self._sessions.pop(candidate_set_id, None)
         super()._expire_sessions()
         for candidate_set_id in before.difference(self._sessions):
+            token = self._session_cancel_tokens.pop(candidate_set_id, None)
+            if token is not None:
+                token.set()
             cancel = self._page_zero_lexical_preparations.pop(candidate_set_id, None)
             if cancel is not None:
                 cancel.set()
@@ -154,6 +420,17 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                     cancel.set()
                 self._cancel_page_preparation_locked(candidate_set_id)
         session = super()._new_session(identity, state)
+        self._session_cancel_tokens[session.candidate_set_id] = (
+            getattr(self._search_cancellation, "token", None) or threading.Event()
+        )
+        try:
+            self._raise_if_query_expired()
+        except CandidatePageTimeout:
+            self._expire_sessions()
+            raise
+        for candidate_set_id in tuple(self._session_cancel_tokens):
+            if candidate_set_id not in self._sessions:
+                self._session_cancel_tokens.pop(candidate_set_id).set()
         if self._has_current_async_han(session):
             # The prior revision already completed the continuation work for
             # this exact context/input identity. Reuse that immutable cache
@@ -175,7 +452,67 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             session = self._sessions.get(candidate_set_id)
             return session is not None and 0 not in session.frozen_pages
 
+    def presentation_update_pending_until(
+        self, candidate_set_id: str, absolute_deadline: float
+    ) -> bool:
+        """Keep response readiness reads inside the original query budget."""
+        with self._state_lock_until(absolute_deadline):
+            return self.presentation_update_pending(candidate_set_id)
+
     def query_page(
+        self,
+        *,
+        client_session_id: str,
+        composition_revision: int,
+        context_epoch: int,
+        context_session: str | None,
+        source_revision: int | None,
+        mode: NeuralLanguageMode | str,
+        raw_keys: str,
+        page_index: int,
+        candidate_set_id: str | None,
+        state: BackendState | None,
+        deadline_ms: float | None = None,
+        deadline_started: float | None = None,
+        presentation_refresh: bool = False,
+    ) -> CandidatePage:
+        identity = _SearchIdentity(
+            client_session_id,
+            composition_revision,
+            context_epoch,
+            context_session,
+            source_revision,
+            NeuralLanguageMode(mode),
+            raw_keys,
+        )
+        if page_index == 0:
+            deadline = self._candidate_deadline_at(
+                page_index=page_index,
+                deadline_ms=deadline_ms,
+                deadline_started=deadline_started,
+            )
+            self._raise_if_query_expired(deadline)
+            token = self._admit_search(identity)
+        else:
+            token = self._session_cancel_tokens.get(candidate_set_id or "", threading.Event())
+        with self._search_cancellation_scope(token):
+            return self._query_page(
+                client_session_id=client_session_id,
+                composition_revision=composition_revision,
+                context_epoch=context_epoch,
+                context_session=context_session,
+                source_revision=source_revision,
+                mode=mode,
+                raw_keys=raw_keys,
+                page_index=page_index,
+                candidate_set_id=candidate_set_id,
+                state=state,
+                deadline_ms=deadline_ms,
+                deadline_started=deadline_started,
+                presentation_refresh=presentation_refresh,
+            )
+
+    def _query_page(
         self,
         *,
         client_session_id: str,
@@ -217,7 +554,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 raise CandidatePageTimeout("candidate page deadline expired")
             if candidate_set_id is None:
                 raise CandidatePageError("candidate_set_id is required after page 0")
-            with self._state_lock:
+            with self._state_lock_until(absolute_deadline):
                 self._raise_if_query_expired(absolute_deadline)
                 self._expire_sessions()
                 session = self._sessions.get(candidate_set_id)
@@ -231,8 +568,10 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 if frozen is not None:
                     session.last_used = self.clock()
                     self._sessions.move_to_end(candidate_set_id)
+                    self._touch_admitted_session(session)
                     self._record_metrics(frozen)
                     self._note_page_published_locked(session, frozen)
+                    self._raise_if_query_expired(absolute_deadline)
                     return frozen
                 expected = max(session.frozen_pages, default=-1) + 1
                 if page_index != expected:
@@ -250,14 +589,16 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 # ``candidate_set_invalid`` error.
                 session.last_used = self.clock()
                 self._sessions.move_to_end(candidate_set_id)
+                self._touch_admitted_session(session)
                 self._record_retryable_timeout(session)
                 raise CandidatePageTimeout("candidate page is not ready")
 
         cached_page: CandidatePage | None = None
         cached_session: _SearchSession | None = None
         unpublished_session: _SearchSession | None = None
-        with self._state_lock:
+        with self._state_lock_until(absolute_deadline):
             self._raise_if_query_expired(absolute_deadline)
+            self._cancel_superseded_searches_locked(identity)
             self._expire_sessions()
             # One input identity owns one immutable page zero. Explicit refresh
             # requests are legacy first-publication retries and may only replay
@@ -281,10 +622,14 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 break
 
         if cached_page is not None and cached_session is not None:
-            with self._state_lock:
+            with self._state_lock_until(absolute_deadline):
+                self._raise_if_query_expired(absolute_deadline)
                 if self._sessions.get(cached_session.candidate_set_id) is cached_session:
                     self._note_page_published_locked(cached_session, cached_page)
-            self._maybe_start_page_preparation(cached_session)
+            with self._state_lock_until(absolute_deadline):
+                self._raise_if_query_expired(absolute_deadline)
+                self._maybe_start_page_preparation(cached_session)
+            self._raise_if_query_expired(absolute_deadline)
             return cached_page
 
         # The first request for a multi-token composition may have created a
@@ -299,7 +644,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 if normalized_mode is NeuralLanguageMode.CHINESE_FIRST
                 else LATIN_PAGE_SIZE
             )
-            with self._state_lock:
+            with self._state_lock_until(absolute_deadline):
                 self._raise_if_query_expired(absolute_deadline)
                 if (
                     self._sessions.get(unpublished_session.candidate_set_id)
@@ -320,9 +665,11 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 self._sessions.move_to_end(unpublished_session.candidate_set_id)
                 self._record_metrics(page)
                 self._note_page_published_locked(unpublished_session, page)
-            self._maybe_start_page_preparation(unpublished_session)
+            with self._state_lock_until(absolute_deadline):
+                self._maybe_start_page_preparation(unpublished_session)
             return page
 
+        self._prepare_cold_root_plan(identity, absolute_deadline)
         page = super().query_page(
             client_session_id=client_session_id,
             composition_revision=composition_revision,
@@ -337,12 +684,13 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             deadline_ms=deadline_ms,
             deadline_started=deadline_started,
         )
-        with self._state_lock:
+        with self._state_lock_until(absolute_deadline):
             session = self._sessions.get(page.candidate_set_id)
             if session is not None:
                 self._note_page_published_locked(session, page)
         if session is not None:
-            self._maybe_start_page_preparation(session)
+            with self._state_lock_until(absolute_deadline):
+                self._maybe_start_page_preparation(session)
         return page
 
     def _freeze_next_page(
@@ -396,15 +744,9 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                         lexical_eligible
                         and candidate_set_id not in self._page_zero_lexical_completed
                     ):
-                        # Root/model setup may consume nearly all of the 35 ms
-                        # presentation budget.  Give the model-free in-memory
-                        # Trie walk its own tightly bounded tail so a capable
-                        # input cannot freeze page zero at 1--6 candidates and
-                        # shift a 35-candidate set onto a sixth page.
-                        lexical_deadline = max(
-                            absolute_deadline,
-                            self.clock() + _PAGE_ZERO_LEXICAL_DEADLINE_MS / 1000.0,
-                        )
+                        # Resume unfinished lexical work in the background;
+                        # never extend the absolute presentation deadline.
+                        lexical_deadline = absolute_deadline
                         lexical_started = self.clock()
                         self._page_zero_lexical_attempt_count += 1
                         self._last_page_zero_lexical_budget_ms = max(
@@ -413,7 +755,9 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                         )
                         candidates = supplement(
                             session,
-                            limit=max(0, CHINESE_CANDIDATE_COUNT - len(freezable)),
+                            # Fill this immutable page first. The page preparer
+                            # resumes the same cursor for the fixed 35-candidate set.
+                            limit=max(0, page_size - len(freezable)),
                             absolute_deadline=lexical_deadline,
                         )
                         self._last_page_zero_lexical_elapsed_ms = max(
@@ -606,6 +950,17 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             for candidate in session.pending
             if (
                 id(candidate) in freezable_ids
+                # Zero is the best possible prediction bucket. An unfinished
+                # token fragment can still produce another zero-bucket path,
+                # but cannot produce a shorter bucket. Freeze the first ranked
+                # snapshot of completed zero-bucket paths instead of withholding
+                # every ready candidate until all such fragments are explored.
+                or (
+                    0 not in session.frozen_pages
+                    and candidate.script == "han"
+                    and candidate.completes_input
+                    and candidate.predicted_syllables == 0
+                )
                 # The deterministic lexical walk has already enumerated and
                 # ranked complete whole-input paths. A still-pending neural
                 # frontier must not hide that bounded tail, otherwise page
@@ -638,8 +993,10 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             seen_candidates=set(session.seen_candidates),
             expanded_paths=set(session.expanded_paths),
         )
-        limit = max(0, CHINESE_CANDIDATE_COUNT - len(self._freezable_candidates(session)))
-        cancel = threading.Event()
+        # This worker owns first publication only. Do not withhold seven ready
+        # candidates while enumerating the remaining 28 for later pages.
+        limit = max(0, CHINESE_PAGE_SIZE - len(self._freezable_candidates(session)))
+        cancel = self._new_search_cancel_event(session)
         self._page_zero_lexical_preparations[candidate_set_id] = cancel
         worker = threading.Thread(
             target=self._run_page_zero_lexical_preparation,
@@ -655,6 +1012,19 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             raise
 
     def _run_page_zero_lexical_preparation(
+        self,
+        session: _SearchSession,
+        snapshot: _SearchSession,
+        limit: int,
+        cancel: threading.Event,
+    ) -> None:
+        with (
+            self._search_cancellation_scope(self._session_cancel_token(session)),
+            suppress(CandidatePageTimeout),
+        ):
+            self._run_page_zero_lexical_preparation_scoped(session, snapshot, limit, cancel)
+
+    def _run_page_zero_lexical_preparation_scoped(
         self,
         session: _SearchSession,
         snapshot: _SearchSession,
@@ -686,6 +1056,9 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                     if candidates:
                         self._sort_pending(session)
                     freezable_count = len(self._freezable_candidates(session))
+                    # Model work may have added duplicates while this lexical
+                    # batch ran. Resume only the still-missing first-page slots.
+                    limit = max(0, CHINESE_PAGE_SIZE - freezable_count)
                     self._last_page_zero_lexical_elapsed_ms = max(
                         0.0, (self.clock() - started) * 1000.0
                     )
@@ -729,7 +1102,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             if should_prepare_later_pages:
                 self._maybe_start_page_preparation(session)
 
-    def _run_background_continuation(
+    def _run_background_continuation_scoped(
         self,
         session: _SearchSession,
         identity_key: tuple[int, str | None, int | None, str, str],
@@ -739,7 +1112,12 @@ class NeuralCandidatePageManager(_ScoredPageManager):
             super()._run_background_continuation(session, identity_key, cancel_event)
         finally:
             with self._state_lock:
-                if self._sessions.get(session.candidate_set_id) is session:
+                if self._sessions.get(session.candidate_set_id) is session and (
+                    session.exhausted or 0 in session.frozen_pages
+                ):
+                    # Worker retirement includes deadline misses, empty attempts
+                    # and cancellation. Only terminal search/publication permits
+                    # a later request to freeze a fallback instead of retrying.
                     self._page_zero_search_completed.add(session.candidate_set_id)
                 # Another client can publish page zero for this same input
                 # while this scorer is active. Its preparer is deferred to
@@ -763,6 +1141,8 @@ class NeuralCandidatePageManager(_ScoredPageManager):
 
     def _page_preparation_allowed_locked(self, session: _SearchSession) -> bool:
         candidate_set_id = session.candidate_set_id
+        if self._session_cancel_token(session).is_set():
+            return False
         if self._sessions.get(candidate_set_id) is not session:
             return False
         page0 = session.frozen_pages.get(0)
@@ -814,7 +1194,9 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         # later call would start a new one and keep the later-page preparer
         # waiting for it. Once page zero is immutable, that preparer owns the
         # remaining search; a scorer is still allowed before publication.
-        if self._uses_fixed_chinese_capacity(session):
+        if self._session_cancel_token(session).is_set() or self._uses_fixed_chinese_capacity(
+            session
+        ):
             return
         super()._start_background_continuation(session)
 
@@ -824,7 +1206,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                 return
             candidate_set_id = session.candidate_set_id
             done = threading.Event()
-            cancel = threading.Event()
+            cancel = self._new_search_cancel_event(session)
             wake = threading.Event()
             self._page_preparations.add(candidate_set_id)
             self._page_preparation_events[candidate_set_id] = done
@@ -872,14 +1254,70 @@ class NeuralCandidatePageManager(_ScoredPageManager):
         # The backend sets the event immediately when that exact generation has
         # already completed, closing the timeout-to-registration lost wakeup.
         register(retry_generation, wake)
-        if cancel.is_set():
-            wake.set()
-        wake.wait()
-        if callable(unregister):
-            unregister(wake)
+        try:
+            while not cancel.is_set():
+                if wake.wait(0.005):
+                    break
+        finally:
+            if callable(unregister):
+                unregister(wake)
         return not cancel.is_set()
 
+    def _ensure_freezable(
+        self,
+        session: _SearchSession,
+        page_size: int,
+        absolute_deadline: float,
+    ) -> None:
+        # The later-page query owns the state lock once. CPU-only resumptions
+        # never reach the provider's unlock, so yield between complete steps as
+        # well. This is a cooperative slice, not a bound on a single step.
+        candidate_set_id = session.candidate_set_id
+        cancel = self._page_preparation_cancel_events.get(candidate_set_id)
+        last_yield = self.clock()
+        while not session.exhausted:
+            if self._sessions.get(candidate_set_id) is not session or (
+                cancel is not None and cancel.is_set()
+            ):
+                raise CandidatePageError("candidate set was invalidated during search")
+            if len(self._freezable_candidates(session)) >= page_size:
+                return
+            if self.clock() >= absolute_deadline:
+                return
+            progressed = self._expand_one_frontier(session, absolute_deadline)
+            self._sort_pending(session)
+            if progressed == 0:
+                return
+            if (
+                cancel is not None
+                and 0 in session.frozen_pages
+                and (self.clock() - last_yield) * 1000 >= _BACKGROUND_PAGE_STATE_LOCK_SLICE_MS
+            ):
+                self._state_lock.release()
+                try:
+                    cancel.wait(0.001)
+                finally:
+                    self._state_lock.acquire()
+                last_yield = self.clock()
+                # Recheck even when the last step exhausted the frontier: its
+                # caller must not freeze an old session after a focus change.
+                if self._sessions.get(candidate_set_id) is not session or cancel.is_set():
+                    raise CandidatePageError("candidate set was invalidated during search")
+
     def _run_page_preparation(
+        self,
+        session: _SearchSession,
+        done: threading.Event,
+        cancel: threading.Event,
+        wake: threading.Event,
+    ) -> None:
+        with (
+            self._search_cancellation_scope(self._session_cancel_token(session)),
+            suppress(CandidatePageError, CandidatePageTimeout),
+        ):
+            self._run_page_preparation_scoped(session, done, cancel, wake)
+
+    def _run_page_preparation_scoped(
         self,
         session: _SearchSession,
         done: threading.Event,
@@ -926,7 +1364,7 @@ class NeuralCandidatePageManager(_ScoredPageManager):
                         absolute_deadline=(self.clock() + _BACKGROUND_PAGE_DEADLINE_MS / 1000.0),
                     )
                     with self._state_lock:
-                        if self._sessions.get(candidate_set_id) is not session:
+                        if cancel.is_set() or self._sessions.get(candidate_set_id) is not session:
                             return
                         for candidate in candidates:
                             key = (candidate.text, candidate.consumed_keys)

@@ -26,10 +26,25 @@ enum class QueryStatus {
   kPayloadTooLarge,
 };
 
+// OS-derived identity of the process owning this verified pipe connection.
+// Creation time prevents a reused PID from identifying an earlier service.
+struct ServerProcessIdentity {
+  DWORD process_id = 0;
+  std::uint64_t creation_time = 0;
+
+  bool operator==(const ServerProcessIdentity& other) const noexcept {
+    return process_id == other.process_id && creation_time == other.creation_time;
+  }
+  bool operator!=(const ServerProcessIdentity& other) const noexcept {
+    return !(*this == other);
+  }
+};
+
 struct QueryResult {
   QueryStatus status = QueryStatus::kDisconnected;
   std::string payload;
   DWORD win32_error = ERROR_SUCCESS;
+  ServerProcessIdentity server_identity{};
 
   explicit operator bool() const noexcept { return status == QueryStatus::kOk; }
 };
@@ -72,6 +87,7 @@ class NamedPipeClient final {
   std::uint32_t max_payload_bytes_;
   mutable std::mutex mutex_;
   HANDLE pipe_ = INVALID_HANDLE_VALUE;
+  ServerProcessIdentity server_identity_;
 };
 
 }  // namespace neural_weasel::pipe

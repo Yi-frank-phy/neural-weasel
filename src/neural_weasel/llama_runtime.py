@@ -595,6 +595,7 @@ class LlamaCppBackend:
                     deadline=deadline,
                     normalize_log_probs=normalize_log_probs,
                     completed_counter=completed_branches,
+                    live_root_is_current=cache_matches_root,
                 )
                 if result is None:
                     outcome = "preempted" if self._context_refresh_is_waiting() else "deadline"
@@ -643,9 +644,9 @@ class LlamaCppBackend:
                     self._cached_logits = cached_logits
                     cache_preserved = True
                 else:
-                    self._clear_live_sequence()
                     self._cached_token_ids = None
                     self._cached_logits = None
+                    self._clear_live_sequence()
             finally:
                 self._lock.release()
                 if returned_tokens == 0 and completed_branches[0] > 0:
@@ -699,6 +700,7 @@ class LlamaCppBackend:
         deadline: float,
         normalize_log_probs: bool = False,
         completed_counter: list[int] | None = None,
+        live_root_is_current: bool = False,
     ) -> list[np.ndarray] | None:
         """Replay one root once, then restore its single-sequence state per branch."""
 
@@ -731,7 +733,10 @@ class LlamaCppBackend:
             self._continuation_state_token_ids = root_tokens
             self._continuation_state_buffer = root_state
             self._continuation_state_size = state_size
-        else:
+        elif not (live_root_is_current and self.llama.n_tokens == len(root_tokens)):
+            # The matching editor cache proves sequence 0 is already at this
+            # root under the runtime lock. Avoid another GPU state transfer;
+            # branch-to-branch and final restores still rewind every mutation.
             self._clear_live_sequence()
             restored = int(
                 llama_cpp.llama_state_seq_set_data(
@@ -832,20 +837,20 @@ class LlamaCppBackend:
             return outputs
         finally:
             try:
-                self._clear_live_sequence()
                 self._cached_token_ids = None
                 self._cached_logits = None
+                self._clear_live_sequence()
             finally:
                 self._lock.release()
 
     def invalidate_private_state(self) -> None:
         with self._lock:
-            self._clear_live_sequence()
             self._cached_token_ids = None
             self._cached_logits = None
             self._clear_cached_continuation_state()
             self._last_refresh_diagnostics = None
             self._last_continuation_diagnostics = None
+            self._clear_live_sequence()
 
     def performance_diagnostics(self) -> dict[str, object]:
         """Return cached timing/count metadata without probing GPU or model state."""

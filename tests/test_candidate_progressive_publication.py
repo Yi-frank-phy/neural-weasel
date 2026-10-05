@@ -50,14 +50,22 @@ def test_published_page_zero_cancels_progressive_background_search(make_index, m
         CandidatePageTimeout, match="complete candidate page is still being prepared"
     ):
         _page(engine, client="progressive", revision=1, raw="nihao")
-    assert started.wait(3)
+    # Seven freezable candidates end first-publication work without requiring
+    # another client poll to interrupt a second batch.
+    deadline = threading.Event()
+    for _ in range(100):
+        with manager._state_lock:
+            if not manager._background_searches:
+                break
+        deadline.wait(0.01)
+    assert not started.is_set()
+    assert calls == 1
 
     first = _page(engine, client="progressive", revision=1, raw="nihao")
     assert all(
         candidate.completes_input for candidate in first.candidates if candidate.script == "han"
     )
     assert first.has_more is True
-    completion = manager._background_search_events[first.candidate_set_id]
     kwargs = dict(
         client_session_id="progressive",
         composition_revision=1,
@@ -73,8 +81,7 @@ def test_published_page_zero_cancels_progressive_background_search(make_index, m
     )
     try:
         with manager._state_lock:
-            cancel = manager._background_cancel_events[first.candidate_set_id]
-            assert cancel.is_set()
+            assert first.candidate_set_id not in manager._background_searches
         current = manager.query_page(**kwargs)
         assert current.candidate_set_id == first.candidate_set_id
         assert current.candidates == first.candidates
@@ -82,17 +89,16 @@ def test_published_page_zero_cancels_progressive_background_search(make_index, m
         assert current.has_more is True
         assert not manager.presentation_update_pending(current.candidate_set_id)
         assert len(manager._sessions) == 1
-        assert calls == 2
+        assert calls == 1
         gate.set()
-        assert completion.wait(1.0)
         final = manager.query_page(**kwargs)
         assert final.candidates == first.candidates
         with manager._state_lock:
             pending_text = {
                 candidate.text for candidate in manager._sessions[first.candidate_set_id].pending
             }
-        assert "你好" + "啊" * 8 in pending_text
-        assert calls == 2
+        assert "你好" + "啊" * 8 not in pending_text
+        assert calls == 1
     finally:
         gate.set()
         manager.clear_sessions()

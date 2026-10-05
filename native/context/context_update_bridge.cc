@@ -278,9 +278,10 @@ bool ReadUnsignedField(std::string_view json,
 
 bool ParseContextUpdateAcknowledgement(std::string_view json,
                                        std::uint64_t sequence,
-                                       std::uint64_t* assigned_epoch) {
+                                       std::uint64_t* assigned_epoch,
+                                       std::string_view type = "context_update") {
   std::uint64_t client_epoch = 0;
-  return HasStringField(json, "type", "context_update") &&
+  return HasStringField(json, "type", type) &&
          HasBooleanField(json, "ok", true) &&
          HasBooleanField(json, "accepted", true) &&
          HasStringField(json, "request_id", RequestId(sequence)) &&
@@ -315,6 +316,35 @@ std::string BuildHealthJson(std::uint64_t sequence) {
   AppendJsonString(RequestId(sequence), &payload);
   payload.push_back('}');
   return payload;
+}
+
+std::string BuildReceiptJson(std::uint64_t sequence,
+                             const ContextUpdateMetadata& metadata) {
+  std::string payload = "{\"type\":\"context_update_receipt\",\"request_id\":";
+  AppendJsonString(RequestId(sequence), &payload);
+  payload.append(",\"session_id\":");
+  AppendJsonString(SessionId(metadata), &payload);
+  payload.append(",\"context_epoch\":");
+  AppendUnsigned(sequence, &payload);
+  if (HasSourceIdentity(metadata)) {
+    payload.append(",\"context_session\":");
+    AppendJsonString(metadata.source_capability, &payload);
+    payload.append(",\"source_revision\":");
+    AppendUnsigned(metadata.source_revision, &payload);
+    payload.append(",\"security_label\":");
+    AppendJsonString(SecurityLabelName(metadata.security_label), &payload);
+  }
+  payload.push_back('}');
+  return payload;
+}
+
+bool IsRecoverable(const pipe::QueryResult& result) {
+  // Identity failures and invalid protocol/payloads must fail closed.
+  return result.win32_error != ERROR_ACCESS_DENIED &&
+         result.win32_error != ERROR_NO_TOKEN &&
+         (result.status == pipe::QueryStatus::kDisconnected ||
+          result.status == pipe::QueryStatus::kTimeout ||
+          result.status == pipe::QueryStatus::kBusy);
 }
 
 std::chrono::milliseconds RemainingTimeout(
@@ -464,7 +494,60 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
     SetResult(ContextUpdateResult::kReadinessTimeout);
     return;
   }
-  const pipe::QueryResult response = transport_->TryQuery(request.payload, timeout);
+  // Shared deadline and retry allowance for update, receipt and health. This
+  // never changes TSF's synchronous budget; only this server-owned worker waits.
+  unsigned recovery_attempts = 2;
+  const auto wait_for_recovery = [&]() {
+    if (recovery_attempts == 0) return false;
+    --recovery_attempts;
+    std::unique_lock lock(mutex_);
+    condition_.wait_until(lock, (std::min)(deadline, Clock::now() +
+        std::chrono::milliseconds(25)), [&] {
+      return stopping_ || (request.context_update && !IsLatest(update.sequence));
+    });
+    return !stopping_ && (!request.context_update || IsLatest(update.sequence)) &&
+           Clock::now() < deadline;
+  };
+  pipe::QueryResult response = transport_->TryQuery(request.payload, timeout);
+  bool recovered_ack = false;
+  while (!response && IsRecoverable(response) && wait_for_recovery()) {
+    timeout = RemainingTimeout(deadline, options_.pipe_query_timeout);
+    if (timeout.count() <= 0) break;
+    if (request.context_update) {
+      // A failed read can mean the update was already accepted. Query only its
+      // metadata receipt before deciding whether to resend the original bytes.
+      response = transport_->TryQuery(
+          BuildReceiptJson(update.sequence, update.metadata), timeout);
+      if (!IsLatest(update.sequence)) break;
+      if (!response) continue;
+      std::uint64_t receipt_epoch = 0;
+      if (ParseContextUpdateAcknowledgement(response.payload, update.sequence,
+              &receipt_epoch, "context_update_receipt")) {
+        recovered_ack = true;
+        break;
+      }
+      std::uint64_t client_epoch = 0;
+      std::uint64_t receipt_epoch_missing = 1;
+      if (!HasStringField(response.payload, "type", "context_update_receipt") ||
+          !HasBooleanField(response.payload, "ok", true) ||
+          !HasBooleanField(response.payload, "accepted", false) ||
+          !HasStringField(response.payload, "request_id", RequestId(update.sequence)) ||
+          !ReadUnsignedField(response.payload, "client_context_epoch", &client_epoch) ||
+          client_epoch != update.sequence ||
+          !ReadUnsignedField(response.payload, "context_epoch", &receipt_epoch_missing) ||
+          receipt_epoch_missing != 0) {
+        SetResult(ContextUpdateResult::kProtocolError);
+        return;
+      }
+      timeout = RemainingTimeout(deadline, options_.pipe_query_timeout);
+      if (timeout.count() <= 0) break;
+    }
+    response = transport_->TryQuery(request.payload, timeout);
+  }
+  if (request.context_update && !IsLatest(update.sequence)) {
+    SetResult(ContextUpdateResult::kSuperseded);
+    return;
+  }
   if (!response) {
     SetResult(ContextUpdateResult::kTransportError);
     TraceContextPipeline(
@@ -487,7 +570,8 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
 
   std::uint64_t assigned_epoch = 0;
   if (!ParseContextUpdateAcknowledgement(
-          response.payload, update.sequence, &assigned_epoch)) {
+          response.payload, update.sequence, &assigned_epoch,
+          recovered_ack ? "context_update_receipt" : "context_update")) {
     SetResult(ContextUpdateResult::kProtocolError);
     TraceContextPipeline(
         L"bridge", L"event=process result=update-protocol-error sequence=%llu",
@@ -509,6 +593,7 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
     const pipe::QueryResult health =
         transport_->TryQuery(health_request, timeout);
     if (!health) {
+      if (IsRecoverable(health) && wait_for_recovery()) continue;
       SetResult(ContextUpdateResult::kTransportError);
       TraceContextPipeline(
           L"bridge",
@@ -518,6 +603,12 @@ void ContextUpdateBridge::Process(PendingUpdate update) noexcept {
       return;
     }
 
+    // Epoch counters are scoped to one service lifetime. A restarted process
+    // can report the same numeric epoch for unrelated editor context.
+    if (health.server_identity != response.server_identity) {
+      SetResult(ContextUpdateResult::kSuperseded);
+      return;
+    }
     std::uint64_t ready_epoch = 0;
     if (!ParseReadyEpoch(health.payload, update.sequence, &ready_epoch)) {
       SetResult(ContextUpdateResult::kProtocolError);

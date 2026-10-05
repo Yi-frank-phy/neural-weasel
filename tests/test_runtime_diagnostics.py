@@ -49,6 +49,11 @@ class FakeEngine:
             "last_candidate_published_count": 14,
             "last_candidate_background_elapsed_ms": 2460.0,
             "last_candidate_background_timed_out": True,
+            "service_gc_gen2_count": 4,
+            "service_gc_gen2_start_ns": 1_000,
+            "service_gc_gen2_end_ns": 2_000,
+            "service_gc_gen2_elapsed_ms": 0.001,
+            "service_gc_gen2_max_ms": 0.002,
             "secret": "PRIVATE-CONTEXT-MUST-NOT-LEAK",
         }
 
@@ -132,6 +137,16 @@ def test_metadata_only_diagnostics_filters_engine_output() -> None:
         "last_candidate_frontier_count": 16,
         "last_candidate_frozen_count": 28,
         "last_candidate_published_count": 14,
+        **{
+            f"service_gc_gen{generation}_{metric}": None
+            for generation in (0, 1)
+            for metric in ("count", "start_ns", "end_ns", "elapsed_ms", "max_ms")
+        },
+        "service_gc_gen2_count": 4,
+        "service_gc_gen2_start_ns": 1_000,
+        "service_gc_gen2_end_ns": 2_000,
+        "service_gc_gen2_elapsed_ms": 0.001,
+        "service_gc_gen2_max_ms": 0.002,
         "last_refresh_latency_ms": 18.75,
         "last_refresh_queue_wait_ms": 3.25,
         "last_refresh_compute_ms": 15.5,

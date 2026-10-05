@@ -47,6 +47,11 @@ _RUNTIME_COUNT_KEYS = (
     "last_candidate_frontier_count",
     "last_candidate_frozen_count",
     "last_candidate_published_count",
+    *(
+        f"service_gc_gen{generation}_{metric}"
+        for generation in range(3)
+        for metric in ("count", "start_ns", "end_ns")
+    ),
 )
 _RUNTIME_LATENCY_KEYS = (
     "last_refresh_latency_ms",
@@ -58,6 +63,11 @@ _RUNTIME_LATENCY_KEYS = (
     "last_candidate_background_elapsed_ms",
     "last_page_zero_lexical_elapsed_ms",
     "last_page_zero_lexical_budget_ms",
+    *(
+        f"service_gc_gen{generation}_{metric}"
+        for generation in range(3)
+        for metric in ("elapsed_ms", "max_ms")
+    ),
 )
 _RUNTIME_BOOLEAN_KEYS = (
     "last_continuation_cache_preserved",
@@ -153,7 +163,7 @@ class ProductionNamedPipeServer(NamedPipeServer):
         return response
 
     def _handle_candidate_page_request(self, message: dict[str, Any]) -> dict[str, Any]:
-        deadline_started = time.monotonic()
+        deadline_started = time.perf_counter()
         request_id = None
         try:
             request_id = _optional_identifier(message, "request_id")
@@ -268,7 +278,15 @@ class ProductionNamedPipeServer(NamedPipeServer):
             # lose the completion race between the query and response encoding.
             pages = getattr(self.engine, "candidate_pages", None)
             pending_provider = getattr(pages, "presentation_update_pending", None)
-            if callable(pending_provider):
+            bounded_pending_provider = getattr(pages, "presentation_update_pending_until", None)
+            if callable(bounded_pending_provider):
+                budget_ms = PAGE0_DEADLINE_MS if page_index == 0 else NEXT_PAGE_DEADLINE_MS
+                background_pending = bool(
+                    bounded_pending_provider(
+                        page.candidate_set_id, deadline_started + budget_ms / 1000.0
+                    )
+                )
+            elif callable(pending_provider):
                 background_pending = bool(pending_provider(page.candidate_set_id))
             else:
                 background_pending = pages is not None and page.candidate_set_id in getattr(

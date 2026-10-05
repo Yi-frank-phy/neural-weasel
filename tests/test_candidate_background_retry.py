@@ -399,7 +399,7 @@ def test_later_page_retries_after_provider_returns_no_result(make_index, monkeyp
 
     assert first is not None
     assert len(first.candidates) == 7
-    assert runtime.second_started.is_set()
+    assert runtime.second_started.wait(1.0)
     runtime.release_second.set()
     injection_deadline = time.monotonic() + 1.0
     while not injected_empty and time.monotonic() < injection_deadline:
@@ -460,26 +460,39 @@ def test_page_zero_uses_lexical_paths_to_fill_35_without_neural_continuation(
     replay = _page(engine, revision=1)
     assert replay.candidates == first.candidates
     assert replay.candidate_ids == first.candidate_ids
-    pages = [first]
-    for page_index in range(1, 5):
-        pages.append(
-            engine.query_candidate_page(
-                client_session_id="same-client",
-                composition_revision=1,
-                context_epoch=0,
-                context_session=None,
-                source_revision=None,
-                language_mode="chinese_first",
-                raw_keys="nihao",
-                page_index=page_index,
-                candidate_set_id=first.candidate_set_id,
-            )
-        )
+    pages = _wait_for_fixed_pages(engine, first, client_session_id="same-client", raw_keys="nihao")
     assert [len(page.candidates) for page in pages] == [7, 7, 7, 7, 7]
     assert pages[-1].has_more is False
     assert len({candidate.text for page in pages for candidate in page.candidates}) == 35
+    assert _page(engine, revision=1).candidate_ids == first.candidate_ids
     time.sleep(0.05)
     assert runtime.continuation_calls == 0
+
+
+def _wait_for_fixed_pages(engine, first, *, client_session_id: str, raw_keys: str):
+    """Exercise bounded API retries while later pages are prepared asynchronously."""
+    pages = [first]
+    deadline = time.monotonic() + 0.5
+    for page_index in range(1, 5):
+        while True:
+            try:
+                page = engine.query_candidate_page(
+                    client_session_id=client_session_id,
+                    composition_revision=1,
+                    context_epoch=0,
+                    context_session=None,
+                    source_revision=None,
+                    language_mode="chinese_first",
+                    raw_keys=raw_keys,
+                    page_index=page_index,
+                    candidate_set_id=first.candidate_set_id,
+                )
+                pages.append(page)
+                break
+            except CandidatePageTimeout:
+                assert time.monotonic() < deadline, "later lexical pages never became ready"
+                time.sleep(0.002)
+    return pages
 
 
 def test_incomplete_final_syllable_fills_zhuyid_pages_from_legal_paths(make_index) -> None:
@@ -529,21 +542,9 @@ def test_incomplete_final_syllable_fills_zhuyid_pages_from_legal_paths(make_inde
     assert len(first.candidates) == 7
     assert all(candidate.completes_input for candidate in first.candidates)
 
-    pages = [first]
-    for page_index in range(1, 5):
-        pages.append(
-            engine.query_candidate_page(
-                client_session_id="zhuyid-client",
-                composition_revision=1,
-                context_epoch=0,
-                context_session=None,
-                source_revision=None,
-                language_mode="chinese_first",
-                raw_keys="zhuyid",
-                page_index=page_index,
-                candidate_set_id=first.candidate_set_id,
-            )
-        )
+    pages = _wait_for_fixed_pages(
+        engine, first, client_session_id="zhuyid-client", raw_keys="zhuyid"
+    )
     assert [len(page.candidates) for page in pages] == [7] * 5
     assert pages[-1].has_more is False
     assert len({candidate.text for page in pages for candidate in page.candidates}) == 35
@@ -658,7 +659,7 @@ def test_partial_foreground_lexical_tail_finishes_in_page_preparer(
         nonlocal calls
         calls += 1
         if calls == 1:
-            return original(*args, **{**kwargs, "limit": 7})
+            assert kwargs["limit"] <= 7, "page zero must defer later-page lexical work"
         return original(*args, **kwargs)
 
     monkeypatch.setattr(manager, "_lexical_completion_fallback", foreground_limited)
@@ -695,7 +696,7 @@ def test_partial_foreground_lexical_tail_finishes_in_page_preparer(
     assert [len(page.candidates) for page in pages] == [7, 7, 7, 7, 7]
 
 
-def test_page_zero_reserves_a_bounded_lexical_tail_after_root_budget(make_index) -> None:
+def test_page_zero_defers_lexical_tail_without_extending_request_deadline(make_index) -> None:
     """Near-deadline root work must not freeze a capable page zero below seven."""
 
     logits = np.full(32, -20.0, dtype=np.float32)
@@ -711,7 +712,11 @@ def test_page_zero_reserves_a_bounded_lexical_tail_after_root_budget(make_index)
     manager = engine.candidate_pages
     original = manager._lexical_completion_fallback
 
+    foreground_deadline = None
+
     def requires_lexical_budget(*args, absolute_deadline: float, **kwargs):
+        if foreground_deadline is not None:
+            assert absolute_deadline <= foreground_deadline
         if absolute_deadline - manager.clock() < 0.005:
             return []
         return original(*args, absolute_deadline=absolute_deadline, **kwargs)
@@ -726,16 +731,20 @@ def test_page_zero_reserves_a_bounded_lexical_tail_after_root_budget(make_index)
         mode=NeuralLanguageMode.CHINESE_FIRST,
         raw_keys="nihao",
     )
-    with manager._state_lock:
-        session = manager._new_session(identity, None)
-        page = manager._freeze_next_page(
-            session,
-            page_index=0,
-            page_size=7,
-            absolute_deadline=manager.clock() + 0.001,
-        )
+    from neural_weasel.response_workers import after_response
 
-    assert len(page.candidates) == 7
+    with after_response(), manager._state_lock:
+        session = manager._new_session(identity, None)
+        foreground_deadline = manager.clock() + 0.001
+        with pytest.raises(CandidatePageTimeout):
+            manager._freeze_next_page(
+                session,
+                page_index=0,
+                page_size=7,
+                absolute_deadline=foreground_deadline,
+            )
+        foreground_deadline = None
+
     manager._maybe_start_page_preparation(session)
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
@@ -745,6 +754,7 @@ def test_page_zero_reserves_a_bounded_lexical_tail_after_root_budget(make_index)
         time.sleep(0.01)
     with manager._state_lock:
         assert len(session.frozen_pages) == 5
+        assert len(session.frozen_pages[0].candidates) == 7
         assert sum(len(current.candidates) for current in session.frozen_pages.values()) == 35
 
 
@@ -1415,14 +1425,20 @@ def test_lexical_tail_reaches_incomplete_syllable_before_prefix_flood(make_index
         session = manager._new_session(identity, None)
     assert not manager.matcher.is_complete_syllable_sequence("zhuyid")
 
+    expanded_suffixes = []
+    original_matches = manager.matcher.iter_neural_matches
+
+    def counted_matches(raw, start=0, boundaries=None, **kwargs):
+        expanded_suffixes.append(start)
+        yield from original_matches(raw, start, boundaries, **kwargs)
+
+    manager.matcher.iter_neural_matches = counted_matches
     pending_steps = 0
     for candidate in manager._iter_lexical_completion_candidates(session):
         if candidate is None:
             pending_steps += 1
-            # Root collection and heap construction yield in bounded batches;
-            # this still rejects walking the whole 128-root flood first.
-            assert pending_steps <= 12, "completed reading starved behind prefix roots"
             continue
+        assert len(expanded_suffixes) <= 1, "completed reading starved behind prefix roots"
         assert candidate.completes_input
         assert len(candidate.token_path) == 2
         assert candidate.pinyin.endswith("'de")

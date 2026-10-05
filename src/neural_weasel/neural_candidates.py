@@ -210,7 +210,7 @@ class NeuralCandidatePageManager:
         backend: ModelBackend,
         pinyin_index: Any | None,
         latin_constraint: LatinPrefixConstraint,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self.backend = backend
         self.matcher = PartialPinyinMatcher(pinyin_index) if pinyin_index is not None else None

@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from neural_weasel import llama_runtime
 from neural_weasel.acquire_model import AcquiredGguf
@@ -359,9 +360,194 @@ def test_production_continuation_reuses_cached_root_state_across_batches(
     assert first is not None and second is not None
     assert captures == [4]
     assert backend.llama.eval_calls[eval_after_first:] == [[2], [3]]
-    # Each batch restores the editor root on exit; the second also installs the
-    # cached root at entry and restores once between its two branches.
-    assert restores == [4, 4, 4, 4]
+    # Each batch restores the editor root on exit. The second starts at that
+    # same live root and needs only its branch-to-branch and final restores.
+    assert restores == [4, 4, 4]
+
+
+def _install_stateful_raw_context(backend: LlamaCppBackend, monkeypatch) -> list[int]:
+    """Make scores depend on the actual sequence restored through the C API."""
+    live = list(backend._cached_token_ids or ())
+    restores: list[int] = []
+    original_eval = backend.llama.eval
+    original_reset = backend.llama.reset
+
+    def evaluate(tokens: list[int]) -> None:
+        original_eval(tokens)
+        live.extend(tokens)
+        backend.llama.last_logits = np.arange(5, dtype=np.float32) + sum(live) * 10
+
+    def reset() -> None:
+        original_reset()
+        live.clear()
+
+    def capture(raw_context, buffer, size, sequence_id) -> int:
+        del raw_context, sequence_id
+        assert len(live) < size
+        buffer[0] = len(live)
+        for index, token_id in enumerate(live, 1):
+            buffer[index] = token_id
+        return size
+
+    def restore(raw_context, buffer, size, sequence_id) -> int:
+        del raw_context, sequence_id
+        restores.append(size)
+        live[:] = [buffer[index] for index in range(1, buffer[0] + 1)]
+        return size
+
+    backend.llama._ctx.ctx = object()
+    monkeypatch.setattr(backend.llama, "eval", evaluate)
+    monkeypatch.setattr(backend.llama, "reset", reset)
+    low_level = SimpleNamespace(
+        llama_state_seq_get_size=lambda raw_context, seq_id: 4,
+        llama_state_seq_get_data=capture,
+        llama_state_seq_set_data=restore,
+    )
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(llama_cpp=low_level))
+    return restores
+
+
+def test_live_root_reuse_preserves_state_dependent_branch_scores(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    restores = _install_stateful_raw_context(backend, monkeypatch)
+    assert backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0) is not None
+    restores.clear()
+
+    scores = backend.continue_from_root(root, [(2,), (3,)], [(0, 1), (0, 1)], deadline_ms=1000.0)
+
+    assert scores is not None
+    assert np.array_equal(scores[0], [30.0, 31.0])
+    assert np.array_equal(scores[1], [40.0, 41.0])
+    assert restores == [4, 4]
+    assert backend.llama.n_tokens == root.n_tokens
+    assert backend._cached_token_ids == root.replay_token_ids
+
+
+def test_cached_root_still_restores_after_other_context_invalidates_live_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    restores = _install_stateful_raw_context(backend, monkeypatch)
+    assert backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0) is not None
+    backend.create_snapshot("other")
+    # An old-root request captures its own state but cannot keep the newer
+    # editor cache alive. Its next request must install that cached root.
+    assert backend.continue_from_root(root, [(2,)], [(0,)], deadline_ms=1000.0) is not None
+    assert backend._cached_token_ids is None
+    restores.clear()
+
+    scores = backend.continue_from_root(root, [(3,)], [(0, 1)], deadline_ms=1000.0)
+
+    assert scores is not None
+    assert np.array_equal(scores[0], [40.0, 41.0])
+    assert restores == [4]
+    assert backend._cached_token_ids is None
+
+
+def test_live_root_reuse_requires_matching_actual_token_position(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    restores = _install_stateful_raw_context(backend, monkeypatch)
+    assert backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0) is not None
+    # Software identity alone must not authorize reuse after an unexpected
+    # sequence mutation. Scores reveal whether the stale suffix was discarded.
+    backend.llama.eval([3])
+    restores.clear()
+
+    scores = backend.continue_from_root(root, [(2,)], [(0, 1)], deadline_ms=1000.0)
+
+    assert scores is not None
+    assert np.array_equal(scores[0], [30.0, 31.0])
+    assert restores == [4, 4]
+
+
+def test_failed_sequence_cleanup_cannot_leave_live_root_cache_marked_valid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    _install_stateful_raw_context(backend, monkeypatch)
+    assert backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0) is not None
+
+    def fail_clear() -> None:
+        raise RuntimeError("synthetic sequence cleanup failure")
+
+    monkeypatch.setattr(backend, "_clear_live_sequence", fail_clear)
+    with pytest.raises(RuntimeError, match="synthetic sequence cleanup failure"):
+        backend.continue_from_root(root, [(2,)], [(0,)], deadline_ms=1000.0)
+
+    assert backend._cached_token_ids is None
+    assert backend._cached_logits is None
+    assert backend._lock.acquire(blocking=False)
+    backend._lock.release()
+
+
+def test_private_invalidation_revokes_root_reuse_even_when_gpu_cleanup_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    _install_stateful_raw_context(backend, monkeypatch)
+    assert backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0) is not None
+    original_clear = backend._clear_live_sequence
+    fail_once = True
+
+    def partially_clear() -> None:
+        nonlocal fail_once
+        old_position = backend.llama.n_tokens
+        original_clear()
+        if fail_once:
+            fail_once = False
+            backend.llama.n_tokens = old_position
+            raise RuntimeError("synthetic private cleanup failure")
+
+    monkeypatch.setattr(backend, "_clear_live_sequence", partially_clear)
+    with pytest.raises(RuntimeError, match="synthetic private cleanup failure"):
+        backend.invalidate_private_state()
+
+    assert backend._cached_token_ids is None
+    assert backend._cached_logits is None
+    assert backend._continuation_state_token_ids is None
+    assert backend._continuation_state_buffer is None
+    assert backend._continuation_state_size == 0
+    scores = backend.continue_from_root(root, [(2,)], [(0, 1)], deadline_ms=1000.0)
+    assert scores is not None
+    assert np.array_equal(scores[0], [30.0, 31.0])
+
+
+def test_legacy_continuation_cleanup_failure_revokes_live_root_reuse(tmp_path: Path, monkeypatch):
+    backend = _backend(tmp_path)
+    root = backend.create_snapshot("你").continuation_root
+    assert root is not None
+    _install_stateful_raw_context(backend, monkeypatch)
+    assert backend.continue_from_root(root, [(1,)], [(0,)], deadline_ms=1000.0) is not None
+    original_clear = backend._clear_live_sequence
+
+    def partially_clear() -> None:
+        old_position = backend.llama.n_tokens
+        original_clear()
+        backend.llama.n_tokens = old_position
+        raise RuntimeError("synthetic legacy cleanup failure")
+
+    monkeypatch.setattr(backend, "_clear_live_sequence", partially_clear)
+    with pytest.raises(RuntimeError, match="synthetic legacy cleanup failure"):
+        backend.continue_from_empty([(2,)], [(0,)], deadline_ms=1000.0)
+
+    assert backend._cached_token_ids is None
+    assert backend._cached_logits is None
+    assert backend._lock.acquire(blocking=False)
+    backend._lock.release()
 
 
 def test_private_state_invalidation_discards_cached_continuation_root(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -168,15 +169,16 @@ def _wait_for_async_han(engine: BilingualImeEngine, candidate_set_id: str) -> No
 
 
 def _coherent_page(engine: BilingualImeEngine, raw: str, **overrides):
-    try:
-        return _page(engine, raw, **overrides)
-    except CandidatePageTimeout:
-        manager = engine.candidate_pages
-        with manager._state_lock:
-            candidate_set_id = next(iter(manager._sessions))
-            completion = manager._background_search_events[candidate_set_id]
-        assert completion.wait(1.0)
-        return _page(engine, raw, **overrides)
+    deadline = time.perf_counter() + 1.0
+    while True:
+        try:
+            return _page(engine, raw, **overrides)
+        except CandidatePageTimeout:
+            # Page zero can await either the scorer or lexical preparation.
+            # Retry the public request without assuming a scorer event exists.
+            if time.perf_counter() >= deadline:
+                raise
+            time.sleep(max(0.0, min(0.005, deadline - time.perf_counter())))
 
 
 def _later_candidates(engine: BilingualImeEngine, candidate_set_id: str):

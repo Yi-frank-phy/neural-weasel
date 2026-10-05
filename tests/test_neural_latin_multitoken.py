@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import pytest
 
 from neural_weasel.backends import FullLogitsSnapshotBackend, RuntimeSnapshot
 from neural_weasel.bilingual_engine import BilingualImeEngine
@@ -237,3 +238,104 @@ def test_page_zero_does_not_rescan_unrelated_latin_initials() -> None:
 
     assert any(candidate.text == "native" for candidate in page.candidates)
     assert sum(completion.text_reads for completion in unrelated) == 0
+
+
+def test_page_zero_does_not_rescan_unrelated_latin_prefixes() -> None:
+    matching = ObservedCompletion("native", (10,))
+    unrelated = [
+        ObservedCompletion(f"napple{suffix}", (token_id,))
+        for token_id, suffix in enumerate(range(1_000), start=20)
+    ]
+    runtime = LatinContinuationRuntime(np.full(1_020, -20.0, dtype=np.float32))
+    engine = BilingualImeEngine(
+        backend=FullLogitsSnapshotBackend(runtime),
+        latin_prefix_constraint=NeuralLatinPrefixConstraint(
+            [matching, *unrelated], continuation_fragments={}
+        ),
+    )
+    engine.initialize_neural_baseline()
+    for completion in unrelated:
+        completion.text_reads = 0
+
+    page = _page(engine, "nat", 1)
+
+    assert any(candidate.text == "native" for candidate in page.candidates)
+    assert sum(completion.text_reads for completion in unrelated) == 0
+
+
+@pytest.mark.parametrize("contextual", [False, True])
+def test_latin_root_aliases_preserve_winners_and_all_continuations(
+    monkeypatch, contextual: bool
+) -> None:
+    from neural_weasel import neural_candidate_pages_v2 as v2
+    from neural_weasel.candidate import Candidate
+    from neural_weasel.unified import LatinCompletion, LatinPrefixConstraint
+
+    scores = {9: -1.0, 8: -1.0, 7: -2.0, 6: -4.0, 5: -3.0, 4: float("nan")}
+
+    class Backend:
+        def score_allowed_tokens(self, state, token_ids):
+            return [scores[token_id] for token_id in token_ids]
+
+    manager = v2.NeuralCandidatePageManager(
+        backend=Backend(),
+        pinyin_index=None,
+        latin_constraint=LatinPrefixConstraint(
+            [
+                LatinCompletion(text, (token_id,))
+                for text, token_id in (
+                    ("DE", 9),
+                    ("de", 8),
+                    ("De", 8),
+                    ("De", 7),
+                    ("deep", 6),
+                    ("d", 5),
+                    ("de", 4),
+                )
+            ]
+        ),
+    )
+    manager._baseline_scores = np.asarray([scores.get(i, -np.inf) for i in range(10)])
+    cached = Candidate(
+        text="DE",
+        pinyin="",
+        consumed_keys=1,
+        score=-0.5,
+        context_epoch=0,
+        coverage=False,
+        completes_input=True,
+        syllables=0,
+        script="latin",
+        constraint_kind="latin_prefix",
+        model_score=-0.5,
+        total_score=-0.5,
+        token_path=(1, 2),
+        predicted_syllables=0,
+    )
+    manager._baseline_latin_cache[("DE", (1, 2))] = cached
+    allocations = []
+
+    def allocate(**kwargs):
+        candidate = Candidate(**kwargs)
+        allocations.append(candidate)
+        return candidate
+
+    monkeypatch.setattr(v2, "Candidate", allocate)
+    candidates, frontier = manager._root_latin_candidates_and_frontier(
+        "de", object() if contextual else None, 7
+    )
+    assert [(c.text, c.token_path, c.model_score) for c in candidates] == [
+        ("de", (8,), -1.0) if contextual else ("DE", (1, 2), -0.5),
+        ("deep", (6,), -4.0),
+    ]
+    assert all(c.context_epoch == 7 for c in candidates)
+    assert [c.consumed_keys for c in candidates] == [2 if contextual else 1, 2]
+    assert [(p.text, p.token_path) for p in frontier] == [
+        ("DE", (9,)),
+        ("de", (8,)),
+        ("De", (7,)),
+        ("deep", (6,)),
+        ("d", (5,)),
+        *([] if contextual else [("DE", (1, 2))]),
+    ]
+    assert len(allocations) == 2

@@ -133,7 +133,7 @@ def test_candidate_protocol_rejects_punctuation_before_engine_dispatch(make_inde
 def test_page_zero_protocol_preserves_handler_deadline(make_index, monkeypatch) -> None:
     engine, runtime, server = _make(make_index)
     engine.candidate_pages.clock = lambda: 10.036
-    monkeypatch.setattr(production_pipe.time, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(production_pipe.time, "perf_counter", lambda: 10.0)
 
     response = server.handle_message(_request())
 

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import gc
 import heapq
 import math
 import threading
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Generator, Iterator, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
 
 from .backends import BackendState
 from .candidate import Candidate
+from .immutable_record_gc import exclude_prevalidated_atomic_record
 from .neural_candidate_pages_v2 import NeuralCandidatePageManager as _V2CandidatePageManager
+from .neural_candidate_pages_v2 import _LatinRootDisplayIdentities
 from .neural_candidates import (
     _MAX_ROOT_HAN_PLAN_CACHE,
+    CHINESE_CANDIDATE_COUNT,
     CHINESE_PAGE_SIZE,
     MAX_ACTIVE_SEARCH_SESSIONS,
     MAX_FRONTIER_PER_BUCKET,
@@ -31,8 +35,14 @@ from .neural_candidates import (
     _single_initial_static_ranks,
 )
 from .pinyin import parse_raw_pinyin
+from .pinyin_partial import PartialPinyinMatch
+from .search_batches import cooperative_sorted
 
 _MAX_BASELINE_ROOT_PAGE_CACHE = 128
+_MAX_ROOT_HAN_PLAN_RECORDS = 16_384
+_SHORT_SHORTHAND_SYLLABLE_LIMIT = 4
+_ATOMIC_ROOT_PLAN_TYPE = _RootHanPlanEntry
+_ATOMIC_MATCH_TYPE = PartialPinyinMatch
 
 
 def _stable_bounded_score_positions(
@@ -81,6 +91,12 @@ class _HanSearchPath:
     script: str = "han"
     pending_options: tuple[_HanEdge, ...] = ()
     pending_start: int = 0
+    _cached_path_key: tuple[object, ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+
+_HAN_SEARCH_PATH_TYPE = _HanSearchPath
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +104,15 @@ class _HanEdge:
     entry: Any
     matched_letters: int
     predicted_syllables: int
+
+
+@dataclass(frozen=True, slots=True)
+class _LexicalSuffixSeed:
+    entry: Any
+    matched_letters: int
+    predicted_syllables: int
+    score: float
+    original_order: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,16 +206,19 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
     covered may the same search session enter free predictive Han continuation.
 
     This fixes the important case where an exact candidate exists only as more
-    than one model token, for example ``nihao`` -> ``你`` + ``好`` when no
-    one-token ``你好`` entry exists in the model vocabulary.
+    than one model token, for example ``nihao`` -> ``浣燻` + ``濂絗` when no
+    one-token ``浣犲ソ`` entry exists in the model vocabulary.
     """
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._baseline_root_pages: OrderedDict[
-            tuple[str, NeuralLanguageMode], tuple[tuple[Candidate, ...], tuple[Any, ...]]
+            tuple[str, NeuralLanguageMode], tuple[tuple[Candidate, ...], tuple[Any, ...], int]
         ] = OrderedDict()
         self._root_han_selection_orders: OrderedDict[str, _RootHanSelectionOrder] = OrderedDict()
+        self._exact_root_han_plans: OrderedDict[str, tuple[_RootHanPlanEntry, ...]] = OrderedDict()
+        self._startup_letter_root_plans: dict[str, tuple[_RootHanPlanEntry, ...]] = {}
+        self._retaining_startup_letter_roots = False
         self._lexical_completion_cursors: dict[str, Iterator[Candidate | None]] = {}
         self._lexical_completion_exhausted: set[str] = set()
         self._lexical_state_lock = threading.RLock()
@@ -232,6 +260,17 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         ]
         session.pending = [*self._merge_chinese_first(han, latin), *other]
 
+    def prewarm_single_letter_pages(self) -> None:
+        # Retain the score-free plans already built by the existing 26-letter
+        # startup pass. They are frozen before the listener accepts context;
+        # dynamic cache churn must not repeatedly recreate this public graph.
+        previous = self._retaining_startup_letter_roots
+        self._retaining_startup_letter_roots = True
+        try:
+            super().prewarm_single_letter_pages()
+        finally:
+            self._retaining_startup_letter_roots = previous
+
     def install_baseline_scores(
         self,
         scores: Sequence[float],
@@ -241,16 +280,15 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         self._baseline_root_pages.clear()
         super().install_baseline_scores(scores, continuation_root=continuation_root)
 
-    def prewarm_single_letter_pages(self) -> None:
-        super().prewarm_single_letter_pages()
-
     @staticmethod
     def _path_key(path: Any) -> tuple[object, ...]:
         if isinstance(path, _ScoredHanExpansion):
             return ("han_resume", tuple(path.token_path), path.cursor)
         if isinstance(path, _DeferredRootSeeds):
             return ("han_root_resume", id(path.records), path.cursor)
-        return (
+        if isinstance(path, _HAN_SEARCH_PATH_TYPE) and path._cached_path_key is not None:
+            return path._cached_path_key
+        key = (
             path.script,
             tuple(path.token_path),
             int(getattr(path, "matched_letters", -1)),
@@ -260,6 +298,12 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 for edge in getattr(path, "pending_options", ())
             ),
         )
+        if isinstance(path, _HAN_SEARCH_PATH_TYPE):
+            # Frozen paths keep the same legal edges throughout pruning and
+            # scorer retries. Reuse their identity without rescanning that
+            # potentially large tuple while holding the presentation lock.
+            object.__setattr__(path, "_cached_path_key", key)
+        return key
 
     def _root_han_candidates(
         self,
@@ -397,37 +441,44 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         while len(self._root_han_selection_orders) > _MAX_ROOT_HAN_PLAN_CACHE:
             self._root_han_selection_orders.popitem(last=False)
 
-        best: dict[tuple[str, int], tuple[tuple[object, ...], int]] = {}
-        for index, entry in enumerate(plan):
-            if index % 64 == 0:
+        self._raise_if_query_expired()
+        # Sorting all records then taking the first occurrence of each visible
+        # identity equals selecting its minimum rank before sorting. Keep the
+        # same complete rank, but let NumPy sort the numeric columns and visit
+        # only the reachable visible prefix in Python.
+        ranked = np.lexsort(
+            (
+                order.static_tie_rank,
+                -values,
+                order.static_rank,
+                order.predicted_syllables,
+                order.incomplete,
+                order.ranking_tier,
+            )
+        )
+        self._raise_if_query_expired()
+        seen: set[tuple[str, int]] = set()
+        selected_records: list[int] = []
+        for scanned, raw_index in enumerate(ranked):
+            if scanned % 64 == 0:
                 self._raise_if_query_expired()
+            index = int(raw_index)
+            entry = plan[index]
             if len(entry.token_path or (entry.token_id,)) != 1:
                 continue
-            score = float(values[index])
-            if not math.isfinite(score):
+            if not math.isfinite(float(values[index])):
                 continue
             identity = (entry.normalized_text, entry.consumed_keys)
-            rank_key = (
-                int(order.ranking_tier[index]),
-                bool(order.incomplete[index]),
-                int(order.predicted_syllables[index]),
-                int(order.static_rank[index]),
-                -score,
-                int(order.static_tie_rank[index]),
-            )
-            previous = best.get(identity)
-            if previous is None or rank_key < previous[0]:
-                best[identity] = (rank_key, index)
-
-        selected_records = heapq.nsmallest(
-            limit,
-            best.values(),
-            key=lambda record: record[0],
-        )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            selected_records.append(index)
+            if len(selected_records) >= limit:
+                break
         selected: list[Candidate] = []
-        for rank_key, index in selected_records:
+        for index in selected_records:
             entry = plan[index]
-            score = -float(rank_key[4])
+            score = float(values[index])
             selected.append(
                 Candidate(
                     text=entry.text,
@@ -451,11 +502,62 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             )
         return selected
 
-    def _root_han_plan(self, raw_keys: str) -> tuple[_RootHanPlanEntry, ...]:
-        cached = self._root_han_plans.pop(raw_keys, None)
-        if cached is not None:
-            self._root_han_plans[raw_keys] = cached
-            return cached
+    def _root_han_plan(
+        self, raw_keys: str, *, exact_only: bool = False
+    ) -> tuple[_RootHanPlanEntry, ...]:
+        if not exact_only:
+            startup = self._startup_letter_root_plans.get(raw_keys)
+            if startup is not None:
+                return startup
+        cache = self._exact_root_han_plans if exact_only else self._root_han_plans
+        plan = cache.pop(raw_keys, None)
+        if plan is None:
+            cursor = self._iter_root_han_plan(raw_keys, exact_only=exact_only)
+            try:
+                while True:
+                    self._raise_if_query_expired()
+                    try:
+                        next(cursor)
+                    except StopIteration as completed:
+                        plan = completed.value
+                        break
+            finally:
+                cursor.close()
+        self._remember_root_han_plan(cache, raw_keys, plan)
+        if (
+            self._retaining_startup_letter_roots
+            and not exact_only
+            and len(raw_keys) == 1
+            and "a" <= raw_keys <= "z"
+        ):
+            self._startup_letter_root_plans[raw_keys] = plan
+        return plan
+
+    @staticmethod
+    def _remember_root_han_plan(
+        cache: OrderedDict[str, tuple[_RootHanPlanEntry, ...]],
+        raw_keys: str,
+        plan: tuple[_RootHanPlanEntry, ...],
+    ) -> None:
+        cache[raw_keys] = plan
+        try:
+            cache.move_to_end(raw_keys)
+        except KeyError:
+            return
+        # Keep a single oversized completed plan so a cold search can consume
+        # it on retry. Evict whole old plans; never truncate legal roots.
+        while len(cache) > _MAX_ROOT_HAN_PLAN_CACHE or (
+            len(cache) > 1 and sum(map(len, list(cache.values()))) > _MAX_ROOT_HAN_PLAN_RECORDS
+        ):
+            try:
+                cache.popitem(last=False)
+            except KeyError:
+                return
+
+    def _iter_root_han_plan(
+        self, raw_keys: str, *, exact_only: bool = False
+    ) -> Generator[None, None, tuple[_RootHanPlanEntry, ...]]:
+        """Build a complete static plan with resumable matching/allocation checkpoints."""
         if self.matcher is None:
             return ()
         try:
@@ -465,42 +567,63 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         raw = parsed.compact
         if not raw:
             return ()
-        matches = [
-            match
-            for match in self.matcher.neural_matches(
-                raw,
-                0,
-                parsed.explicit_boundaries,
+        matches = []
+        for position, match in enumerate(
+            self.matcher.iter_neural_matches(
+                raw, 0, parsed.explicit_boundaries, exact_only=exact_only
             )
-            if match.next_position > 0
-            and match.entry.token_path
-            and len(match.entry.token_path) <= MAX_MODEL_TOKENS
-            and len(match.entry.text) <= MAX_HAN_CHARACTERS
-        ]
-        self._raise_if_query_expired()
+        ):
+            if match is None:
+                yield None
+                continue
+            if (
+                match.next_position > 0
+                and match.entry.token_path
+                and len(match.entry.token_path) <= MAX_MODEL_TOKENS
+                and len(match.entry.text) <= MAX_HAN_CHARACTERS
+            ):
+                matches.append(match)
+            if position % 64 == 63:
+                yield None
         static_ranks = _single_initial_static_ranks(matches, raw)
-        plan = tuple(
-            _RootHanPlanEntry(
-                text=match.entry.text,
-                pinyin=match.entry.display_pinyin,
-                normalized_text=match.entry.normalized_text,
-                consumed_keys=parsed.raw_characters_for_letters(match.next_position),
-                completes_input=match.next_position == len(raw),
-                syllables=match.entry.syllables,
-                token_id=int(match.entry.token_path[0]),
-                ranking_tier=0 if match.entry.pinyin == raw else 1,
-                static_rank=static_ranks.get(int(match.entry.token_path[0]), 0),
-                predicted_syllables=(
-                    match.completion_syllables if match.next_position == len(raw) else 0
-                ),
-                token_path=match.entry.token_path,
-            )
-            for match in matches
+        plan = []
+        validated_root_constructor = (
+            _RootHanPlanEntry is _ATOMIC_ROOT_PLAN_TYPE
+            and len(_RootHanPlanEntry.__dataclass_fields__) == 11
         )
-        self._root_han_plans[raw_keys] = plan
-        while len(self._root_han_plans) > _MAX_ROOT_HAN_PLAN_CACHE:
-            self._root_han_plans.popitem(last=False)
-        return plan
+        for position, match in enumerate(matches):
+            plan.append(
+                _RootHanPlanEntry(
+                    text=match.entry.text,
+                    pinyin=match.entry.display_pinyin,
+                    normalized_text=match.entry.normalized_text,
+                    consumed_keys=parsed.raw_characters_for_letters(match.next_position),
+                    completes_input=match.next_position == len(raw),
+                    syllables=match.entry.syllables,
+                    token_id=int(match.entry.token_path[0]),
+                    ranking_tier=0 if match.entry.pinyin == raw else 1,
+                    static_rank=static_ranks.get(int(match.entry.token_path[0]), 0),
+                    predicted_syllables=(
+                        match.completion_syllables if match.next_position == len(raw) else 0
+                    ),
+                    token_path=match.entry.token_path,
+                )
+            )
+            if (
+                validated_root_constructor
+                and type(match) is _ATOMIC_MATCH_TYPE
+                and not gc.is_tracked(match)
+                and type(plan[-1].consumed_keys) is int
+                and type(plan[-1].static_rank) is int
+            ):
+                # The cached match's complete immutable index/payload was
+                # checked already. This exact constructor copies those values
+                # and computes only native scalar fields; avoid checking the
+                # same public index fields for every duplicate root record.
+                exclude_prevalidated_atomic_record(plan[-1])
+            if position % 64 == 63:
+                yield None
+        return tuple(plan)
 
     def _han_frontier_from_candidates(
         self,
@@ -714,6 +837,9 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 state,
                 response_epoch,
             )
+            # Single-letter prewarms historically seed only frozen displays.
+            if latin_frontier and isinstance(latin_frontier[-1], _LatinRootDisplayIdentities):
+                latin_frontier.pop()
             self._raise_if_query_expired()
             return (
                 candidates,
@@ -726,7 +852,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         cached_root = self._baseline_root_pages.pop(cache_key, None) if cacheable else None
         if cached_root is not None:
             self._baseline_root_pages[cache_key] = cached_root
-            candidates, frontier = cached_root
+            candidates, frontier, _ = cached_root
             return (
                 [
                     candidate
@@ -784,9 +910,14 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 for candidate in candidates
             ),
             tuple(frontier),
+            sum(len(item.plan) for item in frontier if isinstance(item, _DeferredHanFrontier)),
         )
         self._baseline_root_pages.move_to_end(key)
-        while len(self._baseline_root_pages) > _MAX_BASELINE_ROOT_PAGE_CACHE:
+        while len(self._baseline_root_pages) > _MAX_BASELINE_ROOT_PAGE_CACHE or (
+            len(self._baseline_root_pages) > 1
+            and sum(item[2] for item in list(self._baseline_root_pages.values()))
+            > _MAX_ROOT_HAN_PLAN_RECORDS
+        ):
             self._baseline_root_pages.popitem(last=False)
 
     def _prune_frontier(self, session: _SearchSession) -> None:
@@ -796,11 +927,12 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 path for path in session.frontier if not isinstance(path, _DeferredHanFrontier)
             ]
             for seed in deferred:
-                roots = self._materialize_root_han_candidates(
+                roots = self._root_han_candidates_top_k_from_scores(
+                    seed.raw_keys,
                     seed.plan,
-                    state=None,
                     response_epoch=session.identity.context_epoch,
                     scores=seed.scores,
+                    limit=CHINESE_CANDIDATE_COUNT,
                 )
                 for candidate in roots:
                     key = (
@@ -875,12 +1007,17 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
 
         prepared: list[tuple[list[Candidate], list[_HanSearchPath]]] = []
         for seed in seeds:
-            roots = self._materialize_root_han_candidates(
+            if cancel.is_set():
+                return False
+            roots = self._root_han_candidates_top_k_from_scores(
+                seed.raw_keys,
                 seed.plan,
-                state=None,
                 response_epoch=session.identity.context_epoch,
                 scores=seed.scores,
+                limit=CHINESE_CANDIDATE_COUNT,
             )
+            if cancel.is_set():
+                return False
             frontier = self._root_han_search_frontier_from_scores(
                 seed.raw_keys,
                 seed.plan,
@@ -991,8 +1128,6 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         if not parsed.compact:
             return False
         groups = parsed.raw.split("'")
-        if not all(self.matcher.is_complete_syllable_sequence(group) for group in groups[:-1]):
-            return False
 
         def complete_syllable_count(value: str) -> int:
             counts = [-1] * (len(value) + 1)
@@ -1006,19 +1141,56 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                         counts[end] = max(counts[end], counts[position] + 1)
             return counts[-1]
 
-        final_group = groups[-1]
-        if self.matcher.is_complete_syllable_sequence(final_group):
-            return True
-        prior_syllables = sum(complete_syllable_count(group) for group in groups[:-1])
-        return any(
-            prior_syllables + complete_syllable_count(final_group[:split]) >= 2
-            and any(
-                syllable.startswith(final_group[split:])
-                and len(syllable) > len(final_group[split:])
-                for syllable in self.matcher.by_initial.get(final_group[split], ())
-            )
-            for split in range(len(final_group))
-        )
+        if all(self.matcher.is_complete_syllable_sequence(group) for group in groups[:-1]):
+            final_group = groups[-1]
+            if self.matcher.is_complete_syllable_sequence(final_group):
+                return True
+            prior_syllables = sum(complete_syllable_count(group) for group in groups[:-1])
+            if any(
+                prior_syllables + complete_syllable_count(final_group[:split]) >= 2
+                and any(
+                    syllable.startswith(final_group[split:])
+                    and len(syllable) > len(final_group[split:])
+                    for syllable in self.matcher.by_initial.get(final_group[split], ())
+                )
+                for split in range(len(final_group))
+            ):
+                return True
+
+        # Long initial strings can outlive native presentation recovery before
+        # serial conditional scoring reaches a whole-input path. Let the same
+        # bounded lexical cursor supply its lower-ranked complete candidates.
+        # Keep short shorthand on its existing model-first route. This is a
+        # presentation policy, not a bound on the model's token count.
+        if len(parsed.compact) <= _SHORT_SHORTHAND_SYLLABLE_LIMIT:
+            return False
+        minimum_syllables = 0
+        for group_index, group in enumerate(groups):
+            unreachable = len(group) + 1
+            counts = [unreachable] * (len(group) + 1)
+            counts[0] = 0
+            for position, initial in enumerate(group):
+                if counts[position] == unreachable:
+                    continue
+                syllables = self.matcher.by_initial.get(initial, ())
+                if not syllables:
+                    continue
+                count = counts[position] + 1
+                counts[position + 1] = min(counts[position + 1], count)
+                for syllable in syllables:
+                    if group.startswith(syllable, position):
+                        end = position + len(syllable)
+                        counts[end] = min(counts[end], count)
+                    elif (
+                        group_index == len(groups) - 1
+                        and 1 < len(group) - position < len(syllable)
+                        and syllable.startswith(group[position:])
+                    ):
+                        counts[-1] = min(counts[-1], count)
+            if counts[-1] == unreachable:
+                return False
+            minimum_syllables += counts[-1]
+        return minimum_syllables > _SHORT_SHORTHAND_SYLLABLE_LIMIT
 
     def _lexical_tail_may_fill_page(self, raw_keys: str, page_size: int) -> bool:
         """Return false only after proving fewer than one page of legal paths.
@@ -1049,7 +1221,13 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             if position in memo:
                 return memo[position]
             count = 0
-            for match in self.matcher.neural_matches(compact, position, parsed.explicit_boundaries):
+            for match in self.matcher.iter_neural_matches(
+                compact, position, parsed.explicit_boundaries
+            ):
+                if self.clock() >= deadline:
+                    raise TimeoutError
+                if match is None:
+                    continue
                 if match.next_position <= position or not match.entry.token_path:
                     continue
                 count += count_from(match.next_position)
@@ -1062,6 +1240,10 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             return count_from(0) >= page_size
         except TimeoutError:
             return True
+        finally:
+            # The recursive closure otherwise keeps its memo and manager alive
+            # until a later cyclic collection, even after a deadline exit.
+            count_from = None
 
     def _lexical_completion_fallback(
         self,
@@ -1100,7 +1282,17 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                     return []
                 self._lexical_completion_cursors[candidate_set_id] = cursor
         candidates: list[Candidate] = []
-        while len(candidates) < limit and self.clock() < absolute_deadline:
+        cancellations = tuple(
+            event
+            for name in ("_page_zero_lexical_preparations", "_page_preparation_cancel_events")
+            if (event := getattr(self, name, {}).get(candidate_set_id)) is not None
+        )
+        while (
+            len(candidates) < limit
+            and self.clock() < absolute_deadline
+            and candidate_set_id in self._sessions
+            and not any(event.is_set() for event in cancellations)
+        ):
             try:
                 candidate = next(cursor)
             except StopIteration:
@@ -1117,7 +1309,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         return candidates
 
     def _iter_lexical_completion_candidates(
-        self, session: _SearchSession
+        self, session: _SearchSession, *, exact_only: bool = False
     ) -> Iterator[Candidate | None]:
         """Enumerate legal Han paths without losing work at a batch boundary.
 
@@ -1137,6 +1329,19 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         if not compact:
             return
         exact_spelling_possible = self.matcher.is_complete_syllable_sequence(compact)
+
+        # Exact readings already precede extensions in path_priority. Enumerate
+        # that tier without visiting descendant readings, then resume the full
+        # walk for the remaining immutable pages. Single-letter static ranks
+        # intentionally continue to use the complete root plan.
+        emitted_exact: set[tuple[str, int]] = set()
+        if not exact_only and exact_spelling_possible and len(compact) > 1:
+            for candidate in self._iter_lexical_completion_candidates(session, exact_only=True):
+                if candidate is not None:
+                    emitted_exact.add(
+                        (unicodedata.normalize("NFKC", candidate.text), candidate.consumed_keys)
+                    )
+                yield candidate
 
         baseline = np.asarray(self._baseline_scores, dtype=np.float32).reshape(-1)
         # Preserve the current editor-context score for the first token when
@@ -1195,13 +1400,14 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
 
         roots: list[tuple[_HanSearchPath, int]] = []
         deferred_roots: list[tuple[_RootHanPlanEntry, float, int]] = []
-        for entry in self._root_han_plan(session.identity.raw_keys):
-            if entry.token_id < 0 or entry.token_id >= baseline.size:
+        for entry in self._root_han_plan(session.identity.raw_keys, exact_only=exact_only):
+            if any(token_id < 0 or token_id >= baseline.size for token_id in entry.token_path):
                 continue
             score = contextual_root_scores.get(
                 entry.token_id,
                 float(baseline[entry.token_id]),
             )
+            score += sum(float(baseline[token_id]) for token_id in entry.token_path[1:])
             if not math.isfinite(score):
                 continue
             consumed_raw = min(max(entry.consumed_keys, 0), len(parsed.raw))
@@ -1223,7 +1429,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             path = _HanSearchPath(
                 text=entry.text,
                 pinyin_path=tuple(part for part in entry.pinyin.split("'") if part),
-                token_path=(entry.token_id,),
+                token_path=entry.token_path,
                 score=score,
                 predicted_syllables=entry.predicted_syllables,
                 matched_letters=matched_letters,
@@ -1277,7 +1483,12 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
         # heap; no root is discarded.
         root_groups: dict[int, int] = {}
         if not exact_spelling_possible and not hinted_roots:
-            for path, _ in sorted(roots, key=lambda seed: path_priority(*seed)):
+            ordered_roots = yield from cooperative_sorted(
+                roots, key=lambda seed: path_priority(*seed)
+            )
+            for root_index, (path, _) in enumerate(ordered_roots):
+                if root_index % 32 == 0:
+                    yield None
                 root_id = path.token_path[0]
                 if root_id not in root_groups:
                     root_groups[root_id] = len(root_groups) // CHINESE_PAGE_SIZE
@@ -1299,6 +1510,176 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 *priority,
             )
 
+        # For unfinished input, all children of one parent share its root group
+        # and score offset. Reuse suffix order unless adding the parent score
+        # collapses distinct values through rounding. Materialize its head, not
+        # thousands of paths before the first candidate can leave the heap.
+        suffix_seeds: dict[tuple[int, bool], list[_LexicalSuffixSeed]] = {}
+        child_remainders: dict[
+            int, tuple[_HanSearchPath, list[_LexicalSuffixSeed], int, int, bool]
+        ] = {}
+
+        def suffix_priority(
+            seed: _LexicalSuffixSeed, position: int, parent: _HanSearchPath | None = None
+        ) -> tuple[object, ...]:
+            entry = seed.entry
+            completion = len("".join(entry.syllable_path)) - (seed.matched_letters - position)
+            score = (
+                seed.score
+                if parent is None
+                else (parent.score + seed.score)
+                / (len(parent.token_path) + len(seed.entry.token_path))
+            )
+            return (
+                -seed.matched_letters,
+                seed.predicted_syllables,
+                completion * (MAX_HAN_CHARACTERS + 1) + len(entry.syllable_path),
+                len(entry.token_path),
+                -score,
+                sum(entry.token_path),
+                unicodedata.normalize("NFKC", entry.text),
+                entry.token_path,
+                seed.original_order,
+            )
+
+        def ordered_suffixes(position: int, unextended: bool) -> Iterator[None]:
+            grouped: dict[tuple[int, ...], list[Any]] = {}
+            match_count = 0
+            for match in self.matcher.iter_neural_matches(
+                compact,
+                position,
+                parsed.explicit_boundaries,
+                include_descendants=not unextended,
+            ):
+                if match is None:
+                    yield None
+                    continue
+                entry = match.entry
+                short_complete = (
+                    match.next_position == len(compact) and match.completion_syllables == 0
+                )
+                if (
+                    short_complete != unextended
+                    or match.next_position <= position
+                    or not entry.token_path
+                    or len(entry.token_path) > MAX_MODEL_TOKENS
+                    or (
+                        len(entry.token_path) == 1
+                        and (
+                            entry.coverage
+                            or entry.token_path[0] not in self._continuation_entries_by_token
+                        )
+                    )
+                    or len(entry.text) > MAX_HAN_CHARACTERS
+                ):
+                    continue
+                grouped.setdefault(entry.token_path, []).append(match)
+                match_count += 1
+                if match_count % 64 == 0:
+                    yield None
+            seeds: list[_LexicalSuffixSeed] = []
+            for token_path, matches in grouped.items():
+                if any(token_id < 0 or token_id >= baseline.size for token_id in token_path):
+                    continue
+                score = sum(float(baseline[token_id]) for token_id in token_path)
+                if not math.isfinite(score):
+                    continue
+                for match in matches:
+                    seeds.append(
+                        _LexicalSuffixSeed(
+                            entry=match.entry,
+                            matched_letters=match.next_position,
+                            predicted_syllables=(
+                                match.completion_syllables
+                                if match.next_position == len(compact)
+                                else 0
+                            ),
+                            score=score,
+                            original_order=len(seeds),
+                        )
+                    )
+                    if len(seeds) % 32 == 0:
+                        yield None
+
+            suffix_seeds[position, unextended] = yield from cooperative_sorted(
+                seeds, key=lambda seed: suffix_priority(seed, position)
+            )
+
+        def parent_suffixes(
+            parent: _HanSearchPath, unextended: bool
+        ) -> Generator[None, None, list[_LexicalSuffixSeed]]:
+            position = parent.matched_letters
+            if (position, unextended) not in suffix_seeds:
+                yield from ordered_suffixes(position, unextended)
+            seeds = suffix_seeds[position, unextended]
+            previous: tuple[float, float] | None = None
+            previous_token_count: int | None = None
+            for offset, seed in enumerate(seeds):
+                average = (parent.score + seed.score) / (
+                    len(parent.token_path) + len(seed.entry.token_path)
+                )
+                if previous is not None and (
+                    previous_token_count != len(seed.entry.token_path)
+                    or (previous[0] == average and previous[1] != seed.score)
+                ):
+                    return (
+                        yield from cooperative_sorted(
+                            seeds, key=lambda seed: suffix_priority(seed, position, parent)
+                        )
+                    )
+                previous = (average, seed.score)
+                previous_token_count = len(seed.entry.token_path)
+                if offset % 64 == 0:
+                    yield None
+            return seeds
+
+        def push_child_head(
+            parent: _HanSearchPath,
+            seeds: list[_LexicalSuffixSeed],
+            start: int,
+            serial_base: int,
+            unextended: bool,
+        ) -> Iterator[None]:
+            if len(parent.token_path) >= MAX_MODEL_TOKENS:
+                return
+            while True:
+                for offset in range(start, len(seeds)):
+                    if (offset - start) % 32 == 0:
+                        yield None
+                    seed = seeds[offset]
+                    text = parent.text + seed.entry.text
+                    token_path = (*parent.token_path, *seed.entry.token_path)
+                    if len(token_path) > MAX_MODEL_TOKENS or len(text) > MAX_HAN_CHARACTERS:
+                        continue
+                    child = _HanSearchPath(
+                        text=text,
+                        pinyin_path=(*parent.pinyin_path, *seed.entry.syllable_path),
+                        token_path=token_path,
+                        score=parent.score + seed.score,
+                        predicted_syllables=parent.predicted_syllables + seed.predicted_syllables,
+                        matched_letters=seed.matched_letters,
+                    )
+                    child_remainders[id(child)] = (
+                        parent,
+                        seeds,
+                        offset + 1,
+                        serial_base,
+                        unextended,
+                    )
+                    heapq.heappush(
+                        frontier,
+                        (queue_priority(child), serial_base + seed.original_order, child, 0),
+                    )
+                    return
+                if not unextended:
+                    return
+                # Fully covered, zero-prediction suffixes precede every other
+                # suffix in path_priority. Only scan that tail after the last
+                # short candidate has been handed to the caller.
+                seeds = yield from parent_suffixes(parent, False)
+                start = 0
+                unextended = False
+
         for path, static_rank in roots:
             heapq.heappush(
                 frontier,
@@ -1308,7 +1689,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
             if serial % 128 == 0 and serial < len(roots):
                 yield None
 
-        existing = set(session.seen_candidates)
+        existing = set(session.seen_candidates) | emitted_exact
         visited: set[tuple[tuple[int, ...], int, int]] = set()
         states = 0
         stale_steps = 0
@@ -1323,7 +1704,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                     path = _HanSearchPath(
                         text=entry.text,
                         pinyin_path=tuple(part for part in entry.pinyin.split("'") if part),
-                        token_path=(entry.token_id,),
+                        token_path=entry.token_path,
                         score=score,
                         predicted_syllables=entry.predicted_syllables,
                         matched_letters=matched_letters,
@@ -1357,7 +1738,10 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                 serial += 1
                 continue
             state_key = (path.token_path, path.matched_letters, path.predicted_syllables)
+            remaining_children = child_remainders.pop(id(path), None)
             if state_key in visited:
+                if remaining_children is not None:
+                    yield from push_child_head(*remaining_children)
                 continue
             visited.add(state_key)
             states += 1
@@ -1390,32 +1774,53 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                         static_rank=structural_rank(path),
                         predicted_syllables=path.predicted_syllables,
                     )
+                if remaining_children is not None:
+                    yield from push_child_head(*remaining_children)
                 continue
 
-            edges_by_token: dict[int, list[_HanEdge]] = {}
+            if remaining_children is not None:
+                yield from push_child_head(*remaining_children)
+
+            if not exact_spelling_possible:
+                seeds = yield from parent_suffixes(path, True)
+                yield from push_child_head(path, seeds, 0, serial, True)
+                serial += 1
+                continue
+
+            edges_by_token: dict[tuple[int, ...], list[_HanEdge]] = {}
             if path.matched_letters < len(compact):
                 match_count = 0
-                for match in self.matcher.neural_matches(
+                for match in self.matcher.iter_neural_matches(
                     compact,
                     path.matched_letters,
                     parsed.explicit_boundaries,
+                    exact_only=exact_only,
                 ):
+                    if match is None:
+                        yield None
+                        continue
                     match_count += 1
                     if match_count % 64 == 0:
                         yield None
                     entry = match.entry
                     if (
                         match.next_position <= path.matched_letters
-                        or entry.token_id is None
-                        or int(entry.token_id) not in self._continuation_entries_by_token
-                        or entry.coverage
+                        or not entry.token_path
+                        or len(entry.token_path) > MAX_MODEL_TOKENS
+                        or (
+                            len(entry.token_path) == 1
+                            and (
+                                entry.coverage
+                                or entry.token_path[0] not in self._continuation_entries_by_token
+                            )
+                        )
                         or len(entry.text) > MAX_HAN_CHARACTERS
                     ):
                         continue
                     predicted = path.predicted_syllables
                     if match.next_position == len(compact):
                         predicted += match.completion_syllables
-                    edges_by_token.setdefault(int(entry.token_id), []).append(
+                    edges_by_token.setdefault(entry.token_path, []).append(
                         _HanEdge(
                             entry=entry,
                             matched_letters=match.next_position,
@@ -1431,7 +1836,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                             yield None
                         if entry.coverage or len(entry.text) > MAX_HAN_CHARACTERS:
                             continue
-                        edges_by_token.setdefault(token_id, []).append(
+                        edges_by_token.setdefault((token_id,), []).append(
                             _HanEdge(
                                 entry=entry,
                                 matched_letters=path.matched_letters,
@@ -1442,10 +1847,10 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                         )
 
             edge_count = 0
-            for token_id, edges in edges_by_token.items():
-                if token_id < 0 or token_id >= baseline.size:
+            for token_ids, edges in edges_by_token.items():
+                if any(token_id < 0 or token_id >= baseline.size for token_id in token_ids):
                     continue
-                token_score = float(baseline[token_id])
+                token_score = sum(float(baseline[token_id]) for token_id in token_ids)
                 if not math.isfinite(token_score):
                     continue
                 for edge in edges:
@@ -1457,7 +1862,7 @@ class NeuralCandidatePageManager(_V2CandidatePageManager):
                         and edge.predicted_syllables <= path.predicted_syllables
                     ):
                         continue
-                    token_path = (*path.token_path, token_id)
+                    token_path = (*path.token_path, *token_ids)
                     text = path.text + edge.entry.text
                     if len(token_path) > MAX_MODEL_TOKENS or len(text) > MAX_HAN_CHARACTERS:
                         continue

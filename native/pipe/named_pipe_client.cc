@@ -140,7 +140,7 @@ QueryResult NamedPipeClient::TryQuery(std::string_view utf8_json,
                                       : QueryStatus::kDisconnected,
             {}, error};
   }
-  return {QueryStatus::kOk, std::move(response), ERROR_SUCCESS};
+  return {QueryStatus::kOk, std::move(response), ERROR_SUCCESS, server_identity_};
 }
 
 void NamedPipeClient::Disconnect() {
@@ -207,6 +207,13 @@ bool NamedPipeClient::VerifyServerIdentity(DWORD* error) {
     return false;
   }
 
+  FILETIME creation{}, exit{}, kernel{}, user{};
+  if (!GetProcessTimes(server_process, &creation, &exit, &kernel, &user)) {
+    *error = GetLastError();
+    CloseHandle(server_process);
+    return false;
+  }
+
   HANDLE server_token = nullptr;
   if (!OpenProcessToken(server_process, TOKEN_QUERY, &server_token)) {
     *error = GetLastError();
@@ -245,6 +252,11 @@ bool NamedPipeClient::VerifyServerIdentity(DWORD* error) {
     *error = ERROR_ACCESS_DENIED;
     return false;
   }
+  server_identity_ = {
+      server_process_id,
+      (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) |
+          creation.dwLowDateTime,
+  };
   return true;
 }
 
@@ -312,6 +324,7 @@ bool NamedPipeClient::Transfer(bool write,
 }
 
 void NamedPipeClient::DisconnectLocked() {
+  server_identity_ = {};
   if (pipe_ != INVALID_HANDLE_VALUE) {
     CancelIoEx(pipe_, nullptr);
     CloseHandle(pipe_);

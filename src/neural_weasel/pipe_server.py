@@ -28,6 +28,16 @@ class ContextBinding:
     security_label: str
 
 
+@dataclass(frozen=True, slots=True)
+class ContextUpdateReceipt:
+    # Only the latest acknowledgement identity, never editor text or its hash.
+    client_epoch: int
+    request_id: str
+    session_id: str | None
+    binding: ContextBinding | None
+    assigned_epoch: int
+
+
 class PipeUnavailableError(RuntimeError):
     """Raised when the Windows named-pipe runtime is unavailable."""
 
@@ -241,6 +251,7 @@ class NamedPipeServer:
         self._last_context_error: str | None = None
         self._context_bindings: OrderedDict[int, ContextBinding] = OrderedDict()
         self._latest_source_revisions: OrderedDict[str, int] = OrderedDict()
+        self._context_update_receipt: ContextUpdateReceipt | None = None
 
     def start(self, timeout: float = 5.0) -> None:
         if self._server_thread and self._server_thread.is_alive():
@@ -363,6 +374,7 @@ class NamedPipeServer:
             handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
                 "health": self._handle_health,
                 "context_update": self._handle_context_update,
+                "context_update_receipt": self._handle_context_update_receipt,
                 "query_pinyin": self._handle_query_pinyin,
                 "query_candidates": self._handle_query_candidates,
                 "reset": self._handle_reset,
@@ -469,6 +481,8 @@ class NamedPipeServer:
     def _handle_context_update(self, message: dict[str, Any]) -> dict[str, Any]:
         epoch = _require_int(message, "context_epoch", 1)
         binding = _optional_update_binding(message)
+        request_id = _optional_identifier(message, "request_id")
+        session_id = _optional_identifier(message, "session_id")
         before = message.get("before")
         after = message.get("after", "")
         if not isinstance(before, str) or not isinstance(after, str):
@@ -487,6 +501,7 @@ class NamedPipeServer:
                     "client_context_epoch": epoch,
                 }
 
+            self._context_update_receipt = None
             assigned_epoch = self.engine.request_context_update(before, after)
             if isinstance(assigned_epoch, bool) or not isinstance(assigned_epoch, int):
                 raise RuntimeError("engine returned an invalid context epoch")
@@ -495,6 +510,14 @@ class NamedPipeServer:
                 self._requested_context_epoch = assigned_epoch
                 self._last_context_error = None
             self._remember_binding(assigned_epoch, binding)
+            if request_id is not None:
+                self._context_update_receipt = ContextUpdateReceipt(
+                    epoch,
+                    request_id,
+                    session_id,
+                    binding,
+                    assigned_epoch,
+                )
 
         return {
             "type": "context_update",
@@ -503,6 +526,43 @@ class NamedPipeServer:
             "context_epoch": assigned_epoch,
             "client_context_epoch": epoch,
         }
+
+    def _handle_context_update_receipt(self, message: dict[str, Any]) -> dict[str, Any]:
+        _reject_unknown_fields(
+            message,
+            frozenset(
+                {
+                    "type",
+                    "request_id",
+                    "session_id",
+                    "context_epoch",
+                    "context_session",
+                    "source_revision",
+                    "security_label",
+                }
+            ),
+        )
+        epoch = _require_int(message, "context_epoch", 1)
+        request_id = _optional_identifier(message, "request_id")
+        if request_id is None:
+            raise ProtocolError("request_id is required")
+        session_id = _optional_identifier(message, "session_id")
+        binding = _optional_update_binding(message)
+        with self._context_forward_lock:
+            receipt = self._context_update_receipt
+            matched = receipt is not None and (
+                receipt.client_epoch == epoch
+                and receipt.request_id == request_id
+                and receipt.session_id == session_id
+                and receipt.binding == binding
+            )
+            return {
+                "type": "context_update_receipt",
+                "ok": True,
+                "accepted": matched,
+                "client_context_epoch": epoch,
+                "context_epoch": receipt.assigned_epoch if matched else 0,
+            }
 
     def _resolve_requested_epoch(
         self,
@@ -610,12 +670,14 @@ class NamedPipeServer:
 
     def _handle_reset(self, message: dict[str, Any]) -> dict[str, Any]:
         session_id = _optional_identifier(message, "session_id")
-        with self._state_lock:
-            self._requested_context_epoch = int(self.engine.context_epoch)
-            self._last_context_error = None
-        reset = getattr(self.engine, "reset", None)
-        if callable(reset):
-            reset()
+        with self._context_forward_lock:
+            self._context_update_receipt = None
+            with self._state_lock:
+                self._requested_context_epoch = int(self.engine.context_epoch)
+                self._last_context_error = None
+            reset = getattr(self.engine, "reset", None)
+            if callable(reset):
+                reset()
         return {
             "type": "reset",
             "ok": True,
@@ -660,15 +722,17 @@ class NamedPipeServer:
 
         if secure:
             cleanup_failed = False
-            with self._state_lock:
-                self._context_bindings.clear()
-            for method_name in ("reset_private_context", "clear_history"):
-                method = getattr(self.engine, method_name, None)
-                if callable(method):
-                    try:
-                        method()
-                    except Exception:
-                        cleanup_failed = True
+            with self._context_forward_lock:
+                self._context_update_receipt = None
+                with self._state_lock:
+                    self._context_bindings.clear()
+                for method_name in ("reset_private_context", "clear_history"):
+                    method = getattr(self.engine, method_name, None)
+                    if callable(method):
+                        try:
+                            method()
+                        except Exception:
+                            cleanup_failed = True
             if cleanup_failed:
                 raise RuntimeError("secure context cleanup failed")
         return {

@@ -138,22 +138,20 @@ public class NeuralWeaselGameDetector {
         SHQueryUserNotificationState(out quns);
         eval.Quns = quns;
 
+        IntPtr hDesk = OpenDesktop("default", 0, false, 0x01FF);
+        if (hDesk == IntPtr.Zero) {
+            eval.Reason = "OpenDesktop failed";
+            return eval;
+        }
         Thread t = new Thread(() => {
-            IntPtr hDesk = OpenDesktop("default", 0, false, 0x01FF);
-            if (hDesk == IntPtr.Zero) {
-                eval.Reason = "OpenDesktop failed";
-                return;
-            }
             if (!SetThreadDesktop(hDesk)) {
                 eval.Reason = "SetThreadDesktop failed";
-                CloseDesktop(hDesk);
                 return;
             }
 
             IntPtr fg = GetForegroundWindow();
             if (fg == IntPtr.Zero) {
                 eval.Reason = "Foreground is null";
-                CloseDesktop(hDesk);
                 return;
             }
 
@@ -175,7 +173,6 @@ public class NeuralWeaselGameDetector {
             foreach (var ex in SystemExclusions) {
                 if (name == ex) {
                     eval.Reason = "System process: " + name;
-                    CloseDesktop(hDesk);
                     return;
                 }
             }
@@ -183,7 +180,6 @@ public class NeuralWeaselGameDetector {
             if (quns == 3) {
                 eval.IsFullscreenGame = true;
                 eval.Reason = "QUNS_RUNNING_D3D_FULL_SCREEN";
-                CloseDesktop(hDesk);
                 return;
             }
 
@@ -210,12 +206,17 @@ public class NeuralWeaselGameDetector {
                 }
             }
 
-            CloseDesktop(hDesk);
         });
 
-        t.SetApartmentState(ApartmentState.STA);
-        t.Start();
-        t.Join();
+        try {
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            t.Join();
+        } finally {
+            // CloseDesktop fails while the checking thread is still attached.
+            // Join first so every early return releases its desktop handle.
+            CloseDesktop(hDesk);
+        }
         return eval;
     }
 }

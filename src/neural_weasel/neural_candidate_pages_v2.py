@@ -4,9 +4,11 @@ import math
 import re
 import unicodedata
 import uuid
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from heapq import nsmallest
 from typing import Any
 
 import numpy as np
@@ -40,6 +42,13 @@ _MAX_BASELINE_LATIN_CACHE = 512
 _LATIN_PATH = re.compile(r"^[A-Za-z][A-Za-z0-9.'-]*$")
 
 
+@dataclass(frozen=True, slots=True)
+class _LatinRootDisplayIdentities:
+    """Seen identities of omitted displays, stripped before frontier search."""
+
+    identities: tuple[tuple[str, int], ...]
+
+
 class NeuralCandidatePageManager(_BaseCandidatePageManager):
     """PR36 candidate pager with a true multi-token Base-model Latin graph.
 
@@ -51,18 +60,29 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
     previously scored from the permanent Base-model root.
     """
 
+    _bound_latin_root_displays = False
+
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        root_completions_by_initial: dict[str, list[Any]] = {}
+        root_completions: list[Any] = []
+        root_prefix_keys: list[tuple[str, int]] = []
         for completion in self.latin_constraint.completions:
             text = completion.text
-            if not text:
+            if (
+                not completion.token_path
+                or len(completion.token_path) != 1
+                or len(text) > _MAX_LATIN_CHARACTERS
+                or _LATIN_PATH.fullmatch(text) is None
+            ):
                 continue
-            root_completions_by_initial.setdefault(text[0].casefold(), []).append(completion)
-        self._latin_root_completions_by_initial = {
-            initial: tuple(completions)
-            for initial, completions in root_completions_by_initial.items()
-        }
+            root_prefix_keys.append((text.casefold(), len(root_completions)))
+            root_completions.append(completion)
+        root_prefix_keys.sort()
+        # These keys contain only immutable public vocabulary, never queries
+        # or editor snapshots. Ordinals preserve the original tokenizer order.
+        self._latin_root_completions = tuple(root_completions)
+        self._latin_root_prefix_keys = tuple(key for key, _ in root_prefix_keys)
+        self._latin_root_prefix_ordinals = tuple(ordinal for _, ordinal in root_prefix_keys)
         raw_fragments = getattr(self.latin_constraint, "continuation_fragments", {})
         self._latin_fragments_by_token: dict[int, str] = {
             int(token_id): str(fragment)
@@ -75,6 +95,10 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         self._baseline_latin_cache: OrderedDict[tuple[str, tuple[int, ...]], Candidate] = (
             OrderedDict()
         )
+        # Keys come only from validated public vocabulary. Values contain the
+        # permanent empty-context score, never a query or an editor snapshot.
+        # The number of entries is bounded by the validated root vocabulary.
+        self._baseline_latin_root_paths: dict[tuple[str, tuple[int, ...]], _SearchPath] = {}
 
     def install_baseline_scores(
         self,
@@ -83,6 +107,7 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         continuation_root: Any | None = None,
     ) -> None:
         self._baseline_latin_cache.clear()
+        self._baseline_latin_root_paths.clear()
         super().install_baseline_scores(scores, continuation_root=continuation_root)
 
     @staticmethod
@@ -91,34 +116,45 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         value = text.casefold()
         return value.startswith(raw) or raw.startswith(value)
 
+    def _compatible_latin_roots(self, raw_keys: str) -> list[Any]:
+        raw = raw_keys.casefold()
+        keys = self._latin_root_prefix_keys
+        start = bisect_left(keys, raw)
+        # Validated vocabulary strings are ASCII, so this bounds descendants.
+        end = bisect_left(keys, raw + "\uffff")
+        ordinals = list(self._latin_root_prefix_ordinals[start:end])
+        # Exact matches are already in the descendant interval. Only proper
+        # ancestors are added, including duplicate tokens for the same text.
+        for length in range(1, min(len(raw), _MAX_LATIN_CHARACTERS + 1)):
+            if length % 8 == 0:
+                self._raise_if_query_expired()
+            prefix = raw[:length]
+            start = bisect_left(keys, prefix)
+            end = bisect_right(keys, prefix)
+            ordinals.extend(self._latin_root_prefix_ordinals[start:end])
+        ordinals.sort()
+        self._raise_if_query_expired()
+        return [self._latin_root_completions[ordinal] for ordinal in ordinals]
+
     def _root_latin_candidates_and_frontier(
         self,
         raw_keys: str,
         state: BackendState | None,
         response_epoch: int,
-    ) -> tuple[list[Candidate], list[_SearchPath]]:
+    ) -> tuple[list[Candidate], list[_SearchPath | _LatinRootDisplayIdentities]]:
         self._raise_if_query_expired()
         if _LATIN_PATH.fullmatch(raw_keys) is None:
             return [], []
 
-        compatible = [
-            completion
-            for completion in self._latin_root_completions_by_initial.get(
-                raw_keys[0].casefold(),
-                (),
-            )
-            if completion.token_path
-            and len(completion.token_path) == 1
-            and self._prefix_comparable(raw_keys, completion.text)
-            and len(completion.text) <= _MAX_LATIN_CHARACTERS
-            and _LATIN_PATH.fullmatch(completion.text) is not None
-        ]
+        compatible = self._compatible_latin_roots(raw_keys)
         token_ids = [int(completion.token_path[0]) for completion in compatible]
         scores = self._score_root(state, token_ids)
         self._raise_if_query_expired()
 
         candidates: list[Candidate] = []
-        frontier: list[_SearchPath] = []
+        root_winners: dict[str, tuple[str, tuple[int, ...], float]] = {}
+        folded_raw = raw_keys.casefold()
+        frontier: list[_SearchPath | _LatinRootDisplayIdentities] = []
         seen_frontier: set[tuple[int, ...]] = set()
         for index, (completion, score) in enumerate(zip(compatible, scores, strict=True)):
             if index % 64 == 0:
@@ -128,30 +164,19 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
                 continue
             token_path = (int(completion.token_path[0]),)
             text = completion.text
-            if text.casefold().startswith(raw_keys.casefold()):
-                candidates.append(
-                    Candidate(
-                        text=text,
-                        pinyin="",
-                        consumed_keys=len(raw_keys),
-                        score=value,
-                        context_epoch=response_epoch,
-                        coverage=False,
-                        completes_input=text.casefold() == raw_keys.casefold(),
-                        syllables=0,
-                        token_id=token_path[0],
-                        constraint_kind="latin_prefix",
-                        script="latin",
-                        model_score=value,
-                        total_score=value,
-                        token_path=token_path,
-                        predicted_syllables=0,
-                    )
-                )
+            folded_text = text.casefold()
+            if folded_text.startswith(folded_raw):
+                previous = root_winners.get(folded_text)
+                # Roots are validated ASCII; casefold is their NFKC identity.
+                # The shared identity removes the middle field of _latin_key.
+                if previous is None or (-value, token_path) < (-previous[2], previous[1]):
+                    root_winners[folded_text] = (text, token_path, value)
             if token_path not in seen_frontier and len(text) < _MAX_LATIN_CHARACTERS:
                 seen_frontier.add(token_path)
-                frontier.append(
-                    _SearchPath(
+                key = (text, token_path)
+                path = self._baseline_latin_root_paths.get(key) if state is None else None
+                if path is None or path.score != value:
+                    path = _SearchPath(
                         text=text,
                         pinyin_path=(),
                         token_path=token_path,
@@ -159,7 +184,51 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
                         predicted_syllables=0,
                         script="latin",
                     )
+                    if state is None:
+                        self._baseline_latin_root_paths[key] = path
+                frontier.append(path)
+
+        # A root below this many distinct Latin winners cannot be displayed
+        # within the frozen-set capacity. Keep every continuation path above,
+        # but avoid allocating display objects that cannot enter that set.
+        selected = (
+            {
+                key
+                for key, _ in nsmallest(
+                    MAX_FROZEN_CANDIDATES,
+                    root_winners.items(),
+                    key=lambda item: (-item[1][2], item[0], item[1][1]),
                 )
+            }
+            if self._bound_latin_root_displays and len(root_winners) > MAX_FROZEN_CANDIDATES
+            else None
+        )
+        self._raise_if_query_expired()
+        # Preserve first-occurrence order and the final cached-path merge.
+        for index, (key, (text, token_path, value)) in enumerate(root_winners.items()):
+            if index % 64 == 0:
+                self._raise_if_query_expired()
+            if selected is not None and key not in selected:
+                continue
+            candidates.append(
+                Candidate(
+                    text=text,
+                    pinyin="",
+                    consumed_keys=len(raw_keys),
+                    score=value,
+                    context_epoch=response_epoch,
+                    coverage=False,
+                    completes_input=text.casefold() == folded_raw,
+                    syllables=0,
+                    token_id=token_path[0],
+                    constraint_kind="latin_prefix",
+                    script="latin",
+                    model_score=value,
+                    total_score=value,
+                    token_path=token_path,
+                    predicted_syllables=0,
+                )
+            )
 
         # Only permanent-baseline paths can be reused across composition
         # revisions. Contextual paths remain revision-local because their score
@@ -171,7 +240,15 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
                 if not cached.text.casefold().startswith(raw_keys.casefold()):
                     continue
                 candidate = replace(cached, context_epoch=response_epoch)
-                candidates.append(candidate)
+                key = unicodedata.normalize("NFKC", candidate.text).casefold()
+                root = root_winners.get(key)
+                if (
+                    selected is None
+                    or key in selected
+                    or root is None
+                    or _latin_key(candidate) < (-root[2], key, root[1])
+                ):
+                    candidates.append(candidate)
                 if (
                     candidate.token_path
                     and len(candidate.token_path) < MAX_MODEL_TOKENS
@@ -198,6 +275,14 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
             previous = best.get(key)
             if previous is None or _latin_key(candidate) < _latin_key(previous):
                 best[key] = candidate
+        if selected is not None:
+            identities = tuple(
+                (unicodedata.normalize("NFKC", text), len(raw_keys))
+                for key, (text, _, _) in root_winners.items()
+                if key not in selected and key not in best
+            )
+            if identities:
+                frontier.append(_LatinRootDisplayIdentities(identities))
         return list(best.values()), frontier
 
     def _root_candidates(
@@ -224,6 +309,8 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
                 state,
                 response_epoch,
             )
+            if latin_frontier and isinstance(latin_frontier[-1], _LatinRootDisplayIdentities):
+                latin_frontier.pop()
             self._raise_if_query_expired()
             return (
                 candidates,
@@ -275,6 +362,11 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
         self._raise_if_query_expired()
         if identity.mode is NeuralLanguageMode.LATIN_FIRST:
             root_candidates = root_candidates[:5]
+        omitted_seen: set[tuple[str, int]] = set()
+        if frontier and isinstance(frontier[-1], _LatinRootDisplayIdentities):
+            marker = frontier.pop()
+            if identity.mode is NeuralLanguageMode.CHINESE_FIRST:
+                omitted_seen.update(marker.identities)
         candidate_set_id = uuid.uuid4().hex
         continuation = getattr(self.backend, "continue_from_root", None)
         session = _SearchSession(
@@ -285,7 +377,8 @@ class NeuralCandidatePageManager(_BaseCandidatePageManager):
             pending=list(root_candidates),
             frontier=frontier,
             frozen_pages={},
-            seen_candidates={
+            seen_candidates=omitted_seen
+            | {
                 (unicodedata.normalize("NFKC", candidate.text), candidate.consumed_keys)
                 for candidate in root_candidates
                 if candidate.constraint_kind != "literal"

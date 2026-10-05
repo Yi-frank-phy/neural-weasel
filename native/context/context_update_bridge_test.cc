@@ -196,6 +196,8 @@ int main() {
   }
   if (bridge.last_result() != ContextUpdateResult::kPublished ||
       EditorContextEpoch::Instance().Load() != 1) {
+    std::cerr << "bridge_result=" << static_cast<int>(bridge.last_result())
+              << " epoch=" << EditorContextEpoch::Instance().Load() << '\n';
     return Fail("restarted service epoch one was not published");
   }
 

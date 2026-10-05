@@ -485,6 +485,14 @@ def test_page_zero_lock_wait_expires_before_root_or_session_publication(
     errors: list[BaseException] = []
 
     class ControlledLock:
+        def acquire(self, blocking=True, timeout=-1):
+            lock_entered.set()
+            assert allow_lock.wait(1.0)
+            return original_lock.acquire(blocking, timeout)
+
+        def release(self):
+            return original_lock.release()
+
         def __enter__(self):
             lock_entered.set()
             assert allow_lock.wait(1.0)
@@ -731,14 +739,15 @@ def test_deferred_root_materialization_does_not_hold_state_lock(
     pages = engine.candidate_pages
     entered = threading.Event()
     release = threading.Event()
-    original = pages._materialize_root_han_candidates
+    original = pages._root_han_candidates_top_k_from_scores
 
     def blocked_materialization(*args, **kwargs):
-        entered.set()
-        assert release.wait(2.0)
+        if threading.current_thread() is not threading.main_thread():
+            entered.set()
+            assert release.wait(2.0)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(pages, "_materialize_root_han_candidates", blocked_materialization)
+    monkeypatch.setattr(pages, "_root_han_candidates_top_k_from_scores", blocked_materialization)
     first = _page(engine, "ni")
     assert entered.wait(1.0)
 
@@ -819,7 +828,7 @@ def test_constrained_han_expansion_counts_candidates_and_frontier_independently(
         token_ids,
         values,
         edges_by_token,
-        absolute_deadline=time.monotonic() + 1.0,
+        absolute_deadline=pages.clock() + 1.0,
     )
 
     assert len(session.pending) == 32
@@ -832,7 +841,7 @@ def test_constrained_han_expansion_counts_candidates_and_frontier_independently(
         if getattr(path, "scored_han_resume", False)
     )
     work = session.frontier.pop(work_index)
-    pages._resume_han_expansion(session, work, time.monotonic() + 1.0)
+    pages._resume_han_expansion(session, work, pages.clock() + 1.0)
     assert len(session.pending) == 40
     assert len(session.frontier) == 40
 
@@ -1182,14 +1191,15 @@ def test_background_continuation_batches_production_shorthand_roots(
     original_neural_matches = matcher.neural_matches
     suffix_match_starts: list[int] = []
 
-    def counted_neural_matches(raw, start=0, boundaries=None):
+    def counted_neural_matches(raw, start=0, boundaries=None, **kwargs):
         if start > 0:
             suffix_match_starts.append(start)
-        return original_neural_matches(raw, start, boundaries)
+        return original_neural_matches(raw, start, boundaries, **kwargs)
 
     monkeypatch.setattr(matcher, "neural_matches", counted_neural_matches)
 
     first = _await_coherent_page(engine, "mxbd")
+    _wait_for_page_preparation(engine, first.candidate_set_id)
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
         if engine.candidate_pages._async_han_cache:
@@ -1242,15 +1252,19 @@ def test_background_continuation_progresses_beyond_first_root_batch(make_index) 
     first = _await_coherent_page(engine, "mxbd")
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
-        cached = tuple(engine.candidate_pages._async_han_cache.values())
-        if any(candidate.text == "明显不对" for batch in cached for candidate in batch):
+        with engine.candidate_pages._state_lock:
+            session = engine.candidate_pages._sessions[first.candidate_set_id]
+            candidates = tuple(session.pending) + tuple(
+                candidate for page in session.frozen_pages.values() for candidate in page.candidates
+            )
+        if any(candidate.text == "明显不对" for candidate in candidates):
             break
         time.sleep(0.01)
     else:
         pytest.fail("progressive background continuation did not publish the target")
 
     assert len(runtime.continuation_batches) >= 10
-    assert (20,) in runtime.continuation_batches[9]
+    assert any((20,) in batch for batch in runtime.continuation_batches)
     refreshed = _page(engine, "mxbd", composition_revision=2)
     assert refreshed.candidate_set_id != first.candidate_set_id
     _wait_for_page_preparation(engine, refreshed.candidate_set_id)

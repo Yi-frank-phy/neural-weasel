@@ -55,6 +55,30 @@ def test_game_detector_compiles_and_evaluates() -> None:
     assert "EVAL_OK:" in proc.stdout, f"Evaluation output unexpected: {proc.stdout}"
 
 
+def test_game_detector_releases_desktop_handles_after_each_check() -> None:
+    script = Path(__file__).resolve().parent.parent / "scripts/start-model-service-hidden.ps1"
+    command = (
+        f"$c = Get-Content -LiteralPath '{script}' -Raw; "
+        "$def = [regex]::Match($c, '(?s)Add-Type -TypeDefinition @\"(.*?)\"@').Groups[1].Value; "
+        "Add-Type -TypeDefinition $def; "
+        "for ($i=0; $i -lt 10; $i++) { $null = [NeuralWeaselGameDetector]::Check() }; "
+        "[GC]::Collect(); [GC]::WaitForPendingFinalizers(); "
+        "$before = [Diagnostics.Process]::GetCurrentProcess().HandleCount; "
+        "for ($i=0; $i -lt 120; $i++) { $null = [NeuralWeaselGameDetector]::Check() }; "
+        "[GC]::Collect(); [GC]::WaitForPendingFinalizers(); "
+        "$after = [Diagnostics.Process]::GetCurrentProcess().HandleCount; "
+        "Write-Output ($after - $before); if ($after - $before -gt 5) { exit 1 }"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"handle growth={result.stdout}, stderr={result.stderr}"
+
+
 @pytest.mark.parametrize("live", [True, False])
 def test_persisted_pid_never_authorizes_process_termination(live: bool) -> None:
     script = Path(__file__).resolve().parent.parent / "scripts/start-model-service-hidden.ps1"

@@ -38,9 +38,12 @@ client context_epoch, revision, sequence
 `request_id` is the protocol-safe string `ctx-<sequence>`, never a JSON number.
 It validates that exact echoed string and `client_context_epoch`. After the
 service accepts the update and assigns a service epoch, the worker polls
-`health` for at most 200 ms. Publication occurs only when:
+`health` within the shared readiness deadline (3000 ms by default, with each
+pipe query capped at 1000 ms). Publication occurs only when:
 
 - the service's ready `context_epoch` exactly equals the assigned epoch;
+- acknowledgement and health responses belong to the same verified pipe server
+  process (OS-reported PID and process creation time);
 - the bridge sequence is still the latest;
 - the bridge has not stopped or been invalidated.
 
@@ -54,6 +57,13 @@ from 100 to 1. `EditorContextEpoch::Publish` therefore stores the exact
 confirmed epoch rather than applying a numeric maximum. Stale rejection comes
 from the bridge sequence and final mutex, not from comparing epochs belonging
 to different service processes.
+
+The pipe client retains this OS-derived identity only in memory and attaches it
+to successful transport results. Every reconnect verifies the server SID and
+captures its process creation time again. A changed process, including a reused
+PID, supersedes an earlier acknowledgement before any epoch comparison. The
+next context revision can establish a new acknowledgement in the replacement
+process; coincident numeric epochs never prove cross-process readiness.
 
 ## Fail-closed serialization
 
@@ -109,6 +119,28 @@ JSON emitted by the local Python server and requires unique fields for type,
 status, request ID and epochs. It is not a general JSON parser. A malformed or
 unexpected response becomes `kProtocolError` and never publishes an epoch.
 
+## Bounded disconnect recovery
+
+The worker shares two recovery attempts and the readiness deadline across the
+update, receipt and health stages. Disconnect, timeout and busy statuses may
+recover; access-denied, missing-token and protocol failures fail closed. A
+25 ms condition-variable wait is interruptible by stop or supersession of an
+ordinary update. Secure cleanup remains a barrier before a newer normal update.
+
+After an update transport failure, the worker queries `context_update_receipt`
+before resending any context bytes. The service retains only the latest
+acknowledgement identity: client epoch, request ID, session ID, source binding
+and assigned model epoch. It retains no editor text or text hash in this receipt.
+An exact match resumes the health stage without another model update. A verified
+missing receipt permits resending the original update. Duplicate updates still
+follow the existing stale-rejection contract. New accepted updates, reset and
+secure cleanup clear the receipt; update and cleanup are serialized to prevent
+an old receipt from returning after cleanup.
+
+This is an additive protocol change requiring the updated bridge and Python
+service together. An older service rejects the unknown receipt request and the
+new bridge fails closed. The change adds no synchronous work to TSF.
+
 ## Named Pipe peer identity
 
 The per-user pipe name and server DACL are necessary but not sufficient:
@@ -139,9 +171,12 @@ contains only `context/context_update_bridge.cc` and
 without `NEURAL_WEASEL_BUILD_RIME_PLUGIN`, a Weasel source checkout, librime,
 or nlohmann-json.
 
-This workstation still has no MSVC, clang-cl or MinGW compiler on `PATH`.
-Source and Windows SDK symbol review were performed, but the target has not
-been compiled. Required Windows CI checks are:
+Windows builds require a configured compiler and Windows SDK. On 2026-10-02,
+MSVC 19.44 built the current native targets on this workstation and all ten
+CTest tests passed. Three isolated real Win32 pipe disconnect tests also passed
+against the compiled bridge and Python service handler, using a synthetic
+engine. See `../experiments/context-update-recovery-20261002.md` for commands,
+baseline failures and acceptance limits. Required Windows checks include:
 
 - build the standalone target with the Weasel-supported Windows SDK;
 - fake-transport tests for coalescing, stale responses, exact epoch readiness,

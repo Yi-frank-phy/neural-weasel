@@ -291,6 +291,8 @@ class BilingualImeEngine:
     def runtime_performance_diagnostics(self) -> dict[str, object]:
         """Expose only cached timing/count metadata for live diagnosis."""
 
+        from .service_gc import collection_diagnostics
+
         runtime = getattr(self.coordinator.backend, "runtime", None)
         provider = getattr(runtime, "performance_diagnostics", None)
         diagnostics = {}
@@ -299,6 +301,7 @@ class BilingualImeEngine:
             if isinstance(raw, dict):
                 diagnostics.update(raw)
         diagnostics.update(self.candidate_pages.diagnostics())
+        diagnostics.update(collection_diagnostics())
         return diagnostics
 
     def diagnostics(self) -> dict[str, object]:
