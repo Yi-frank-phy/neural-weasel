@@ -60,24 +60,25 @@ diagnostic output; do not attempt to register another DLL or GUID.
 
 ## 3. Start the model service
 
-From the installed directory, start the correctness baseline:
+From the installed directory, start the default Q8 GGUF/CUDA service if it is
+not already running under the launcher's per-user task:
 
 ```powershell
-.\start-model-service.ps1 -Backend full
+.\start-model-service.ps1 -Quantization Q8_0
 ```
 
 Leave that PowerShell window open. A first run may build the pinyin index and
 download the Base checkpoint. Failure must be explicit; the script must not
 silently choose another model or backend.
 
-The optional sparse path can be tested separately:
+The optional Q4 GGUF can be tested separately after stopping the Q8 service:
 
 ```powershell
-.\start-model-service.ps1 -Backend sparse
+.\start-model-service.ps1 -Quantization Q4_K_M
 ```
 
-An unsupported or failed sparse initialization is a valid explicit failure,
-not permission to fall back to `full` or a different checkpoint.
+Initialization failure must remain explicit; do not silently change quantization
+or checkpoint. The legacy Torch full/sparse comparison is not a launcher option.
 
 ## 4. Exercise Chinese input
 
@@ -87,12 +88,13 @@ In Notepad under the experimental profile:
 2. Confirm character input and candidate display.
 3. Use Backspace and confirm the composition updates.
 4. Press Space and confirm the selected Han candidate is committed.
-5. Repeat and use a numbered candidate key from `1` through `9`.
+5. Repeat and use the number keys for candidates actually visible on the page
+   (currently up to seven). A key for an absent candidate must not commit one.
 6. Press Enter on a composition and confirm the literal composition commits.
 7. Press Escape on a composition and confirm it is cancelled.
 
-Do not test fuzzy pinyin, double pinyin, abbreviated pinyin, tones, or typo
-correction; they are outside this slice.
+Also test a known shorthand-pinyin case from the checked-in regression fixtures.
+Fuzzy pinyin, double pinyin, tones and typo correction remain deferred.
 
 ## 5. Exercise English input
 
@@ -103,7 +105,7 @@ With an English/Latin candidate visible:
    default completion must be accepted followed by one space.
 3. Type another prefix and press Tab. Tab may explicitly accept the selected
    completion.
-4. Press Escape. The completion must close while the literal prefix remains.
+4. Press Escape. The composition must cancel without committing literal or model text.
 5. Press Enter. The literal prefix must commit and the editor must still
    receive its normal Enter behavior.
 6. Use Backspace and confirm the literal updates.
@@ -113,8 +115,29 @@ With an English/Latin candidate visible:
    If the candidate is stale or the service is unavailable, Space must instead
    commit the original literal prefix and one space; stale candidates must not commit.
 
-This slice provides only the current single-token live baseline. It does not
-claim complete multi-token causal rescoring.
+The source includes background multi-token conditional scoring. Test its visible
+behavior separately; a passing single-token example does not validate that path.
+
+### Surrounding context, identity and latency
+
+Use only public synthetic text in the disposable test editor. Place the caret
+between two known public fragments, type a test prefix, and verify a new context
+revision and candidate response using existing metadata-only diagnostics. Correlate
+session/revision and timing; candidate plausibility alone is not capture evidence.
+The default continuation mode scores the left side; right-side ranking requires
+stopping the existing service and starting the sole service through the CLI with
+opt-in FIM. Do not run a second model service for this comparison.
+
+Switch to another editor during an in-flight query, then repeat after deleting
+and retyping the prefix. Old focus/session/revision candidates must not publish
+in the new context. Record first-visible and final-candidate latency separately
+from pipe response time, including timeout and recovery samples.
+
+Test password/PIN/protected fields with a synthetic sentinel. Verify zero
+surrounding-text capture using non-text capture metadata; absence from logs or
+absence of AI candidates alone does not establish zero capture. PRIVATE context
+may be used ephemerally but must not persist. If the available diagnostics do not
+prove a requirement, record it as unverified rather than adding plaintext logging.
 
 ## 6. Verify safe degradation
 

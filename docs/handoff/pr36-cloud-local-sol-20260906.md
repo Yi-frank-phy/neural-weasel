@@ -1,5 +1,9 @@
 # PR36：本机、云端与 Sol 交接（2026-09-06）
 
+历史交接快照：所列任务、分支与部署状态仅适用于记录日期。原任务分支和 PR
+已在主线整理时归档/关闭，不代表已全部合并；当前入口见[文档索引](../README.md)，
+归档与未确认整合的改动见[分支审计](../experiments/branch-route-audit-20261005.md)。
+
 ## 基线与范围
 
 - 仓库：`Yi-frank-phy/neural-weasel`；PR：[#36](https://github.com/Yi-frank-phy/neural-weasel/pull/36)，必须保持 Draft，不 merge/release。

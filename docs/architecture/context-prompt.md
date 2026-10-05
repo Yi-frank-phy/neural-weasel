@@ -3,8 +3,9 @@
 GitHub issue #39 distinguishes candidate scoring from free-form completion.
 Phase 1 adds an explicit `--context-mode fim` option to predict, serve,
 serve-http, simulate and benchmark. The release default remains `continuation`.
-The launcher already forwards these arguments. No installation or service
-restart is required to review the implementation.
+Use the CLI directly for `--context-mode fim`; the packaged PowerShell launcher
+currently starts continuation mode and has no context-mode option. No installation
+or service restart is required to review the implementation.
 
 The background runtime serializes:
 
@@ -96,6 +97,8 @@ The drivers now emit ASCII JSON to avoid this transport issue. The earlier
 run completed without forwarding child stdout and provided no usable rankings.
 
 ## Deferred Windows context acquisition
+
+Tracked in [issue #43](https://github.com/Yi-frank-phy/neural-weasel/issues/43).
 
 - [ ] Evaluate direct Windows editor-context acquisition (including UIA high-context)
   after the current TSF installation passes target-machine smoke and latency tests.

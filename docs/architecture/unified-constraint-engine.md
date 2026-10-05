@@ -1,5 +1,10 @@
 # Unified constraint engine
 
+Historical design baseline: candidate scoring and traversal details were extended
+by later implementations. See [current status](../STATUS.md) and the dated reports
+in [the documentation index](../README.md). The key behavior below reflects the
+current shared state-machine contract.
+
 ## Purpose
 
 The Base causal model estimates continuation probability. It does not decide
@@ -183,14 +188,14 @@ AI completion is an offer layered over a literal composition:
 ```text
 idle
   -> type Latin -> composing(literal, optional completion)
-  -> Space      -> commit literal + " "
+  -> Space      -> commit fresh valid completion + " "; otherwise literal + " "
   -> Tab        -> commit selected completion
-  -> Escape     -> dismiss completion, keep literal
+  -> Escape     -> cancel composition without committing
   -> Backspace  -> recompute from current literal
 ```
 
-The literal text is the source of truth. Selection state never overwrites it
-until an explicit completion accept action.
+The literal text remains available for Enter and stale/unavailable Space fallback.
+A fresh default completion may be accepted by Space without prior selection.
 
 ## Epoch and concurrency
 

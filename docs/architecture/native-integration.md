@@ -44,36 +44,46 @@ TextEditSink / focus change
   -> fail-closed capture policy
   -> RequestSurroundingText(TF_ES_READ)
   -> bounded before/after snapshot
-  -> repository context bridge worker
+  -> TSF bounded capture sender (one-way, nonblocking)
+  -> experimental server capture receiver / context adapter
+  -> server-owned context bridge worker
   -> per-user model-service Named Pipe context_update
   -> service publishes a new immutable snapshot
-  -> ai_translator query carries that epoch
+  -> identity-bound ai_translator query requests the latest service snapshot
 ```
 
-The TSF edit session must never perform model or pipe I/O. Its callback should
-enqueue a snapshot onto a WeaselTSF-owned worker queue and return immediately.
-Only the worker performs model-service pipe I/O.
+The TSF edit session performs capture and bounded enqueue only. The TSF DLL
+does not own the Python model-service pipe client, wait for readiness, or run
+model work. The server owns those operations; CMake keeps the heavy bridge
+and `neural_weasel_pipe` out of the TSF adapter's dependencies.
 
-The standalone implementation of this post-callback boundary is
+The server-side implementation of the model-service boundary is
 `neural_weasel_context_bridge`. It coalesces snapshots on an owned worker,
 forwards `context_update`, waits for the exact service epoch to become ready,
 and then publishes `EditorContextEpoch`. See
 [context-bridge.md](context-bridge.md). It has no Weasel/librime header
 dependency and does not register a profile.
 
-Fast reads use `{27648, 4096}` UTF-16 code units. The Python service clips that
-snapshot to the active model's 23552-token before-context budget. An idle timer may issue a
-second request with `{32768, 32768}`. `ShiftStart`/`ShiftEnd` report the actual
+The current adapter reads `{27648, 4096}` UTF-16 code units. Capture frames
+allow at most 32768 units before and 4096 after; no idle wider-read path is
+implemented in the adapter. The Python service applies its token-window budget.
+`ShiftStart`/`ShiftEnd` report the actual
 movement; moving fewer units than requested marks that side as reaching the
 current TSF region boundary. This is a region-completeness signal, not proof
 that the entire editor document was exposed.
 
 ### Context transport
 
-The TSF DLL connects directly to the separate per-user model-service pipe from
-the bridge worker. This avoids changing upstream Weasel IPC buffers or message
-numbers. The TSF edit-session callback never connects, waits, retries, or runs a
-model forward.
+The TSF DLL sends bounded context frames through the separate one-way capture
+transport. The experimental server validates identity and revision, reconstructs
+the snapshot, and submits it to its model-service bridge. Model-service receipts,
+retries and health/readiness polling remain outside the TSF DLL.
+
+The source path is `tsf/weasel_context_adapter.cc` →
+`tsf/context_capture_client.cc` → server `context/context_capture_broker.cc` →
+`context/context_update_bridge.cc`. Capture uses the UTF-16 frame pipe
+`NeuralWeaselContext-v1-<SID>`; the bridge uses the UTF-8 JSON model-service
+pipe `NeuralWeasel-v1-<SID>`. UTF-8 is a transport encoding, not another capture API.
 
 ## Sensitive-text gate
 
@@ -86,8 +96,8 @@ field is safe. A production gate should combine:
 3. an explicit process/application blacklist;
 4. an allow/deny policy state that defaults to deny on query failure.
 
-Denied snapshots contain no text. Diagnostics may record HRESULT, lengths,
-boundary flags and a keyed hash, but never the original content. The model
+Denied snapshots contain no text. Diagnostics may record HRESULT, lengths and
+boundary flags, but never editor text or text fingerprints. The model
 service and pipe are not a fallback security boundary.
 
 ## Named Pipe contract
@@ -109,8 +119,8 @@ byte[byte_length] UTF-8 JSON
 `TryQuery` uses an absolute deadline across connect, write and read, returns
 `kBusy` rather than waiting for a concurrent caller, and cancels pending
 overlapped I/O at expiry. The translator uses a 50 ms deadline, which covers
-the measured steady-state path plus the first uncached longer-prefix query
-while remaining bounded.
+the complete exchange. Passing that deadline remains a target-machine
+measurement, not a guarantee inferred from the configured budget.
 A separate `ContextUpdateBridge` worker uses a 1000 ms per-exchange allowance
 inside its 3000 ms readiness deadline. That background allowance covers cold
 pipe acknowledgement and model prewarm without extending the keystroke-thread
@@ -140,7 +150,7 @@ candidate.start = segment.start
 candidate.end   = segment.start + consumed_keys
 ```
 
-Since v1 raw keys are ASCII full pinyin, byte count and key count are equal.
+Since raw keys are ASCII pinyin/shorthand, byte count and key count are equal.
 Every response is rejected unless:
 
 - type is `candidates`;

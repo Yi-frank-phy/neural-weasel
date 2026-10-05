@@ -1,9 +1,10 @@
-# Native integration skeleton
+# Native integration components
 
 This directory contains deliberately small native boundaries for the
 experimental neural Weasel profile:
 
 - `tsf/`: bounded read-only TSF surrounding-text capture;
+- `context/`: bounded capture protocol and server-owned broker/model-service bridge;
 - `pipe/`: persistent, deadline-bounded Named Pipe client;
 - `rime/`: a librime translator module that converts cached service responses
   into Rime candidates.
@@ -28,8 +29,9 @@ cmake -S native -B build/native -A x64 `
   -DRIME_ROOT=C:/src/librime
 ```
 
-See `docs/architecture/native-integration.md` before wiring these targets into
+See [native integration](../docs/architecture/native-integration.md) before wiring these targets into
 Weasel. In particular, stock librime `1.15.0` cannot load external plugin DLLs
 on Windows; the resulting static library must be linked into the experimental
-Weasel build and explicitly loaded. The current files are an integration
-skeleton, not an installer.
+Weasel build and explicitly loaded. Windows CI applies the pinned overlay and
+assembles the experimental installer bundle. TSF captures/sends only; the server
+owns model-service IPC and readiness waits. Default CMake builds do not install it.

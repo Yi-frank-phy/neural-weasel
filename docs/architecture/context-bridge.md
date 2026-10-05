@@ -10,12 +10,13 @@ on:
 - the atomic `rime_plugin::EditorContextEpoch` handoff.
 
 It does not include Weasel or librime headers, register a TSF profile, or
-perform TSF edit-session work. The eventual Weasel adapter may reconstruct the
-same DTO after internal Weasel IPC; that adapter is outside this target.
+perform TSF edit-session work. The experimental server's context adapter
+reconstructs the same DTO after the bounded one-way capture transport. The
+TSF adapter has no dependency on this bridge or the model-service pipe client.
 
 ## Threading and latest-wins behavior
 
-The `SurroundingTextEditSession` callback may move its snapshot into
+The server context adapter moves a validated capture snapshot into
 `ContextUpdateBridge::Submit`. `Submit` only:
 
 1. allocates the next monotonically increasing sequence;

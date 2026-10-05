@@ -30,6 +30,7 @@ The repository currently contains the independently testable core:
 - production Qwen3.5-4B Base GGUF/CUDA runtime plus independently testable model backends;
 - token-to-pinyin index with heteronym support;
 - continuous full-pinyin prefix matching and single-character coverage;
+- bounded shorthand-pinyin search and multi-token Chinese/Latin candidate scoring;
 - replaceable full-logits and sparse lm-head projection backends;
 - immutable context snapshots and non-blocking epoch-consistent queries;
 - one unified Chinese/English candidate type, script policy, ranking, and protocol;
@@ -40,6 +41,10 @@ The repository currently contains the independently testable core:
 - length-prefixed JSON protocol and Windows named-pipe service;
 - bounded, authenticated Neural TSF surrounding-context capture;
 - CLI commands for index building, prediction, serving, backend comparison, and replay.
+
+Start with the [documentation index](docs/README.md) and
+[implementation status](docs/STATUS.md). Dated experiment and handoff reports retain
+their original evidence; their commands and deployment state are historical.
 
 Windows CI builds the isolated Neural experimental Weasel/librime/TSF profile and
 server bundle. The bundle is buildable and installable by the checked-in development
@@ -56,11 +61,12 @@ are downloaded separately; they are never committed here.
 
 - The launcher refuses to start unless it finds exactly one
   `NVIDIA GeForce RTX 4060 Laptop GPU`.
-- It sets `CUDA_VISIBLE_DEVICES` to that GPU UUID before importing PyTorch.
+- It sets `CUDA_VISIBLE_DEVICES` to that GPU UUID before initializing the model runtime.
 - `device_map="auto"`, CPU/disk offload, chat templates, Instruct checkpoints, and
   silent CPU fallback are rejected.
-- Generated indexes, model caches, private context, and logs live under
+- Generated indexes, model caches, and logs live under
   `%LOCALAPPDATA%\NeuralWeasel`, outside the repository.
+- PRIVATE editor context is used only ephemerally and is never persisted.
 - Context text is never written to normal logs.
 - Password/PIN/protected fields must never send surrounding plaintext.
 - Raw editor context must not be persisted into Engram, logs, caches, telemetry, or
@@ -68,32 +74,36 @@ are downloaded separately; they are never committed here.
 
 ## Bootstrap
 
+The `build-index` and `predict` steps require the CUDA llama.cpp runtime prepared
+by the service launcher below. `uv sync` alone does not install that native wheel.
+
 ```powershell
 uv python install 3.12
 uv sync --extra dev
 uv run neural-weasel gpu-info
-uv run neural-weasel build-index --model Qwen/Qwen3.5-0.8B-Base
+uv run neural-weasel acquire-model
+uv run neural-weasel build-index
 uv run neural-weasel predict `
-  --model Qwen/Qwen3.5-0.8B-Base `
   --before "该协议所消耗的" `
   --pinyin "jiuchan"
 ```
 
-The first model command downloads the official Base checkpoint into the Hugging Face
-cache beneath `%LOCALAPPDATA%\NeuralWeasel`.
+The model command acquires the pinned Qwen3.5-4B Base Q8 GGUF under
+`%LOCALAPPDATA%\NeuralWeasel`. The CUDA llama.cpp Python wheel is installed by the
+service launcher; `uv sync` alone does not prepare that native runtime.
 
-## Run the v0.2 model service
+## Run the model service
 
-The full-logits backend is the correctness baseline:
+The launcher defaults to the pinned Q8 GGUF with llama.cpp/CUDA:
 
 ```powershell
-.\scripts\start-model-service.ps1 -Backend full
+.\scripts\start-model-service.ps1 -Quantization Q8_0
 ```
 
-The sparse backend avoids the full-vocabulary projection and CPU logits copy:
+Q4 is an explicit alternative. Stop the existing service before changing quantization:
 
 ```powershell
-.\scripts\start-model-service.ps1 -Backend sparse
+.\scripts\start-model-service.ps1 -Quantization Q4_K_M
 ```
 
 These commands start the separate Named Pipe model service. The verified CI
@@ -104,7 +114,8 @@ verified CI bundle with `install-dev-profile.ps1`.
 
 ## Measure on the target GPU
 
-Compare both backends on identical legal Latin token sets:
+The legacy Torch full/sparse comparison remains an explicit development tool,
+separate from the GGUF service. Compare those backends on identical legal Latin token sets:
 
 ```powershell
 uv run neural-weasel benchmark-backends `
@@ -116,8 +127,7 @@ Run the checked-in bilingual replay:
 
 ```powershell
 uv run neural-weasel replay `
-  --fixture benchmarks/replay_v02.jsonl `
-  --backend full
+  --fixture benchmarks/replay_v02.jsonl
 ```
 
 The output includes candidate quality, wrong-script count, snapshot age, query
@@ -146,10 +156,11 @@ Supported:
 - apostrophe separators;
 - multiple token pronunciation paths;
 - incomplete trailing syllables;
+- bounded shorthand-pinyin traversal;
 - deletion/retyping (query is stateless in raw keys);
 - direct model-token candidates and last-resort single-character coverage;
-- one-token Latin completions discovered directly from the Base tokenizer;
-- a shared bounded multi-token candidate representation and tested score normalization;
+- Latin token completions and background multi-token conditional scoring;
+- a shared bounded multi-token candidate representation and joint log-probability scoring;
 - hard Han exclusion in decisive English context;
 - modest, overridable Latin penalty in Chinese context;
 - old immutable snapshots during background refresh;
@@ -157,9 +168,9 @@ Supported:
 
 Not yet supported or not yet target-machine-validated:
 
-- double pinyin, abbreviation, fuzzy pinyin, tones, or typo correction;
-- real conditional Base-model scoring for cross-token English completions in the live
-  service (the current live tokenizer catalog is one-token);
+- double pinyin, fuzzy pinyin, tones, or typo correction;
+- acceptance of expanded English candidate behavior in real editors;
+- Windows UIA context acquisition, tracked in [issue #43](https://github.com/Yi-frank-phy/neural-weasel/issues/43);
 - completed target-machine registration and smoke validation of the independent Neural
   experimental TSF profile;
 - an activated automatic Microsoft Pinyin fallback.

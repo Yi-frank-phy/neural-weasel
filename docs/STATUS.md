@@ -3,7 +3,11 @@
 This file separates repository/CI evidence from interactive Windows evidence.
 The experimental slice is not production ready.
 
-## Implemented in this branch
+Reviewed against `main` on 2026-10-05. This is a source-level overview, not a
+fresh measurement of the installed runtime. See [the documentation index](README.md)
+for current procedures and historical evidence.
+
+## Implemented in main
 
 - Unified `context_epoch = 0` behavior: use the latest available snapshot, or
   literal fallback when none exists. This applies to `query_candidates`,
@@ -22,13 +26,18 @@ The experimental slice is not production ready.
   outside the reserved pair and verifies TSF identity exports.
 - Hash-verified, idempotent install/uninstall scripts with staging, dry runs,
   no default-profile activation, and no identifier override.
-- A Base-only model launcher with `full` as the correctness default and
-  explicit `sparse` failure; it never silently changes backend or checkpoint.
+- A Base-only GGUF/llama.cpp CUDA launcher, defaulting to Q8 with explicit
+  `Q4_K_M` selection. Legacy Torch full/sparse comparison is a development tool.
+- Bounded shorthand-pinyin traversal, progressive candidate paging and
+  background multi-token Chinese/Latin conditional scoring.
+- Opt-in FIM scoring with both caret sides; continuation remains the default.
+  FIM changes the prompt, not the Windows text-acquisition interface.
 - Static neural translator and bilingual key processor forced into the pinned
   `RimeWithWeasel` module list.
 - A pinned TSF `TextEditSink` hook that schedules read-only surrounding-text
   capture. Password/PIN, unknown policy, blacklisted system processes, and
-  non-input desktops are denied. Pipe work runs later on a latest-wins worker.
+  non-input desktops are denied. A bounded capture sender forwards snapshots
+  to the experimental server; model-service IPC and readiness waits run there.
 - Shared Python/C++ key vectors for default-literal and explicitly selected
   English Space, Tab/Escape/Enter, Chinese Space/Escape, Backspace, numbered
   selection, no candidate, stale candidate, and service failure.
@@ -36,16 +45,17 @@ The experimental slice is not production ready.
   runs CTest and disposable dry-run safety tests, scans binary/resource
   identities, and uploads `neural-weasel-experimental-x64`.
 
-## Local evidence
+## Automated evidence and its limits
 
-- All non-Windows Python tests pass; Windows-only tests use platform skips.
-- Ruff lint and formatting checks pass.
-- The pure C++ key-semantics test builds and passes against the shared TSV.
+- Dated experiment reports record test results for their named source revisions;
+  they do not establish a passing result for every later commit.
+- The pure C++ key-semantics test uses the shared TSV.
 - Protocol tests cover no snapshot, one latest snapshot, newer snapshot in
   flight, and latest plus retained snapshots.
 
-Exact test counts and CI links belong in the PR/final report because they
-change while the branch is being repaired.
+Exact test counts, source revisions and CI links belong in the dated reports
+and current CI run. See [context-engine testing](experiments/context-engine-full-test-20261002.md)
+and [disconnect recovery](experiments/context-update-recovery-20261002.md).
 
 ## Windows CI evidence
 
@@ -67,6 +77,9 @@ in Windows Sandbox, a disposable VM, or a dedicated test user for:
 - full unregister/removal;
 - confirmation that official Weasel and Microsoft Pinyin are unaffected.
 
-The live English catalog remains the single-token baseline. Multi-token causal
-rescoring, fuzzy/double/abbreviated pinyin, typo correction, automatic
-Microsoft Pinyin fallback, GUI, and production hardening remain out of scope.
+Fuzzy/double pinyin, typo correction, expanded English UX acceptance, automatic
+Microsoft Pinyin fallback and production hardening remain deferred.
+Direct Windows UIA capture is tracked separately in
+[issue #43](https://github.com/Yi-frank-phy/neural-weasel/issues/43).
+The [target-machine handoff](handoff/codex-neural-weasel-debug.md) records partial
+installation and typing observations; the full manual acceptance matrix remains open.
